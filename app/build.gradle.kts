@@ -22,6 +22,7 @@ android {
             System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }?.let { keyStorePath ->
                 storeFile = file(keyStorePath)
             }
+            storeType = "PKCS12"
             storePassword = System.getenv("KEYSTORE_PASSWORD")
             keyAlias = System.getenv("KEY_ALIAS")
             keyPassword = System.getenv("KEY_PASSWORD")
