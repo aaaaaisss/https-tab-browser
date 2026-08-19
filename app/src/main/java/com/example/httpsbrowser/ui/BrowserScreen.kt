@@ -29,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +74,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
     val state = viewModel.uiState
     val selectedTab = state.selectedTab
     var progress by remember(selectedTab?.id) { mutableIntStateOf(0) }
+    var scrollFraction by remember(selectedTab?.id) { mutableFloatStateOf(0f) }
     var rendererVersion by remember { mutableIntStateOf(0) }
     var pendingPermission by remember { mutableStateOf<PendingWebPermission?>(null) }
     var fullscreenContent by remember { mutableStateOf<FullscreenContent?>(null) }
@@ -165,6 +167,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                         registry = registry,
                                         tabId = selectedTab.id,
                                         onProgress = { progress = it },
+                                        onScrollPosition = { scrollFraction = it },
                                         onFullscreen = ::enterFullscreen,
                                         onHideFullscreen = { finishFullscreen(false) },
                                         onPermission = { origin, resources, reply ->
@@ -181,6 +184,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                         registry = registry,
                                         tabId = selectedTab.id,
                                         onProgress = { progress = it },
+                                        onScrollPosition = { scrollFraction = it },
                                         onFullscreen = ::enterFullscreen,
                                         onHideFullscreen = { finishFullscreen(false) },
                                         onPermission = { origin, resources, reply ->
@@ -197,7 +201,10 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                             )
                         }
                         Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
-                            RightEdgeScrollRail { fraction -> registry.scrollToFraction(selectedTab.id, fraction) }
+                            RightEdgeScrollRail(
+                                currentFraction = scrollFraction,
+                                onScrollToFraction = { fraction -> registry.scrollToFraction(selectedTab.id, fraction) }
+                            )
                         }
                     }
                 }
@@ -321,6 +328,7 @@ private fun callbacksFor(
     registry: BrowserWebViewRegistry,
     tabId: String,
     onProgress: (Int) -> Unit,
+    onScrollPosition: (Float) -> Unit,
     onFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideFullscreen: () -> Unit,
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
@@ -333,6 +341,7 @@ private fun callbacksFor(
     override fun onTitle(tabId: String, title: String) = viewModel.onTitleChanged(tabId, title)
     override fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean) = viewModel.onHistoryStateChanged(tabId, canGoBack, canGoForward)
     override fun onProgress(tabId: String, progress: Int) = onProgress(progress)
+    override fun onScrollPosition(tabId: String, fraction: Float) = onScrollPosition(fraction)
     override fun onHttpsUpgrade(url: String) = registry.load(tabId, url)
     override fun onBlockedNavigation(url: String) = onNotice("HTTPS 接続のみ許可されています。\n$url")
     override fun onSslError(url: String) = onNotice("証明書エラーのため安全に接続できませんでした。\n$url")

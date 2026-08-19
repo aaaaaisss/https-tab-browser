@@ -1,5 +1,6 @@
 package com.example.httpsbrowser.ui
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -58,6 +59,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -115,7 +117,7 @@ fun AddressBar(
             OutlinedTextField(
                 value = textFieldValue,
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
-                modifier = Modifier.weight(1f).height(46.dp).focusRequester(focusRequester).onFocusChanged { focus ->
+                modifier = Modifier.weight(1f).height(54.dp).focusRequester(focusRequester).onFocusChanged { focus ->
                     if (focus.isFocused && !isEditing) onEditingStarted()
                 },
                 singleLine = true,
@@ -254,7 +256,15 @@ fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) ->
                         .padding(start = 9.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(tab.title.ifBlank { "ホーム" }, color = BottomBarText, modifier = Modifier.width(90.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        tab.title.ifBlank { "ホーム" },
+                        color = BottomBarText,
+                        modifier = Modifier.width(148.dp),
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelMedium
+                    )
                     IconButton(onClick = { onClose(tab.id) }, modifier = Modifier.size(26.dp), colors = IconButtonDefaults.iconButtonColors(contentColor = BottomBarText)) {
                         Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(16.dp))
                     }
@@ -268,34 +278,55 @@ fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) ->
 }
 
 @Composable
-fun RightEdgeScrollRail(onScrollToFraction: (Float) -> Unit) {
+fun RightEdgeScrollRail(
+    currentFraction: Float,
+    onScrollToFraction: (Float) -> Unit
+) {
     val density = LocalDensity.current
-    val trackHeight = 176.dp
-    val thumbHeight = 28.dp
+    val trackHeight = 148.dp
+    val normalThumbHeight = 20.dp
+    val activeThumbHeight = 32.dp
+    var isDragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableFloatStateOf(currentFraction) }
+    val thumbHeight by animateDpAsState(
+        targetValue = if (isDragging) activeThumbHeight else normalThumbHeight,
+        label = "scrollThumbHeight"
+    )
+    val railWidth by animateDpAsState(
+        targetValue = if (isDragging) 22.dp else 10.dp,
+        label = "scrollRailWidth"
+    )
     val usableTrackPx = with(density) { (trackHeight - thumbHeight).toPx() }
-    var fraction by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(currentFraction, isDragging) {
+        if (!isDragging) dragFraction = currentFraction.coerceIn(0f, 1f)
+    }
     val dragState = rememberDraggableState { delta ->
-        fraction = (fraction + delta / usableTrackPx).coerceIn(0f, 1f)
-        onScrollToFraction(fraction)
+        dragFraction = (dragFraction + delta / usableTrackPx).coerceIn(0f, 1f)
+        onScrollToFraction(dragFraction)
     }
     Box(
         modifier = Modifier
-            .width(30.dp)
+            .width(railWidth)
             .height(trackHeight)
-            .clip(RoundedCornerShape(15.dp))
-            .background(Color(0x990B0E13))
-            .border(1.dp, Color(0x665A6878), RoundedCornerShape(15.dp))
-            .draggable(state = dragState, orientation = Orientation.Vertical),
+            .alpha(if (isDragging) 0.92f else 0.38f)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isDragging) Color(0x44212A35) else Color.Transparent)
+            .draggable(
+                state = dragState,
+                orientation = Orientation.Vertical,
+                onDragStarted = { isDragging = true },
+                onDragStopped = { isDragging = false }
+            ),
         contentAlignment = Alignment.TopCenter
     ) {
         Box(
             modifier = Modifier
-                .padding(horizontal = 4.dp)
-                .offset { IntOffset(0, (usableTrackPx * fraction).roundToInt()) }
                 .fillMaxWidth()
+                .offset { IntOffset(0, (usableTrackPx * dragFraction).roundToInt()) }
                 .height(thumbHeight)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF95C9FF))
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (isDragging) Color(0xFF89C4FF) else Color(0xAA89C4FF))
         )
     }
 }

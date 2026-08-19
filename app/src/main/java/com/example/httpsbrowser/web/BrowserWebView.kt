@@ -98,7 +98,14 @@ class BrowserWebViewRegistry(
         destroyAll()
     }
 
-    private fun createWebView(tabId: String): WebView = WebView(context).apply {
+    private fun createWebView(tabId: String): WebView = object : WebView(context) {
+        override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+            super.onScrollChanged(l, t, oldl, oldt)
+            val scrollRange = ((contentHeight * scale).toInt() - height).coerceAtLeast(0)
+            val fraction = if (scrollRange == 0) 0f else t.toFloat() / scrollRange
+            entries[tabId]?.callbacks?.onScrollPosition(tabId, fraction.coerceIn(0f, 1f))
+        }
+    }.apply {
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
         settings.apply {
             javaScriptEnabled = true
@@ -107,10 +114,12 @@ class BrowserWebViewRegistry(
             allowFileAccess = false
             allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            mediaPlaybackRequiresUserGesture = true
+            // 動画ページのプレーヤー初期化やログイン確認を妨げない。
+            mediaPlaybackRequiresUserGesture = false
             safeBrowsingEnabled = true
         }
-        CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+        // YouTube を含む HTTPS サイトが利用する埋め込みプレーヤーと同意画面に必要な Cookie を許可する。
+        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         webViewClient = SecureClient(tabId)
         webChromeClient = SecureChromeClient(tabId)
         setDownloadListener(SecureDownloadListener(tabId))
@@ -162,7 +171,9 @@ class BrowserWebViewRegistry(
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
             val entry = entries[tabId] ?: return null
             val url = request.url.toString()
-            if (entry.settings.adBlockingEnabled && blocker.shouldBlock(url)) {
+            // YouTube の動画ストリームとプレーヤー必須リソースは、単純化した URL ルールの
+            // 過剰ブロックから保護する。広告以外の通常リソースは従来どおりブロックする。
+            if (entry.settings.adBlockingEnabled && !isYoutubePlaybackResource(url) && blocker.shouldBlock(url)) {
                 return WebResourceResponse(
                     "text/plain", "utf-8", 204, "No Content",
                     mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0))
@@ -231,7 +242,14 @@ class BrowserWebViewRegistry(
             val newTabId = current.callbacks.onPopupRequested() ?: return false
             val popupView = createWebView(newTabId)
             configure(popupView, current.settings)
-            entries[newTabId] = Entry(webView = popupView, loadedUrl = "", callbacks = current.callbacks, settings = current.settings)
+            // 新規ウィンドウの WebView を、そのまま新しいタブへ接続する。
+            // 空文字を loadedUrl に入れると Compose 再構成時に読み込み状態が不整合になるため null を維持する。
+            entries[newTabId] = Entry(
+                webView = popupView,
+                callbacks = current.callbacks,
+                settings = current.settings,
+                appliedForceDark = current.settings.forceDarkPages
+            )
             (resultMsg.obj as? WebView.WebViewTransport)?.webView = popupView
             resultMsg.sendToTarget()
             return true
@@ -271,6 +289,15 @@ class BrowserWebViewRegistry(
     )
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
+
+    private fun isYoutubePlaybackResource(url: String): Boolean {
+        val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "youtube.com" || host.endsWith(".youtube.com") ||
+            host == "googlevideo.com" || host.endsWith(".googlevideo.com") ||
+            host == "ytimg.com" || host.endsWith(".ytimg.com") ||
+            host == "youtubei.googleapis.com"
+    }
+
     private fun upgradeToHttps(url: String): String? = runCatching {
         val uri = URI(url)
         when (uri.scheme?.lowercase()) {
@@ -287,6 +314,7 @@ interface BrowserWebCallbacks {
     fun onTitle(tabId: String, title: String)
     fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean)
     fun onProgress(tabId: String, progress: Int)
+    fun onScrollPosition(tabId: String, fraction: Float)
     fun onHttpsUpgrade(url: String)
     fun onBlockedNavigation(url: String)
     fun onSslError(url: String)
@@ -305,6 +333,7 @@ interface BrowserWebCallbacks {
         override fun onTitle(tabId: String, title: String) = Unit
         override fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean) = Unit
         override fun onProgress(tabId: String, progress: Int) = Unit
+        override fun onScrollPosition(tabId: String, fraction: Float) = Unit
         override fun onHttpsUpgrade(url: String) = Unit
         override fun onBlockedNavigation(url: String) = Unit
         override fun onSslError(url: String) = Unit
