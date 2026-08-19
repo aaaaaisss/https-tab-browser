@@ -2,11 +2,11 @@ package com.example.httpsbrowser.ui
 
 import android.Manifest
 import android.app.Activity
+import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.app.DownloadManager
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -14,11 +14,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -31,10 +30,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -44,11 +43,9 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.example.httpsbrowser.data.AdBlockListRepository
-import com.example.httpsbrowser.data.Suggestion
-import com.example.httpsbrowser.data.UrlRuleBlocker
+import com.example.httpsbrowser.data.SettingsPage
 import com.example.httpsbrowser.web.BrowserWebCallbacks
 import com.example.httpsbrowser.web.BrowserWebViewRegistry
-import kotlinx.coroutines.launch
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 
@@ -68,8 +65,7 @@ private data class FullscreenContent(
 fun BrowserScreen(viewModel: BrowserViewModel) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val scope = rememberCoroutineScope()
-    val blocker = remember { UrlRuleBlocker() }
+    val blocker = remember { com.example.httpsbrowser.data.UrlRuleBlocker() }
     val registry = remember { BrowserWebViewRegistry(context.applicationContext, blocker) }
     val listRepository = remember { AdBlockListRepository(context.applicationContext, blocker) }
     val state = viewModel.uiState
@@ -80,7 +76,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
     var fullscreenContent by remember { mutableStateOf<FullscreenContent?>(null) }
     var longPressedLink by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
-    val scrollAmount = with(LocalDensity.current) { 480.dp.roundToPx() }
+    var addBookmarkDialog by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -94,24 +90,22 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
 
     LaunchedEffect(Unit) { listRepository.loadAndCompile() }
     DisposableEffect(selectedTab?.id) {
-        selectedTab?.let { registry.resume(it.id) }
-        onDispose { selectedTab?.let { registry.pause(it.id) } }
+        selectedTab?.takeIf { !it.isHome }?.let { registry.resume(it.id) }
+        onDispose { selectedTab?.takeIf { !it.isHome }?.let { registry.pause(it.id) } }
     }
     DisposableEffect(Unit) { onDispose { registry.destroyAll() } }
+    LaunchedEffect(selectedTab?.id, selectedTab?.lastRequestedUrl, selectedTab?.isHome) {
+        selectedTab?.takeIf { !it.isHome && it.lastRequestedUrl.isNotBlank() }?.let { registry.load(it.id, it.lastRequestedUrl) }
+    }
 
     fun finishFullscreen(notifyPage: Boolean) {
         val content = fullscreenContent ?: return
-        fullscreenContent = null // コールバックによる再入を防ぐため、先に状態を閉じる。
+        fullscreenContent = null
         (content.view.parent as? ViewGroup)?.removeView(content.view)
         viewModel.setFullscreen(false)
         if (notifyPage) content.callback.onCustomViewHidden()
-        activity?.let {
-            WindowCompat.getInsetsController(it.window, it.window.decorView)
-                .show(WindowInsetsCompat.Type.systemBars())
-        }
+        activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView).show(WindowInsetsCompat.Type.systemBars()) }
     }
-
-    fun exitFullscreen() = finishFullscreen(notifyPage = true)
 
     fun enterFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
         viewModel.setFullscreen(true)
@@ -126,16 +120,23 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
 
     BackHandler {
         when {
-            state.isFullscreen -> exitFullscreen()
+            state.isFullscreen -> finishFullscreen(true)
+            state.isAddressFocused -> viewModel.stopAddressEditing()
             state.isTabSheetVisible -> viewModel.toggleTabSheet()
-            state.isSettingsSheetVisible -> viewModel.toggleSettingsSheet()
-            selectedTab?.canGoBack == true -> selectedTab?.let { registry.goBack(it.id) }
+            state.isSettingsSheetVisible -> viewModel.backFromSettingsPage()
+            selectedTab?.canGoBack == true && selectedTab?.isHome == false -> selectedTab.let { registry.goBack(it.id) }
             else -> activity?.moveTaskToBack(true)
         }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (selectedTab != null) {
+        if (selectedTab?.isHome == true) {
+            HomeScreen(
+                bookmarks = state.bookmarks,
+                onOpenBookmark = { bookmark -> viewModel.prepareNavigation(bookmark.url) },
+                onAddBookmark = { addBookmarkDialog = true }
+            )
+        } else if (selectedTab != null) {
             androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
                 AndroidView(
                     factory = {
@@ -145,24 +146,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                             tabId = selectedTab.id,
                             onProgress = { progress = it },
                             onFullscreen = ::enterFullscreen,
-                            onHideFullscreen = { finishFullscreen(notifyPage = false) },
-                            onPermission = { origin, resources, reply ->
-                                val permissions = requiredAndroidPermissions(resources)
-                                pendingPermission = PendingWebPermission(origin, resources, permissions, reply)
-                            },
-                            onLongPress = { longPressedLink = it },
-                            onNotice = { notice = it },
-                            onRendererGone = { rendererVersion++ }
-                        ))
-                    },
-                    update = { webView ->
-                        registry.obtain(selectedTab, state.settings, callbacksFor(
-                            viewModel = viewModel,
-                            registry = registry,
-                            tabId = selectedTab.id,
-                            onProgress = { progress = it },
-                            onFullscreen = ::enterFullscreen,
-                            onHideFullscreen = { finishFullscreen(notifyPage = false) },
+                            onHideFullscreen = { finishFullscreen(false) },
                             onPermission = { origin, resources, reply ->
                                 pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
                             },
@@ -171,7 +155,25 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                             onRendererGone = { rendererVersion++ }
                         ))
                     },
-                    modifier = Modifier.fillMaxSize()
+                    update = {
+                        registry.obtain(selectedTab, state.settings, callbacksFor(
+                            viewModel = viewModel,
+                            registry = registry,
+                            tabId = selectedTab.id,
+                            onProgress = { progress = it },
+                            onFullscreen = ::enterFullscreen,
+                            onHideFullscreen = { finishFullscreen(false) },
+                            onPermission = { origin, resources, reply ->
+                                pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
+                            },
+                            onLongPress = { longPressedLink = it },
+                            onNotice = { notice = it },
+                            onRendererGone = { rendererVersion++ }
+                        ))
+                    },
+                    modifier = Modifier.fillMaxSize().pointerInput(state.isAddressFocused) {
+                        detectTapGestures(onTap = { if (state.isAddressFocused) viewModel.stopAddressEditing() })
+                    }
                 )
             }
         }
@@ -183,10 +185,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                     if (content.view.parent !== host) {
                         (content.view.parent as? ViewGroup)?.removeView(content.view)
                         host.removeAllViews()
-                        host.addView(content.view, FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        ))
+                        host.addView(content.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
                     }
                 },
                 modifier = Modifier.fillMaxSize()
@@ -194,44 +193,34 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
         }
 
         if (!state.isFullscreen && selectedTab != null) {
-            androidx.compose.foundation.layout.Box(
-                modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 198.dp)
-            ) { ShortcutDock(
-                isBookmarked = viewModel.isBookmarked(selectedTab.url),
-                onHistory = { viewModel.toggleSettingsSheet() },
-                onBookmarks = { viewModel.toggleSettingsSheet() },
-                onDownloads = { runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
-                onShare = { shareUrl(context, selectedTab.url) },
-                onBookmark = { viewModel.toggleBookmark() }
-            ) }
-            androidx.compose.foundation.layout.Box(
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 198.dp)
-            ) { ScrollButtons(
-                onTop = { registry.scrollToTop(selectedTab.id) },
-                onUp = { registry.scrollBy(selectedTab.id, -scrollAmount) },
-                onDown = { registry.scrollBy(selectedTab.id, scrollAmount) },
-                onBottom = { registry.scrollToBottom(selectedTab.id) }
-            ) }
-
-            androidx.compose.foundation.layout.Column(Modifier.align(Alignment.BottomCenter)) {
-                SuggestionPanel(state.suggestions) { suggestion ->
-                    viewModel.openSuggestion(suggestion).also { registry.load(selectedTab.id, it.url) }
+            if (!selectedTab.isHome) {
+                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp, bottom = 132.dp)) {
+                    RightEdgeScrollRail { fraction -> registry.scrollToFraction(selectedTab.id, fraction) }
                 }
+            }
+            androidx.compose.foundation.layout.Column(Modifier.align(Alignment.BottomCenter)) {
+                if (state.isAddressFocused) SuggestionPanel(state.suggestions) { suggestion -> viewModel.openSuggestion(suggestion) }
                 AddressBar(
                     value = state.addressInput,
                     progress = progress,
+                    isEditing = state.isAddressFocused,
                     onValueChange = viewModel::setAddressInput,
-                    onSubmit = { viewModel.prepareNavigation()?.let { registry.load(selectedTab.id, it.url) } },
-                    onRefresh = { registry.reload(selectedTab.id) }
+                    onSubmit = { viewModel.prepareNavigation() },
+                    onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
+                    onEditingStarted = viewModel::startAddressEditing
                 )
                 NavigationRow(
-                    canGoBack = selectedTab.canGoBack,
-                    canGoForward = selectedTab.canGoForward,
-                    onTabs = viewModel::toggleTabSheet,
-                    onBack = { registry.goBack(selectedTab.id) },
-                    onSearch = { viewModel.prepareNavigation()?.let { registry.load(selectedTab.id, it.url) } },
-                    onForward = { registry.goForward(selectedTab.id) },
-                    onSettings = viewModel::toggleSettingsSheet
+                    canGoBack = selectedTab.canGoBack && !selectedTab.isHome,
+                    canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
+                    onTabs = { viewModel.stopAddressEditing(); viewModel.toggleTabSheet() },
+                    onBack = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goBack(selectedTab.id) },
+                    onSearch = viewModel::startAddressEditing,
+                    onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
+                    onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
+                    onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
+                    onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
+                    onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
+                    onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
                 )
                 TabBar(
                     tabs = state.tabs,
@@ -258,12 +247,31 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                 state = state,
                 listRepository = listRepository,
                 onSettings = viewModel::updateSettings,
-                onClear = { viewModel.clearBrowsingData { registry.clearAllBrowsingData() } },
-                onOpenUrl = { url -> selectedTab?.let { tab -> viewModel.prepareNavigation(url)?.let { prepared -> registry.load(tab.id, prepared.url) } } },
-                onDismiss = viewModel::toggleSettingsSheet,
+                onOpenUrl = { url -> viewModel.prepareNavigation(url) },
+                onOpenPage = viewModel::showSettingsPage,
+                onBack = viewModel::backFromSettingsPage,
+                onDismiss = viewModel::closeSettings,
+                onSaveBookmark = viewModel::addBookmark,
+                onUpdateBookmark = viewModel::updateBookmark,
+                onDeleteBookmark = viewModel::removeBookmark,
+                onClear = { viewModel.clearBrowsingData { registry.clearAllBrowsingData() }; viewModel.closeSettings() },
+                onDownloads = { runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
                 onNotice = { notice = it }
             )
         }
+    }
+
+    if (addBookmarkDialog) {
+        val tab = selectedTab
+        BrowserSheets.BookmarkEditorDialog(
+            title = "ブックマークを追加",
+            initialTitle = tab?.title?.takeIf { it != "ホーム" }.orEmpty(),
+            initialUrl = tab?.url.orEmpty(),
+            onConfirm = { title, url ->
+                if (viewModel.addBookmark(title, url)) addBookmarkDialog = false else notice = "HTTPS URL または検索語を入力してください。"
+            },
+            onDismiss = { addBookmarkDialog = false }
+        )
     }
 
     pendingPermission?.let { pending ->
@@ -273,10 +281,8 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
             text = { Text("${pending.origin} が ${pending.webResources.joinToString()} へのアクセスを求めています。許可しますか？") },
             confirmButton = {
                 Button(onClick = {
-                    if (pending.appPermissions.isEmpty()) {
-                        pending.reply(false) // 未対応リソースは明示的に拒否する。
-                        pendingPermission = null
-                    } else permissionLauncher.launch(pending.appPermissions)
+                    if (pending.appPermissions.isEmpty()) { pending.reply(false); pendingPermission = null }
+                    else permissionLauncher.launch(pending.appPermissions)
                 }) { Text("許可") }
             },
             dismissButton = { TextButton(onClick = { pending.reply(false); pendingPermission = null }) { Text("拒否") } }
@@ -290,8 +296,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
             text = { Text(url) },
             confirmButton = { TextButton(onClick = { viewModel.addTab(url); longPressedLink = null }) { Text("新しいタブで開く") } },
             dismissButton = { TextButton(onClick = {
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                    .setPrimaryClip(ClipData.newPlainText("URL", url))
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("URL", url))
                 longPressedLink = null
             }) { Text("URL をコピー") } }
         )

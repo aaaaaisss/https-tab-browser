@@ -4,15 +4,18 @@ import java.util.UUID
 
 enum class AddressDisplayMode { URL, SEARCH }
 
+enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, AD_BLOCK, DATA }
+
 data class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
-    val url: String = "https://www.google.com/",
-    val title: String = "新しいタブ",
+    val url: String = "",
+    val title: String = "ホーム",
     val displayText: String = "",
     val displayMode: AddressDisplayMode = AddressDisplayMode.URL,
-    val lastRequestedUrl: String = url,
+    val lastRequestedUrl: String = "",
     val canGoBack: Boolean = false,
-    val canGoForward: Boolean = false
+    val canGoForward: Boolean = false,
+    val isHome: Boolean = true
 )
 
 data class HistoryEntry(
@@ -44,8 +47,10 @@ data class BrowserUiState(
     val history: List<HistoryEntry> = emptyList(),
     val bookmarks: List<Bookmark> = emptyList(),
     val settings: BrowserSettings = BrowserSettings(),
+    val isAddressFocused: Boolean = false,
     val isTabSheetVisible: Boolean = false,
     val isSettingsSheetVisible: Boolean = false,
+    val settingsPage: SettingsPage = SettingsPage.ROOT,
     val isFullscreen: Boolean = false
 ) {
     val selectedTab: BrowserTab?

@@ -60,6 +60,10 @@ class BrowserWebViewRegistry(
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
     fun scrollToTop(tabId: String) = entries[tabId]?.webView?.scrollTo(0, 0)
     fun scrollToBottom(tabId: String) = entries[tabId]?.webView?.let { it.scrollTo(0, (it.contentHeight * it.scale).toInt()) }
+    fun scrollToFraction(tabId: String, fraction: Float) = entries[tabId]?.webView?.let { view ->
+        val maximum = ((view.contentHeight * view.scale).toInt() - view.height).coerceAtLeast(0)
+        view.scrollTo(0, (maximum * fraction.coerceIn(0f, 1f)).toInt())
+    }
 
     fun pause(tabId: String) = entries[tabId]?.webView?.onPause()
     fun resume(tabId: String) = entries[tabId]?.webView?.onResume()

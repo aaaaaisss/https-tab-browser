@@ -15,6 +15,7 @@ import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BrowserUiState
 import com.example.httpsbrowser.data.HistoryEntry
 import com.example.httpsbrowser.data.PreparedNavigation
+import com.example.httpsbrowser.data.SettingsPage
 import com.example.httpsbrowser.data.Suggestion
 import com.example.httpsbrowser.data.SuggestionType
 import kotlinx.coroutines.Dispatchers
@@ -35,14 +36,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             val stored = withContext(Dispatchers.IO) { repository.load() }
-            val selected = stored.selectedTabId?.takeIf { id -> stored.tabs.any { it.id == id } }
-                ?: stored.tabs.first().id
+            val normalizedTabs = stored.tabs.ifEmpty { listOf(homeTab()) }.map { tab ->
+                val isLegacyStartTab = tab.url == GOOGLE_HOME && tab.title == "新しいタブ"
+                if (tab.url.isBlank() || tab.isHome || isLegacyStartTab) tab.copy(
+                    url = "", lastRequestedUrl = "", displayText = "", title = tab.title.ifBlank { "ホーム" }, isHome = true
+                ) else tab.copy(isHome = false)
+            }
+            val selected = stored.selectedTabId?.takeIf { id -> normalizedTabs.any { it.id == id } }
+                ?: normalizedTabs.first().id
             uiState = BrowserUiState(
-                tabs = stored.tabs,
+                tabs = normalizedTabs,
                 selectedTabId = selected,
-                addressInput = stored.tabs.firstOrNull { it.id == selected }?.displayText
-                    .orEmpty()
-                    .ifBlank { stored.tabs.firstOrNull { it.id == selected }?.url.orEmpty() },
+                addressInput = normalizedTabs.firstOrNull { it.id == selected }?.displayText.orEmpty(),
                 history = stored.history,
                 bookmarks = stored.bookmarks,
                 settings = stored.settings
@@ -52,70 +57,106 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectTab(id: String) {
         val tab = uiState.tabs.firstOrNull { it.id == id } ?: return
-        uiState = uiState.copy(selectedTabId = id, addressInput = tab.displayText.ifBlank { tab.url }, isTabSheetVisible = false)
+        uiState = uiState.copy(
+            selectedTabId = id,
+            addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
+            isAddressFocused = false,
+            suggestions = emptyList(),
+            isTabSheetVisible = false
+        )
         persistSoon()
     }
 
-    fun addTab(url: String = GOOGLE_HOME): BrowserTab {
-        val secureUrl = secureUrl(url) ?: GOOGLE_HOME
-        val tab = BrowserTab(url = secureUrl, displayText = secureUrl, lastRequestedUrl = secureUrl)
-        uiState = uiState.copy(tabs = uiState.tabs + tab, selectedTabId = tab.id, addressInput = tab.displayText)
+    fun addTab(url: String = ""): BrowserTab {
+        val prepared = if (url.isBlank()) null else buildNavigation(url)
+        val tab = if (prepared == null) homeTab() else BrowserTab(
+            url = prepared.url,
+            title = prepared.displayText.ifBlank { "新しいタブ" },
+            displayText = prepared.displayText,
+            displayMode = prepared.displayMode,
+            lastRequestedUrl = prepared.url,
+            isHome = false
+        )
+        uiState = uiState.copy(
+            tabs = uiState.tabs + tab,
+            selectedTabId = tab.id,
+            addressInput = tab.displayText,
+            isAddressFocused = false,
+            suggestions = emptyList()
+        )
         persistSoon()
         return tab
     }
 
-    /** 最後のタブを閉じた場合も Google の空タブを残す。 */
     fun closeTab(id: String): BrowserTab? {
         val current = uiState.tabs
         val closingIndex = current.indexOfFirst { it.id == id }
         if (closingIndex < 0) return null
         val remaining = current.filterNot { it.id == id }
         if (remaining.isEmpty()) {
-            val newTab = BrowserTab(url = GOOGLE_HOME, displayText = GOOGLE_HOME)
-            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = newTab.displayText)
+            val newTab = homeTab()
+            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "")
         } else {
             val next = remaining.getOrElse((closingIndex - 1).coerceAtLeast(0)) { remaining.last() }
-            uiState = uiState.copy(tabs = remaining, selectedTabId = next.id, addressInput = next.displayText.ifBlank { next.url })
+            uiState = uiState.copy(
+                tabs = remaining,
+                selectedTabId = next.id,
+                addressInput = if (next.isHome) "" else next.displayText.ifBlank { next.url },
+                isAddressFocused = false,
+                suggestions = emptyList()
+            )
         }
         persistSoon()
         return current[closingIndex]
     }
 
-    fun setAddressInput(value: String) {
-        uiState = uiState.copy(addressInput = value, suggestions = createSuggestions(value))
+    fun startAddressEditing() {
+        val tab = uiState.selectedTab ?: return
+        uiState = uiState.copy(
+            addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
+            isAddressFocused = true,
+            suggestions = emptyList()
+        )
     }
 
-    fun clearSuggestions() {
-        uiState = uiState.copy(suggestions = emptyList())
+    fun stopAddressEditing() {
+        val tab = uiState.selectedTab ?: return
+        uiState = uiState.copy(
+            addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
+            isAddressFocused = false,
+            suggestions = emptyList()
+        )
+    }
+
+    fun setAddressInput(value: String) {
+        uiState = uiState.copy(addressInput = value, isAddressFocused = true, suggestions = createSuggestions(value))
     }
 
     fun prepareNavigation(input: String = uiState.addressInput): PreparedNavigation? {
-        val value = input.trim()
-        if (value.isBlank()) return null
-        val prepared = if (looksLikeUrl(value)) {
-            val url = secureUrl(value) ?: return null
-            PreparedNavigation(url, url, AddressDisplayMode.URL)
-        } else {
-            val encoded = URLEncoder.encode(value, Charsets.UTF_8.name())
-            PreparedNavigation(
-                url = "https://www.google.com/search?q=$encoded",
-                displayText = value,
-                displayMode = AddressDisplayMode.SEARCH
-            )
-        }
+        val prepared = buildNavigation(input) ?: return null
         updateSelected { it.copy(
+            url = prepared.url,
             lastRequestedUrl = prepared.url,
             displayText = prepared.displayText,
-            displayMode = prepared.displayMode
+            displayMode = prepared.displayMode,
+            isHome = false
         ) }
-        uiState = uiState.copy(addressInput = prepared.displayText, suggestions = emptyList())
+        uiState = uiState.copy(addressInput = prepared.displayText, isAddressFocused = false, suggestions = emptyList())
         persistSoon()
         return prepared
     }
 
+    fun openHome() {
+        updateSelected { tab ->
+            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, canGoBack = false, canGoForward = false)
+        }
+        uiState = uiState.copy(addressInput = "", isAddressFocused = false, suggestions = emptyList())
+        persistSoon()
+    }
+
     fun onPageStarted(tabId: String, url: String) {
         if (!isHttps(url)) return
-        updateTab(tabId) { it.copy(lastRequestedUrl = url) }
+        updateTab(tabId) { it.copy(lastRequestedUrl = url, isHome = false) }
     }
 
     fun onPageFinished(tabId: String, url: String, title: String?) {
@@ -126,13 +167,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 url = url,
                 title = title?.takeIf(String::isNotBlank) ?: tab.title,
                 displayText = googleQuery ?: url,
-                displayMode = if (googleQuery != null) AddressDisplayMode.SEARCH else AddressDisplayMode.URL
+                displayMode = if (googleQuery != null) AddressDisplayMode.SEARCH else AddressDisplayMode.URL,
+                isHome = false
             )
         }
         val tab = uiState.tabs.firstOrNull { it.id == tabId } ?: return
         val entry = HistoryEntry(title = tab.title, url = url, query = tab.displayText.takeIf { tab.displayMode == AddressDisplayMode.SEARCH })
         uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
-        if (uiState.selectedTabId == tabId) uiState = uiState.copy(addressInput = tab.displayText)
+        if (uiState.selectedTabId == tabId && !uiState.isAddressFocused) uiState = uiState.copy(addressInput = tab.displayText)
         persistSoon()
     }
 
@@ -145,21 +187,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateTab(tabId) { it.copy(canGoBack = canGoBack, canGoForward = canGoForward) }
     }
 
-    fun openSuggestion(suggestion: Suggestion): PreparedNavigation {
-        return when (suggestion.type) {
-            SuggestionType.GOOGLE_SEARCH -> prepareNavigation(suggestion.primary)!!
-            else -> {
-                val prepared = PreparedNavigation(suggestion.url, suggestion.primary, AddressDisplayMode.URL)
-                updateSelected { it.copy(lastRequestedUrl = prepared.url, displayText = prepared.displayText, displayMode = prepared.displayMode) }
-                uiState = uiState.copy(addressInput = prepared.displayText, suggestions = emptyList())
-                persistSoon()
-                prepared
-            }
-        }
+    fun openSuggestion(suggestion: Suggestion): PreparedNavigation? = when (suggestion.type) {
+        SuggestionType.GOOGLE_SEARCH -> prepareNavigation(suggestion.primary)
+        else -> prepareNavigation(suggestion.url)
     }
 
     fun toggleTabSheet() { uiState = uiState.copy(isTabSheetVisible = !uiState.isTabSheetVisible) }
-    fun toggleSettingsSheet() { uiState = uiState.copy(isSettingsSheetVisible = !uiState.isSettingsSheetVisible) }
+
+    fun openSettings(page: SettingsPage = SettingsPage.ROOT) {
+        uiState = uiState.copy(isSettingsSheetVisible = true, settingsPage = page, isAddressFocused = false, suggestions = emptyList())
+    }
+
+    fun closeSettings() { uiState = uiState.copy(isSettingsSheetVisible = false, settingsPage = SettingsPage.ROOT) }
+    fun showSettingsPage(page: SettingsPage) { uiState = uiState.copy(settingsPage = page) }
+    fun backFromSettingsPage() {
+        uiState = if (uiState.settingsPage == SettingsPage.ROOT) uiState.copy(isSettingsSheetVisible = false)
+        else uiState.copy(settingsPage = SettingsPage.ROOT)
+    }
+
     fun setFullscreen(value: Boolean) { uiState = uiState.copy(isFullscreen = value) }
 
     fun updateSettings(transform: (BrowserSettings) -> BrowserSettings) {
@@ -167,24 +212,36 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistSoon()
     }
 
-    fun toggleBookmark() {
-        val tab = uiState.selectedTab ?: return
-        val existing = uiState.bookmarks.firstOrNull { it.url == tab.url }
-        uiState = if (existing == null) {
-            uiState.copy(bookmarks = listOf(Bookmark(title = tab.title, url = tab.url)) + uiState.bookmarks)
-        } else {
-            uiState.copy(bookmarks = uiState.bookmarks.filterNot { it.id == existing.id })
-        }
+    fun addBookmark(title: String, url: String): Boolean {
+        val prepared = buildNavigation(url) ?: return false
+        val existing = uiState.bookmarks.firstOrNull { it.url == prepared.url }
+        val bookmark = Bookmark(id = existing?.id ?: Bookmark().id, title = title.trim().ifBlank { prepared.displayText.ifBlank { prepared.url } }, url = prepared.url, createdAt = existing?.createdAt ?: System.currentTimeMillis())
+        uiState = uiState.copy(bookmarks = listOf(bookmark) + uiState.bookmarks.filterNot { it.id == bookmark.id })
+        persistSoon()
+        return true
+    }
+
+    fun updateBookmark(id: String, title: String, url: String): Boolean {
+        val prepared = buildNavigation(url) ?: return false
+        val old = uiState.bookmarks.firstOrNull { it.id == id } ?: return false
+        val updated = old.copy(title = title.trim().ifBlank { prepared.displayText.ifBlank { prepared.url } }, url = prepared.url)
+        uiState = uiState.copy(bookmarks = uiState.bookmarks.map { if (it.id == id) updated else it })
+        persistSoon()
+        return true
+    }
+
+    fun removeBookmark(id: String) {
+        uiState = uiState.copy(bookmarks = uiState.bookmarks.filterNot { it.id == id })
         persistSoon()
     }
 
-    fun isBookmarked(url: String): Boolean = uiState.bookmarks.any { it.url == url }
+    fun isBookmarked(url: String): Boolean = url.isNotBlank() && uiState.bookmarks.any { it.url == url }
 
     fun clearBrowsingData(onDone: () -> Unit) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { repository.clearBrowsingData(keepBookmarks = true) }
-            val newTab = BrowserTab(url = GOOGLE_HOME, displayText = GOOGLE_HOME)
-            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = GOOGLE_HOME, history = emptyList())
+            val newTab = homeTab()
+            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "", history = emptyList(), isAddressFocused = false, suggestions = emptyList())
             onDone()
         }
     }
@@ -209,7 +266,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val needle = input.trim().lowercase()
         if (needle.isBlank()) return emptyList()
         val results = linkedMapOf<String, Suggestion>()
-        uiState.tabs.filter { it.title.contains(needle, true) || it.url.contains(needle, true) }.forEach {
+        uiState.tabs.filter { !it.isHome && (it.title.contains(needle, true) || it.url.contains(needle, true)) }.forEach {
             results.putIfAbsent(it.url, Suggestion(it.title, it.url, it.url, SuggestionType.OPEN_TAB))
         }
         uiState.bookmarks.filter { it.title.contains(needle, true) || it.url.contains(needle, true) }.forEach {
@@ -220,6 +277,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         results["google:$input"] = Suggestion("Google 検索: $input", "Google", input, SuggestionType.GOOGLE_SEARCH)
         return results.values.take(8)
+    }
+
+    private fun buildNavigation(input: String): PreparedNavigation? {
+        val value = input.trim()
+        if (value.isBlank()) return null
+        return if (looksLikeUrl(value)) {
+            val url = secureUrl(value) ?: return null
+            PreparedNavigation(url, url, AddressDisplayMode.URL)
+        } else {
+            val encoded = URLEncoder.encode(value, Charsets.UTF_8.name())
+            PreparedNavigation("https://www.google.com/search?q=$encoded", value, AddressDisplayMode.SEARCH)
+        }
     }
 
     private fun looksLikeUrl(value: String): Boolean = value.startsWith("http://", true) ||
@@ -237,12 +306,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
     private fun googleSearchQuery(url: String): String? = runCatching {
         val uri = Uri.parse(url)
-        if (uri.host?.endsWith("google.com") == true && uri.path == "/search") {
-            uri.getQueryParameter("q")?.takeIf(String::isNotBlank)
-        } else null
+        if (uri.host?.endsWith("google.com") == true && uri.path == "/search") uri.getQueryParameter("q")?.takeIf(String::isNotBlank) else null
     }.getOrNull()
 
-    companion object {
+    private fun homeTab() = BrowserTab()
+
+    private companion object {
         const val GOOGLE_HOME = "https://www.google.com/"
     }
 }

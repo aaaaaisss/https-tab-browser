@@ -124,6 +124,30 @@ class AdBlockListRepository(
         }
     }
 
+    suspend fun update(id: String, name: String, sourceUrl: String): Result<BlockListSource> = withContext(Dispatchers.IO) {
+        runCatching {
+            val previous = listSourcesInternal().firstOrNull { it.id == id }
+                ?: error("更新対象のリストが見つかりません。")
+            val uri = URI(sourceUrl)
+            require(uri.scheme.equals("https", ignoreCase = true)) { "ブロックリストは HTTPS URL のみ登録できます。" }
+            require(!uri.host.isNullOrBlank()) { "有効な URL を入力してください。" }
+            val request = (uri.toURL().openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 15_000
+                instanceFollowRedirects = false
+                setRequestProperty("User-Agent", "HttpsTabBrowser/1.0")
+            }
+            require(request.responseCode in 200..299) { "リストを取得できませんでした: HTTP ${request.responseCode}" }
+            val content = BufferedInputStream(request.inputStream).use { input -> input.readBytesLimited(5 * 1024 * 1024) }.toString(Charsets.UTF_8)
+            require(content.isNotBlank()) { "空のリストは登録できません。" }
+            File(directory, "${previous.id}.txt").writeText(content)
+            val updated = previous.copy(name = name.ifBlank { uri.host }, sourceUrl = sourceUrl, updatedAt = System.currentTimeMillis())
+            saveSources(listSourcesInternal().map { if (it.id == id) updated else it })
+            loadAndCompile()
+            updated
+        }
+    }
+
     suspend fun setEnabled(id: String, enabled: Boolean) = withContext(Dispatchers.IO) {
         saveSources(listSourcesInternal().map { if (it.id == id) it.copy(enabled = enabled) else it })
         loadAndCompile()

@@ -1,15 +1,21 @@
 package com.example.httpsbrowser.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,22 +27,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowForward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tab
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,50 +49,79 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.border
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.example.httpsbrowser.data.Bookmark
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.Suggestion
 import com.example.httpsbrowser.data.SuggestionType
+import kotlin.math.roundToInt
+
+private val BottomBarBlack = Color(0xFF05070A)
+private val BottomBarButton = Color(0xFF1C2531)
+private val BottomBarButtonEmphasis = Color(0xFF2C5C92)
+private val BottomBarText = Color(0xFFF2F6FC)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddressBar(
     value: String,
     progress: Int,
+    isEditing: Boolean,
     onValueChange: (String) -> Unit,
     onSubmit: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onEditingStarted: () -> Unit
 ) {
-    var textFieldValue by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(TextFieldValue(value)) }
-    androidx.compose.runtime.LaunchedEffect(value) {
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
+
+    LaunchedEffect(value) {
         if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
     }
-    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 8.dp, vertical = 4.dp)) {
+    LaunchedEffect(isEditing) {
+        if (isEditing) {
+            textFieldValue = TextFieldValue(value, TextRange(0, value.length))
+            focusRequester.requestFocus()
+        } else {
+            focusManager.clearFocus(force = true)
+        }
+    }
+
+    Column(
+        Modifier.fillMaxWidth().background(BottomBarBlack).padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = textFieldValue,
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
-                modifier = Modifier.weight(1f).onFocusChanged { focus ->
-                    if (focus.isFocused && textFieldValue.text.isNotEmpty()) {
-                        textFieldValue = textFieldValue.copy(selection = TextRange(0, textFieldValue.text.length))
-                    }
+                modifier = Modifier.weight(1f).height(46.dp).focusRequester(focusRequester).onFocusChanged { focus ->
+                    if (focus.isFocused && !isEditing) onEditingStarted()
                 },
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Google 検索または HTTPS URL を入力") },
                 trailingIcon = {
-                    if (value.isNotBlank()) IconButton(onClick = { onValueChange("") }) {
+                    if (textFieldValue.text.isNotBlank()) IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(34.dp)) {
                         Icon(Icons.Default.Close, contentDescription = "入力を消去")
                     }
                 },
@@ -95,14 +129,16 @@ fun AddressBar(
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit() })
             )
-            IconButton(onClick = onRefresh, modifier = Modifier.padding(start = 4.dp)) {
-                Icon(Icons.Default.Refresh, contentDescription = "再読み込み")
-            }
+            IconButton(
+                onClick = onRefresh,
+                modifier = Modifier.size(42.dp),
+                colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)
+            ) { Icon(Icons.Default.Refresh, contentDescription = "再読み込み") }
         }
         if (progress in 1..99) {
             androidx.compose.material3.LinearProgressIndicator(
                 progress = { progress / 100f },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 1.dp)
             )
         }
     }
@@ -113,13 +149,13 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
     if (suggestions.isEmpty()) return
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+        shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        LazyColumn(Modifier.height((suggestions.size * 56).coerceAtMost(280).dp)) {
+        LazyColumn(Modifier.height((suggestions.size * 48).coerceAtMost(216).dp)) {
             items(suggestions, key = { "${it.type}:${it.url}" }) { suggestion ->
                 Row(
-                    modifier = Modifier.fillMaxWidth().clickable { onClick(suggestion) }.padding(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().clickable { onClick(suggestion) }.padding(horizontal = 14.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
@@ -131,7 +167,7 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
                         },
                         contentDescription = null
                     )
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(suggestion.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(suggestion.secondary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -150,18 +186,32 @@ fun NavigationRow(
     onBack: () -> Unit,
     onSearch: () -> Unit,
     onForward: () -> Unit,
+    onBookmark: () -> Unit,
+    onHistory: () -> Unit,
+    onDownloads: () -> Unit,
+    onShare: () -> Unit,
     onSettings: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(horizontal = 8.dp, vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(horizontal = 8.dp, vertical = 1.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
         NavButton(Icons.Default.Tab, "タブ一覧", onTabs)
         NavButton(Icons.Default.ArrowBack, "戻る", onBack, enabled = canGoBack)
-        NavButton(Icons.Default.Search, "Google 検索", onSearch, emphasized = true)
+        NavButton(Icons.Default.Search, "アドレスバーを編集", onSearch, emphasized = true)
         NavButton(Icons.Default.ArrowForward, "進む", onForward, enabled = canGoForward)
-        NavButton(Icons.Default.Settings, "設定", onSettings)
+        Box {
+            NavButton(Icons.Default.Menu, "メニュー", { menuExpanded = true })
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(text = { Text("ブックマーク") }, leadingIcon = { Icon(Icons.Default.Bookmark, null) }, onClick = { menuExpanded = false; onBookmark() })
+                DropdownMenuItem(text = { Text("履歴") }, leadingIcon = { Icon(Icons.Default.History, null) }, onClick = { menuExpanded = false; onHistory() })
+                DropdownMenuItem(text = { Text("ダウンロード") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onDownloads() })
+                DropdownMenuItem(text = { Text("共有") }, leadingIcon = { Icon(Icons.Default.Share, null) }, onClick = { menuExpanded = false; onShare() })
+                DropdownMenuItem(text = { Text("設定") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { menuExpanded = false; onSettings() })
+            }
+        }
     }
 }
 
@@ -176,76 +226,107 @@ private fun NavButton(
     IconButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.size(if (emphasized) 52.dp else 48.dp),
-        colors = if (emphasized) IconButtonDefaults.iconButtonColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-        ) else IconButtonDefaults.iconButtonColors()
-    ) { Icon(icon, contentDescription = description) }
+        modifier = Modifier.size(if (emphasized) 44.dp else 40.dp),
+        colors = IconButtonDefaults.iconButtonColors(
+            containerColor = if (emphasized) BottomBarButtonEmphasis else BottomBarButton,
+            contentColor = BottomBarText,
+            disabledContainerColor = Color(0xFF131820),
+            disabledContentColor = Color(0xFF657080)
+        )
+    ) { Icon(icon, contentDescription = description, modifier = Modifier.size(if (emphasized) 24.dp else 21.dp)) }
 }
 
 @Composable
 fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(start = 6.dp, top = 4.dp, bottom = 6.dp),
+        modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(start = 5.dp, top = 2.dp, bottom = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             tabs.forEach { tab ->
                 val selected = tab.id == selectedTabId
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)
-                        .then(if (selected) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp)) else Modifier)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) Color(0xFF18375B) else Color(0xFF1A2029))
+                        .then(if (selected) Modifier.border(2.dp, Color(0xFF66B5FF), RoundedCornerShape(12.dp)) else Modifier.border(1.dp, Color(0xFF394554), RoundedCornerShape(12.dp)))
                         .clickable { onSelect(tab.id) }
-                        .padding(start = 12.dp, end = 3.dp, top = 6.dp, bottom = 6.dp),
+                        .padding(start = 9.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(tab.title, modifier = Modifier.width(104.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelLarge)
-                    IconButton(onClick = { onClose(tab.id) }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(17.dp))
+                    Text(tab.title.ifBlank { "ホーム" }, color = BottomBarText, modifier = Modifier.width(90.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                    IconButton(onClick = { onClose(tab.id) }, modifier = Modifier.size(26.dp), colors = IconButtonDefaults.iconButtonColors(contentColor = BottomBarText)) {
+                        Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(16.dp))
                     }
                 }
             }
         }
-        IconButton(onClick = onAdd, modifier = Modifier.size(50.dp)) { Icon(Icons.Default.Add, contentDescription = "新しいタブ") }
+        IconButton(onClick = onAdd, modifier = Modifier.size(40.dp), colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)) {
+            Icon(Icons.Default.Add, contentDescription = "新しいタブ")
+        }
     }
 }
 
 @Composable
-fun ShortcutDock(
-    isBookmarked: Boolean,
-    onHistory: () -> Unit,
-    onBookmarks: () -> Unit,
-    onDownloads: () -> Unit,
-    onShare: () -> Unit,
-    onBookmark: () -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        ShortcutButton(if (isBookmarked) Icons.Default.Star else Icons.Default.Bookmark, "ブックマーク", onBookmark)
-        ShortcutButton(Icons.Default.History, "履歴", onHistory)
-        ShortcutButton(Icons.Default.Download, "ダウンロード", onDownloads)
-        ShortcutButton(Icons.Default.Share, "共有", onShare)
-        ShortcutButton(Icons.Default.Bookmark, "ブックマーク一覧", onBookmarks)
+fun RightEdgeScrollRail(onScrollToFraction: (Float) -> Unit) {
+    val density = LocalDensity.current
+    val trackHeight = 176.dp
+    val thumbHeight = 28.dp
+    val usableTrackPx = with(density) { (trackHeight - thumbHeight).toPx() }
+    var fraction by remember { mutableFloatStateOf(0f) }
+    val dragState = rememberDraggableState { delta ->
+        fraction = (fraction + delta / usableTrackPx).coerceIn(0f, 1f)
+        onScrollToFraction(fraction)
+    }
+    Box(
+        modifier = Modifier
+            .width(30.dp)
+            .height(trackHeight)
+            .clip(RoundedCornerShape(15.dp))
+            .background(Color(0x990B0E13))
+            .border(1.dp, Color(0x665A6878), RoundedCornerShape(15.dp))
+            .draggable(state = dragState, orientation = Orientation.Vertical),
+        contentAlignment = Alignment.TopCenter
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(horizontal = 4.dp)
+                .offset { IntOffset(0, (usableTrackPx * fraction).roundToInt()) }
+                .fillMaxWidth()
+                .height(thumbHeight)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF95C9FF))
+        )
     }
 }
 
 @Composable
-private fun ShortcutButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier.size(48.dp).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f), CircleShape),
-        colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.primary)
-    ) { Icon(icon, contentDescription = label) }
-}
-
-@Composable
-fun ScrollButtons(onTop: () -> Unit, onUp: () -> Unit, onDown: () -> Unit, onBottom: () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        ShortcutButton(Icons.Default.ArrowUpward, "ページ先頭", onTop)
-        ShortcutButton(Icons.Default.ArrowUpward, "上へスクロール", onUp)
-        ShortcutButton(Icons.Default.ArrowDownward, "下へスクロール", onDown)
-        ShortcutButton(Icons.Default.ArrowDownward, "ページ末尾", onBottom)
+fun HomeScreen(bookmarks: List<Bookmark>, onOpenBookmark: (Bookmark) -> Unit, onAddBookmark: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(start = 16.dp, top = 28.dp, bottom = 144.dp)
+    ) {
+        Column(horizontalAlignment = Alignment.Start) {
+            Text("HTTPS Tab Browser", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
+            Text("ブックマーク", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+        }
+        Column(
+            modifier = Modifier.align(Alignment.BottomStart),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            bookmarks.take(6).reversed().forEach { bookmark ->
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(68.dp).clickable { onOpenBookmark(bookmark) }) {
+                    Box(Modifier.size(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Bookmark, contentDescription = bookmark.title, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
+                    Text(bookmark.title.ifBlank { bookmark.url }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            IconButton(
+                onClick = onAddBookmark,
+                modifier = Modifier.size(50.dp).background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
+                colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
+            ) { Icon(Icons.Default.Add, contentDescription = "ブックマークを追加") }
+        }
     }
 }

@@ -69,7 +69,8 @@ class BrowserRepository(private val context: Context) {
                 .getOrDefault(AddressDisplayMode.URL),
             lastRequestedUrl = item.optString("lastRequestedUrl", item.optString("url")),
             canGoBack = item.optBoolean("canGoBack"),
-            canGoForward = item.optBoolean("canGoForward")
+            canGoForward = item.optBoolean("canGoForward"),
+            isHome = item.optBoolean("isHome", item.optString("url").isBlank())
         )
     }
 
@@ -102,7 +103,7 @@ class BrowserRepository(private val context: Context) {
             put("id", tab.id); put("url", tab.url); put("title", tab.title)
             put("displayText", tab.displayText); put("displayMode", tab.displayMode.name)
             put("lastRequestedUrl", tab.lastRequestedUrl); put("canGoBack", tab.canGoBack)
-            put("canGoForward", tab.canGoForward)
+            put("canGoForward", tab.canGoForward); put("isHome", tab.isHome)
         }) }
     }
 
