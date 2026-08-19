@@ -34,7 +34,7 @@ data class Bookmark(
 )
 
 data class BrowserSettings(
-    val forceDarkPages: Boolean = false,
+    val forceDarkPages: Boolean = true,
     val adBlockingEnabled: Boolean = true,
     val javascriptEnabled: Boolean = true
 )

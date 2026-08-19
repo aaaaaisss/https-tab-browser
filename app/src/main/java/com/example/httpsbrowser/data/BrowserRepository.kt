@@ -19,19 +19,30 @@ class BrowserRepository(private val context: Context) {
         val history = stringPreferencesKey("history")
         val bookmarks = stringPreferencesKey("bookmarks")
         val forceDark = booleanPreferencesKey("force_dark")
+        val forceDarkInitialized = booleanPreferencesKey("force_dark_initialized")
         val adBlock = booleanPreferencesKey("ad_block")
         val javascript = booleanPreferencesKey("javascript")
     }
 
     suspend fun load(): BrowserPersistedState {
         val preferences = context.browserDataStore.data.first()
+        // 旧版では初期値が OFF だったため、既存インストールは一度だけ ON へ移行する。
+        val forceDarkPages = if (preferences[Keys.forceDarkInitialized] == true) {
+            preferences[Keys.forceDark] ?: true
+        } else {
+            context.browserDataStore.edit { stored ->
+                stored[Keys.forceDark] = true
+                stored[Keys.forceDarkInitialized] = true
+            }
+            true
+        }
         return BrowserPersistedState(
             tabs = decodeTabs(preferences[Keys.tabs]).ifEmpty { listOf(BrowserTab()) },
             selectedTabId = preferences[Keys.selectedTab],
             history = decodeHistory(preferences[Keys.history]),
             bookmarks = decodeBookmarks(preferences[Keys.bookmarks]),
             settings = BrowserSettings(
-                forceDarkPages = preferences[Keys.forceDark] ?: false,
+                forceDarkPages = forceDarkPages,
                 adBlockingEnabled = preferences[Keys.adBlock] ?: true,
                 javascriptEnabled = preferences[Keys.javascript] ?: true
             )
@@ -45,6 +56,7 @@ class BrowserRepository(private val context: Context) {
             preferences[Keys.history] = encodeHistory(state.history.take(500)).toString()
             preferences[Keys.bookmarks] = encodeBookmarks(state.bookmarks).toString()
             preferences[Keys.forceDark] = state.settings.forceDarkPages
+            preferences[Keys.forceDarkInitialized] = true
             preferences[Keys.adBlock] = state.settings.adBlockingEnabled
             preferences[Keys.javascript] = state.settings.javascriptEnabled
         }
