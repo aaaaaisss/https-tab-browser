@@ -1,6 +1,8 @@
 package com.example.httpsbrowser.ui
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -65,6 +67,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
@@ -76,6 +81,10 @@ import com.example.httpsbrowser.data.Bookmark
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.Suggestion
 import com.example.httpsbrowser.data.SuggestionType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URI
 import kotlin.math.roundToInt
 
 private val BottomBarBlack = Color(0xFF05070A)
@@ -332,6 +341,45 @@ fun RightEdgeScrollRail(
 }
 
 @Composable
+fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
+    var favicon by remember(url) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(url) {
+        favicon = withContext(Dispatchers.IO) { loadFavicon(url) }
+    }
+    Box(
+        modifier = modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+        contentAlignment = Alignment.Center
+    ) {
+        if (favicon != null) {
+            Image(
+                bitmap = favicon!!,
+                contentDescription = "$title のサイトアイコン",
+                modifier = Modifier.fillMaxSize().padding(5.dp),
+                contentScale = ContentScale.Fit
+            )
+        } else {
+            Icon(
+                Icons.Default.Bookmark,
+                contentDescription = "$title のサイトアイコン",
+                tint = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
+    }
+}
+
+private fun loadFavicon(pageUrl: String): ImageBitmap? = runCatching {
+    val pageUri = URI(pageUrl)
+    if (!pageUri.scheme.equals("https", ignoreCase = true) || pageUri.host.isNullOrBlank()) return null
+    val faviconUri = URI("https", null, pageUri.host, pageUri.port, "/favicon.ico", null, null)
+    val connection = (faviconUri.toURL().openConnection() as HttpURLConnection).apply {
+        connectTimeout = 3_000
+        readTimeout = 3_000
+        setRequestProperty("User-Agent", "Mozilla/5.0 (Android) HTTPS-Tab-Browser/1.0")
+    }
+    connection.inputStream.use { input -> BitmapFactory.decodeStream(input)?.asImageBitmap() }
+}.getOrNull()
+
+@Composable
 fun HomeScreen(bookmarks: List<Bookmark>, onOpenBookmark: (Bookmark) -> Unit, onAddBookmark: () -> Unit) {
     Box(
         modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(start = 16.dp, top = 28.dp, bottom = 12.dp)
@@ -347,10 +395,17 @@ fun HomeScreen(bookmarks: List<Bookmark>, onOpenBookmark: (Bookmark) -> Unit, on
         ) {
             bookmarks.take(6).reversed().forEach { bookmark ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(68.dp).clickable { onOpenBookmark(bookmark) }) {
-                    Box(Modifier.size(48.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Bookmark, contentDescription = bookmark.title, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                    }
-                    Text(bookmark.title.ifBlank { bookmark.url }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                    BookmarkFavicon(
+                        url = bookmark.url,
+                        title = bookmark.title.ifBlank { bookmark.url },
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Text(
+                        bookmark.title.ifBlank { bookmark.url },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall
+                    )
                 }
             }
             IconButton(

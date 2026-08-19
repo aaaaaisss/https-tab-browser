@@ -23,12 +23,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BrowserRepository(application)
     private var persistJob: Job? = null
+    private var suggestionJob: Job? = null
 
     var uiState by mutableStateOf(BrowserUiState())
         private set
@@ -129,7 +132,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setAddressInput(value: String) {
+        val query = value.trim()
+        // まず端末内の履歴・ブックマーク候補を即時表示し、通信待ちで候補欄が消えないようにする。
         uiState = uiState.copy(addressInput = value, isAddressFocused = true, suggestions = createSuggestions(value))
+        suggestionJob?.cancel()
+        if (query.length < 2) return
+        suggestionJob = viewModelScope.launch {
+            delay(180)
+            val googleQueries = withContext(Dispatchers.IO) { fetchGoogleSuggestions(query) }
+            // 古い入力に対する応答や、編集終了後の応答では画面を上書きしない。
+            if (uiState.isAddressFocused && uiState.addressInput == value) {
+                uiState = uiState.copy(suggestions = createSuggestions(value, googleQueries))
+            }
+        }
     }
 
     fun prepareNavigation(input: String = uiState.addressInput): PreparedNavigation? {
@@ -188,7 +203,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun openSuggestion(suggestion: Suggestion): PreparedNavigation? = when (suggestion.type) {
-        SuggestionType.GOOGLE_SEARCH -> prepareNavigation(suggestion.primary)
+        SuggestionType.GOOGLE_SEARCH -> prepareNavigation(suggestion.url)
         else -> prepareNavigation(suggestion.url)
     }
 
@@ -262,7 +277,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun createSuggestions(input: String): List<Suggestion> {
+    private fun createSuggestions(input: String, googleQueries: List<String> = emptyList()): List<Suggestion> {
         val needle = input.trim().lowercase()
         if (needle.isBlank()) return emptyList()
         val results = linkedMapOf<String, Suggestion>()
@@ -275,9 +290,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         uiState.history.filter { it.title.contains(needle, true) || it.url.contains(needle, true) || it.query?.contains(needle, true) == true }.forEach {
             results.putIfAbsent(it.url, Suggestion(it.query ?: it.title, it.url, it.url, SuggestionType.HISTORY))
         }
-        results["google:$input"] = Suggestion("Google 検索: $input", "Google", input, SuggestionType.GOOGLE_SEARCH)
+        googleQueries.forEach { query ->
+            results.putIfAbsent("google:$query", Suggestion("Google 検索: $query", "Google の候補", query, SuggestionType.GOOGLE_SEARCH))
+        }
+        results.putIfAbsent("google:$input", Suggestion("Google 検索: $input", "Google", input, SuggestionType.GOOGLE_SEARCH))
         return results.values.take(8)
     }
+
+    private fun fetchGoogleSuggestions(query: String): List<String> = runCatching {
+        val encoded = URLEncoder.encode(query, Charsets.UTF_8.name())
+        val connection = (URI("https://suggestqueries.google.com/complete/search?client=firefox&q=$encoded")
+            .toURL().openConnection() as HttpURLConnection).apply {
+            connectTimeout = 3_000
+            readTimeout = 3_000
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Android) HTTPS-Tab-Browser/1.0")
+        }
+        connection.inputStream.bufferedReader().use { reader ->
+            val array = JSONArray(reader.readText())
+            val suggestions = array.optJSONArray(1) ?: JSONArray()
+            List(suggestions.length()) { index -> suggestions.optString(index).trim() }
+                .filter(String::isNotBlank)
+                .distinct()
+                .take(6)
+        }
+    }.getOrDefault(emptyList())
 
     private fun buildNavigation(input: String): PreparedNavigation? {
         val value = input.trim()

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -158,6 +159,13 @@ object BrowserSheets {
                     modifier = Modifier.clickable { onOpenUrl(bookmark.url) },
                     headlineContent = { Text(bookmark.title.ifBlank { bookmark.url }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text(bookmark.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    leadingContent = {
+                        BookmarkFavicon(
+                            url = bookmark.url,
+                            title = bookmark.title.ifBlank { bookmark.url },
+                            modifier = Modifier.size(40.dp).padding(3.dp)
+                        )
+                    },
                     trailingContent = {
                         Row {
                             IconButton(onClick = { editing = bookmark }) { Icon(Icons.Default.Edit, "ブックマークを編集") }

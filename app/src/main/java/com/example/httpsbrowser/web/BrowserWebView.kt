@@ -107,9 +107,17 @@ class BrowserWebViewRegistry(
         }
     }.apply {
         setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        setLayerType(View.LAYER_TYPE_HARDWARE, null)
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            // 一部の Google/YouTube 埋め込みが WebView 専用表示で白画面になるのを避ける。
+            userAgentString = userAgentString.replace("; wv", "")
+            // モバイル向けページの viewport を端末幅へ合わせ、動画・Shorts の左右切れを防ぐ。
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            builtInZoomControls = false
+            displayZoomControls = false
             databaseEnabled = false
             allowFileAccess = false
             allowContentAccess = false
