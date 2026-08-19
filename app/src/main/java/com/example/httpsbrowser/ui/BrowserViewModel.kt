@@ -215,7 +215,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun addBookmark(title: String, url: String): Boolean {
         val prepared = buildNavigation(url) ?: return false
         val existing = uiState.bookmarks.firstOrNull { it.url == prepared.url }
-        val bookmark = Bookmark(id = existing?.id ?: Bookmark().id, title = title.trim().ifBlank { prepared.displayText.ifBlank { prepared.url } }, url = prepared.url, createdAt = existing?.createdAt ?: System.currentTimeMillis())
+        val bookmark = Bookmark(id = existing?.id ?: java.util.UUID.randomUUID().toString(), title = title.trim().ifBlank { prepared.displayText.ifBlank { prepared.url } }, url = prepared.url, createdAt = existing?.createdAt ?: System.currentTimeMillis())
         uiState = uiState.copy(bookmarks = listOf(bookmark) + uiState.bookmarks.filterNot { it.id == bookmark.id })
         persistSoon()
         return true
