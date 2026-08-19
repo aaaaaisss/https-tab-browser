@@ -247,11 +247,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     /** シークレット切替は既存の通常タブを変換せず、専用の非履歴タブを選択または作成する。 */
     fun switchToPrivateTab() {
-        uiState.tabs.lastOrNull { it.isPrivate }?.let(::selectTab) ?: addTab(isPrivate = true)
+        uiState.tabs.lastOrNull { it.isPrivate }?.let { selectTab(it.id) } ?: addTab(isPrivate = true)
     }
 
     fun switchToNormalTab() {
-        uiState.tabs.lastOrNull { !it.isPrivate }?.let(::selectTab) ?: addTab()
+        uiState.tabs.lastOrNull { !it.isPrivate }?.let { selectTab(it.id) } ?: addTab()
     }
 
     fun isPrivateTab(tabId: String): Boolean = uiState.tabs.firstOrNull { it.id == tabId }?.isPrivate == true
