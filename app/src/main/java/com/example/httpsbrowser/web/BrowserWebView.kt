@@ -129,7 +129,7 @@ class BrowserWebViewRegistry(
             loadWithOverviewMode = false
             builtInZoomControls = true
             displayZoomControls = false
-            supportZoom = true
+            setSupportZoom(true)
             databaseEnabled = false
             allowFileAccess = false
             allowContentAccess = false
