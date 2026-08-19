@@ -211,12 +211,25 @@ object BrowserSheets {
     private fun AdBlockPage(listRepository: AdBlockListRepository, onBack: () -> Unit, onNotice: (String) -> Unit) {
         val scope = rememberCoroutineScope()
         var sources by remember { mutableStateOf<List<BlockListSource>>(emptyList()) }
+        var status by remember { mutableStateOf(listRepository.blockStatus()) }
         var creating by remember { mutableStateOf(false) }
         var editing by remember { mutableStateOf<BlockListSource?>(null) }
-        LaunchedEffect(Unit) { sources = listRepository.loadAndCompile() }
+        LaunchedEffect(Unit) {
+            sources = listRepository.loadAndCompile()
+            status = listRepository.blockStatus()
+        }
         PageHeader("広告ブロック", onBack, actionLabel = "追加") { creating = true }
         LazyColumn(Modifier.padding(bottom = 24.dp)) {
-            item { Text("HTTPS URL のリストだけを登録できます。", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
+            item {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
+                    Text("今日の遮断件数: ${status.blockedToday} 件", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "有効な URL 規則: ${status.networkRuleCount} 件 / CSS 非表示規則: ${status.cosmeticRuleCount} 件",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text("HTTPS URL のリストだけを登録できます。", style = MaterialTheme.typography.bodySmall)
+                }
+            }
             if (sources.isEmpty()) item { EmptyRow("広告ブロックリストはまだありません。") }
             items(sources, key = { it.id }) { source ->
                 ListItem(
@@ -225,11 +238,19 @@ object BrowserSheets {
                     trailingContent = {
                         Row {
                             Switch(checked = source.enabled, onCheckedChange = { enabled ->
-                                scope.launch { listRepository.setEnabled(source.id, enabled); sources = listRepository.loadAndCompile() }
+                                scope.launch {
+                                    listRepository.setEnabled(source.id, enabled)
+                                    sources = listRepository.loadAndCompile()
+                                    status = listRepository.blockStatus()
+                                }
                             })
                             IconButton(onClick = { editing = source }) { Icon(Icons.Default.Edit, "リストを編集") }
                             IconButton(onClick = {
-                                scope.launch { listRepository.remove(source.id); sources = listRepository.loadAndCompile() }
+                                scope.launch {
+                                    listRepository.remove(source.id)
+                                    sources = listRepository.loadAndCompile()
+                                    status = listRepository.blockStatus()
+                                }
                             }) { Icon(Icons.Default.Delete, "リストを削除") }
                         }
                     }
@@ -239,7 +260,7 @@ object BrowserSheets {
         if (creating) AdBlockEditorDialog("広告ブロックリストを追加", "", "", onDismiss = { creating = false }) { name, url ->
             scope.launch {
                 listRepository.addOrUpdate(name, url).onSuccess { source ->
-                    sources = listRepository.loadAndCompile(); creating = false; onNotice("リストを追加しました: ${source.name}")
+                    sources = listRepository.loadAndCompile(); status = listRepository.blockStatus(); creating = false; onNotice("リストを追加しました: ${source.name}")
                 }.onFailure { onNotice(it.message ?: "リストを登録できませんでした。") }
             }
         }
@@ -247,7 +268,7 @@ object BrowserSheets {
             AdBlockEditorDialog("広告ブロックリストを編集", source.name, source.sourceUrl, onDismiss = { editing = null }) { name, url ->
                 scope.launch {
                     listRepository.update(source.id, name, url).onSuccess { updated ->
-                        sources = listRepository.loadAndCompile(); editing = null; onNotice("リストを更新しました: ${updated.name}")
+                        sources = listRepository.loadAndCompile(); status = listRepository.blockStatus(); editing = null; onNotice("リストを更新しました: ${updated.name}")
                     }.onFailure { onNotice(it.message ?: "リストを更新できませんでした。") }
                 }
             }

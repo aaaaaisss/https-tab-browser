@@ -363,7 +363,7 @@ class BrowserWebViewRegistry(
                 CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
             }
             (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
-            entries[tabId]?.callbacks?.onDownloadStarted(fileName)
+            entries[tabId]?.callbacks?.onDownloadStarted(fileName, "Downloads/$fileName")
         }
     }
 
@@ -425,7 +425,7 @@ interface BrowserWebCallbacks {
     fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit)
     fun onPopupRequested(): String?
     fun onLinkLongPressed(url: String)
-    fun onDownloadStarted(fileName: String)
+    fun onDownloadStarted(fileName: String, destination: String)
     fun onExternalAppRequested(url: String)
     fun onPageInteraction()
     fun onNotice(message: String)
@@ -447,7 +447,7 @@ interface BrowserWebCallbacks {
         override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = reply(false)
         override fun onPopupRequested(): String? = null
         override fun onLinkLongPressed(url: String) = Unit
-        override fun onDownloadStarted(fileName: String) = Unit
+        override fun onDownloadStarted(fileName: String, destination: String) = Unit
         override fun onExternalAppRequested(url: String) = Unit
         override fun onPageInteraction() = Unit
         override fun onNotice(message: String) = Unit

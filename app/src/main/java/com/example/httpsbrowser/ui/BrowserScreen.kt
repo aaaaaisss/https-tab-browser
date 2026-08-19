@@ -69,7 +69,7 @@ private data class FullscreenContent(
 fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val blocker = remember { com.example.httpsbrowser.data.UrlRuleBlocker() }
+    val blocker = remember { com.example.httpsbrowser.data.UrlRuleBlocker(context.applicationContext) }
     val registry = remember { BrowserWebViewRegistry(context.applicationContext, blocker) }
     val listRepository = remember { AdBlockListRepository(context.applicationContext, blocker) }
     val state = viewModel.uiState
@@ -383,7 +383,8 @@ private fun callbacksFor(
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab().id
     override fun onLinkLongPressed(url: String) = onLongPress(url)
-    override fun onDownloadStarted(fileName: String) = showNotice("ダウンロードを開始しました: $fileName")
+    override fun onDownloadStarted(fileName: String, destination: String) =
+        showNotice("ダウンロードを開始しました: $fileName（保存先: $destination）")
     override fun onExternalAppRequested(url: String) = onExternalApp(url)
     override fun onPageInteraction() = viewModel.stopAddressEditing()
     override fun onNotice(message: String) = showNotice(message)

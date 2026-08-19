@@ -15,6 +15,8 @@ android {
         // GitHub Actions の連番で更新順序を管理する。
         versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = System.getenv("VERSION_NAME") ?: "1.0.0"
+        // 端末用 APK にエミュレータ専用の x86 / x86_64 ネイティブコードを入れない。
+        ndk { abiFilters += setOf("arm64-v8a", "armeabi-v7a") }
     }
 
     signingConfigs {

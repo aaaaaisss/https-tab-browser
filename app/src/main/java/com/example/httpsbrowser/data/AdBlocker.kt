@@ -1,6 +1,7 @@
 package com.example.httpsbrowser.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -18,6 +19,9 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.time.LocalDate
+import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 data class BlockListSource(
@@ -30,16 +34,65 @@ data class BlockListSource(
 )
 
 /** EasyList/ABP 構文のネットワーク規則サブセット（||domain^、|https://、部分文字列）を扱う。 */
-class UrlRuleBlocker {
+class UrlRuleBlocker(context: Context? = null) {
     private val rules = AtomicReference(RuleSet())
+    private val statistics: SharedPreferences? = context?.applicationContext?.getSharedPreferences(STATISTICS_FILE, Context.MODE_PRIVATE)
+    private val blockedToday = AtomicInteger(readStoredBlockedCount())
+    private val statisticsLock = Any()
 
     fun shouldBlock(url: String): Boolean {
         val target = runCatching { URI(url) }.getOrNull() ?: return false
         val host = target.host?.lowercase().orEmpty()
         val set = rules.get()
         if (matchesDomainSet(host, set.allowDomains) || set.allowOther.any { it.matches(target, url) }) return false
-        return matchesDomainSet(host, set.blockDomains) || set.blockOther.any { it.matches(target, url) }
+        val blocked = matchesDomainSet(host, set.blockDomains) || set.blockOther.any { it.matches(target, url) }
+        if (blocked) recordBlockedRequest()
+        return blocked
     }
+
+    /** 設定画面で、今日の実際の遮断数とコンパイル済み規則数を確認する。 */
+    fun status(): AdBlockStatus {
+        resetCounterIfNewDay()
+        val set = rules.get()
+        return AdBlockStatus(
+            blockedToday = blockedToday.get(),
+            networkRuleCount = set.blockDomains.size + set.blockOther.size,
+            cosmeticRuleCount = set.cosmeticRules.size
+        )
+    }
+
+    private fun readStoredBlockedCount(): Int {
+        val preferences = statistics ?: return 0
+        return if (preferences.getString(STATISTICS_DAY_KEY, "") == localDayKey()) {
+            preferences.getInt(STATISTICS_COUNT_KEY, 0)
+        } else {
+            preferences.edit().putString(STATISTICS_DAY_KEY, localDayKey()).putInt(STATISTICS_COUNT_KEY, 0).apply()
+            0
+        }
+    }
+
+    private fun recordBlockedRequest() {
+        synchronized(statisticsLock) {
+            resetCounterIfNewDay()
+            val count = blockedToday.incrementAndGet()
+            statistics?.edit()?.putString(STATISTICS_DAY_KEY, localDayKey())?.putInt(STATISTICS_COUNT_KEY, count)?.apply()
+        }
+    }
+
+    private fun resetCounterIfNewDay() {
+        val preferences = statistics ?: return
+        val today = localDayKey()
+        if (preferences.getString(STATISTICS_DAY_KEY, "") != today) {
+            synchronized(statisticsLock) {
+                if (preferences.getString(STATISTICS_DAY_KEY, "") != today) {
+                    blockedToday.set(0)
+                    preferences.edit().putString(STATISTICS_DAY_KEY, today).putInt(STATISTICS_COUNT_KEY, 0).apply()
+                }
+            }
+        }
+    }
+
+    private fun localDayKey(): String = LocalDate.now(ZoneId.systemDefault()).toString()
 
     /** 現在のページだけに適用する、リスト由来の安全な CSS 非表示規則を返す。 */
     fun cosmeticCssFor(pageUrl: String): String {
@@ -113,6 +166,9 @@ class UrlRuleBlocker {
 
     private companion object {
         const val MAX_COSMETIC_RULES = 4_000
+        const val STATISTICS_FILE = "adblock_statistics"
+        const val STATISTICS_DAY_KEY = "day"
+        const val STATISTICS_COUNT_KEY = "blocked_count"
         const val MAX_COSMETIC_SELECTORS_PER_PAGE = 450
         val FALLBACK_COSMETIC_SELECTORS = listOf(
             "ins.adsbygoogle", "[data-ad-client]", "[data-ad-slot]", "[id^='google_ads']",
@@ -121,6 +177,12 @@ class UrlRuleBlocker {
         )
     }
 }
+
+data class AdBlockStatus(
+    val blockedToday: Int,
+    val networkRuleCount: Int,
+    val cosmeticRuleCount: Int
+)
 
 private sealed interface UrlRule {
     fun matches(uri: URI, rawUrl: String): Boolean
@@ -171,6 +233,9 @@ class AdBlockListRepository(
         blocker.replaceRules(allLines)
         sources
     }
+
+    /** コンパイル済み規則と実際の遮断数を設定画面で表示するための状態を返す。 */
+    fun blockStatus(): AdBlockStatus = blocker.status()
 
     /** 初回導入時に公式・HTTPS の標準リストだけを登録する。ユーザー追加リストは触らない。 */
     suspend fun ensureStandardLists(): List<BlockListSource> = withContext(Dispatchers.IO) {

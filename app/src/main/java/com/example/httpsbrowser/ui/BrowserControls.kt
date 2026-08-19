@@ -9,6 +9,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,13 +49,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -75,10 +75,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.httpsbrowser.data.Bookmark
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.Suggestion
@@ -94,7 +96,6 @@ private val BottomBarButton = Color(0xFF1C2531)
 private val BottomBarButtonEmphasis = Color(0xFF2C5C92)
 private val BottomBarText = Color(0xFFF2F6FC)
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddressBar(
     value: String,
@@ -108,55 +109,52 @@ fun AddressBar(
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
-    var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
 
     LaunchedEffect(value) {
         if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
     }
     LaunchedEffect(isEditing) {
         if (isEditing) {
-            textFieldValue = TextFieldValue(value, TextRange(0, value.length))
+            // URL バーをタップしても全選択せず、カーソルを末尾に置く。
+            if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
             focusRequester.requestFocus()
         } else {
             focusManager.clearFocus(force = true)
         }
     }
 
-    Column(
-        Modifier.fillMaxWidth().background(BottomBarBlack).padding(horizontal = 6.dp, vertical = 2.dp)
-    ) {
+    Column(Modifier.fillMaxWidth().background(BottomBarBlack).padding(horizontal = 6.dp, vertical = 2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
+            BasicTextField(
                 value = textFieldValue,
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
-                modifier = Modifier.weight(1f).height(48.dp).focusRequester(focusRequester).onFocusChanged { focus ->
-                    if (focus.isFocused && !isEditing) onEditingStarted()
-                },
-                shape = RoundedCornerShape(50),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = Color(0xFF505050),
-                    unfocusedContainerColor = Color(0xFF404040),
-                    focusedBorderColor = Color.Transparent,
-                    unfocusedBorderColor = Color.Transparent,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedPlaceholderColor = Color(0xFFD0D0D0),
-                    unfocusedPlaceholderColor = Color(0xFFD0D0D0),
-                    focusedLeadingIconColor = Color.White,
-                    unfocusedLeadingIconColor = Color.White,
-                    focusedTrailingIconColor = Color.White,
-                    unfocusedTrailingIconColor = Color.White
-                ),
+                modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
+                    .focusRequester(focusRequester).onFocusChanged { focus ->
+                        if (focus.isFocused && !isEditing) onEditingStarted()
+                    },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
+                cursorBrush = SolidColor(Color.White),
                 singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Google 検索または HTTPS URL を入力") },
-                trailingIcon = {
-                    if (textFieldValue.text.isNotBlank()) IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(34.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "入力を消去")
+                keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+                decorationBox = { innerTextField ->
+                    Row(
+                        modifier = Modifier.fillMaxSize().padding(start = 10.dp, end = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Search, contentDescription = "Google 検索または HTTPS URL を入力", modifier = Modifier.size(18.dp), tint = Color.White)
+                        Box(modifier = Modifier.weight(1f).padding(horizontal = 7.dp)) {
+                            if (textFieldValue.text.isBlank()) Text("Google 検索または HTTPS URL", color = Color(0xFFD0D0D0), fontSize = 13.sp, maxLines = 1)
+                            innerTextField()
+                        }
+                        if (textFieldValue.text.isNotBlank()) {
+                            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
+                            }
+                        }
                     }
-                },
-                placeholder = { Text("Google 検索または HTTPS URL") },
-                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit() })
+                }
             )
             IconButton(
                 onClick = onTranslate,
