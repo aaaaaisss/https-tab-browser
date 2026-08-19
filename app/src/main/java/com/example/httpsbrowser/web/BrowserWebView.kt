@@ -26,6 +26,7 @@ import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.UrlRuleBlocker
 import java.io.ByteArrayInputStream
+import java.io.File
 import org.json.JSONObject
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
@@ -69,6 +70,18 @@ class BrowserWebViewRegistry(
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
     fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
         pageTranslator.translatePage(entry.webView) { message -> entry.callbacks.onNotice(message) }
+    }
+
+    /** 現ページを MHTML として一時保存し、UI 側でユーザーが選んだ保存先へ書き出す。 */
+    fun savePageArchive(tabId: String, title: String) = entries[tabId]?.let { entry ->
+        val archiveDirectory = File(context.cacheDir, "page_archives").apply { mkdirs() }
+        val baseName = title.ifBlank { "page" }.replace(Regex("[^A-Za-z0-9._-]+"), "_").take(64).ifBlank { "page" }
+        val target = File(archiveDirectory, "${baseName}_${System.currentTimeMillis()}.mht")
+        entry.webView.saveWebArchive(target.absolutePath, false) { savedPath ->
+            val archive = savedPath?.let(::File)?.takeIf { it.exists() && it.length() > 0L }
+            if (archive != null) entry.callbacks.onPageArchiveReady(archive.absolutePath, archive.name)
+            else entry.callbacks.onNotice("ページを保存できませんでした。読み込み完了後にもう一度お試しください。")
+        }
     }
     fun goForward(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoForward() }?.goForward()
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
@@ -122,8 +135,8 @@ class BrowserWebViewRegistry(
             domStorageEnabled = true
             // 一部の Google/YouTube 埋め込みが WebView 専用表示で白画面になるのを避ける。
             userAgentString = userAgentString.replace("; wv", "")
-            // 常にモバイル viewport を優先し、YouTube/Shorts や動画 iframe の縮尺崩れを避ける。
-            useWideViewPort = false
+            // モバイルサイトの viewport meta を尊重し、YouTube/Shorts を端末幅の縦長レイアウトで描画する。
+            useWideViewPort = true
             loadWithOverviewMode = false
             builtInZoomControls = true
             displayZoomControls = false
@@ -136,7 +149,8 @@ class BrowserWebViewRegistry(
             mediaPlaybackRequiresUserGesture = false
             safeBrowsingEnabled = true
         }
-        // YouTube を含む HTTPS サイトが利用する埋め込みプレーヤーと同意画面に必要な Cookie を許可する。
+        // ログイン状態と埋め込みプレーヤーの認証をアプリ内で維持する。
+        CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         webViewClient = SecureClient(tabId)
         webChromeClient = SecureChromeClient(tabId)
@@ -198,6 +212,28 @@ class BrowserWebViewRegistry(
         view.evaluateJavascript(script, null)
     }
 
+    /** 映像そのものを反転せず、YouTube のネイティブな dark 属性を要求する。 */
+    private fun applyYoutubeDarkTheme(view: WebView, url: String, enabled: Boolean) {
+        if (!isYoutubePlaybackResource(url)) return
+        val script = if (enabled) """
+            (function() {
+              var root = document.documentElement;
+              if (!root) return;
+              root.setAttribute('dark', '');
+              root.style.colorScheme = 'dark';
+              var meta = document.querySelector('meta[name="color-scheme"]');
+              if (!meta) { meta = document.createElement('meta'); meta.name = 'color-scheme'; document.head && document.head.appendChild(meta); }
+              if (meta) meta.content = 'dark';
+            })();
+        """.trimIndent() else """
+            (function() {
+              var root = document.documentElement;
+              if (root) { root.removeAttribute('dark'); root.style.removeProperty('color-scheme'); }
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(script, null)
+    }
+
     private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
         val script = if (enabled) """
             (function() {
@@ -242,9 +278,10 @@ class BrowserWebViewRegistry(
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
             val entry = entries[tabId] ?: return null
             val url = request.url.toString()
-            // YouTube の動画ストリームとプレーヤー必須リソースは、単純化した URL ルールの
-            // 過剰ブロックから保護する。広告以外の通常リソースは従来どおりブロックする。
-            if (entry.settings.adBlockingEnabled && !isYoutubePlaybackResource(url) && blocker.shouldBlock(url)) {
+            // YouTube の動画・画像ストリームだけを保護し、それ以外の YouTube ページ内広告・
+            // 追跡リソースには AdGuard URL 規則を適用する。映像ストリームは通常動画と広告動画を
+            // URL だけで安全に区別できないため、再生を壊すブロックは行わない。
+            if (entry.settings.adBlockingEnabled && !isYoutubeCoreMediaResource(url) && blocker.shouldBlock(url)) {
                 return WebResourceResponse(
                     "text/plain", "utf-8", 204, "No Content",
                     mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0))
@@ -264,6 +301,7 @@ class BrowserWebViewRegistry(
             val entry = entries[tabId]
             // 初回描画の時点で黒背景を注入し、読み込み完了まで白く見える時間を短くする。
             applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
+            applyYoutubeDarkTheme(view, url, entry?.settings?.forceDarkPages == true)
             applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             super.onPageCommitVisible(view, url)
         }
@@ -271,7 +309,9 @@ class BrowserWebViewRegistry(
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
             applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
+            applyYoutubeDarkTheme(view, url, entry?.settings?.forceDarkPages == true)
             applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
+            CookieManager.getInstance().flush()
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
         }
@@ -398,6 +438,13 @@ class BrowserWebViewRegistry(
             host == "youtubei.googleapis.com"
     }
 
+    /** 動画本体・サムネイルは通常映像と広告映像を URL 規則だけで判別できないため保護する。 */
+    private fun isYoutubeCoreMediaResource(url: String): Boolean {
+        val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "googlevideo.com" || host.endsWith(".googlevideo.com") ||
+            host == "ytimg.com" || host.endsWith(".ytimg.com")
+    }
+
     private fun upgradeToHttps(url: String): String? = runCatching {
         val uri = URI(url)
         when (uri.scheme?.lowercase()) {
@@ -426,6 +473,7 @@ interface BrowserWebCallbacks {
     fun onPopupRequested(): String?
     fun onLinkLongPressed(url: String)
     fun onDownloadStarted(fileName: String, destination: String)
+    fun onPageArchiveReady(sourcePath: String, fileName: String)
     fun onExternalAppRequested(url: String)
     fun onPageInteraction()
     fun onNotice(message: String)
@@ -448,6 +496,7 @@ interface BrowserWebCallbacks {
         override fun onPopupRequested(): String? = null
         override fun onLinkLongPressed(url: String) = Unit
         override fun onDownloadStarted(fileName: String, destination: String) = Unit
+        override fun onPageArchiveReady(sourcePath: String, fileName: String) = Unit
         override fun onExternalAppRequested(url: String) = Unit
         override fun onPageInteraction() = Unit
         override fun onNotice(message: String) = Unit

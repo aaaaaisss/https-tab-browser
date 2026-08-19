@@ -3,9 +3,11 @@ package com.example.httpsbrowser.ui
 import android.graphics.BitmapFactory
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -54,6 +56,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -226,6 +229,7 @@ fun NavigationRow(
     onBookmark: () -> Unit,
     onHistory: () -> Unit,
     onDownloads: () -> Unit,
+    onSavePage: () -> Unit,
     onShare: () -> Unit,
     onSettings: () -> Unit
 ) {
@@ -242,9 +246,10 @@ fun NavigationRow(
         Box {
             NavButton(Icons.Default.Menu, "メニュー", { menuExpanded = true })
             DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                DropdownMenuItem(text = { Text("ブックマーク") }, leadingIcon = { Icon(Icons.Default.Bookmark, null) }, onClick = { menuExpanded = false; onBookmark() })
+                DropdownMenuItem(text = { Text("ホームに追加") }, leadingIcon = { Icon(Icons.Default.Bookmark, null) }, onClick = { menuExpanded = false; onBookmark() })
                 DropdownMenuItem(text = { Text("履歴") }, leadingIcon = { Icon(Icons.Default.History, null) }, onClick = { menuExpanded = false; onHistory() })
                 DropdownMenuItem(text = { Text("ダウンロード") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onDownloads() })
+                DropdownMenuItem(text = { Text("ページを保存") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onSavePage() })
                 DropdownMenuItem(text = { Text("共有") }, leadingIcon = { Icon(Icons.Default.Share, null) }, onClick = { menuExpanded = false; onShare() })
                 DropdownMenuItem(text = { Text("設定") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { menuExpanded = false; onSettings() })
             }
@@ -405,13 +410,46 @@ private fun loadFavicon(pageUrl: String): ImageBitmap? = runCatching {
     connection.inputStream.use { input -> BitmapFactory.decodeStream(input)?.asImageBitmap() }
 }.getOrNull()
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HomeScreen(bookmarks: List<Bookmark>, onOpenBookmark: (Bookmark) -> Unit, onAddBookmark: () -> Unit) {
-    val cells = bookmarks.take(24).map { HomeCell.BookmarkCell(it) } + HomeCell.AddCell
+fun HomeScreen(
+    bookmarks: List<Bookmark>,
+    onOpenBookmark: (Bookmark) -> Unit,
+    onAddBookmark: () -> Unit,
+    onEditBookmark: (Bookmark) -> Unit,
+    onDeleteBookmarks: (Set<String>) -> Unit,
+    onMoveBookmarks: (Set<String>, Boolean) -> Unit
+) {
+    var editMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(bookmarks) {
+        selectedIds = selectedIds.intersect(bookmarks.map { it.id }.toSet())
+    }
+    val bookmarkCells: List<HomeCell> = bookmarks.take(24).map { HomeCell.BookmarkCell(it) }
+    val cells: List<HomeCell> = if (editMode) bookmarkCells else bookmarkCells + HomeCell.AddCell
     val rows = cells.chunked(4)
-    Box(
-        modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)
-    ) {
+
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
+        if (editMode) {
+            Column(
+                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFF1E2733)).padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text("ブックマークを選択: ${selectedIds.size} 件", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        enabled = selectedIds.size == 1,
+                        onClick = { bookmarks.firstOrNull { it.id in selectedIds }?.let(onEditBookmark) }
+                    ) { Text("編集") }
+                    TextButton(enabled = selectedIds.isNotEmpty(), onClick = {
+                        onDeleteBookmarks(selectedIds)
+                        selectedIds = emptySet()
+                    }) { Text("削除") }
+                    TextButton(enabled = selectedIds.isNotEmpty(), onClick = { onMoveBookmarks(selectedIds, false) }) { Text("右下へ") }
+                    TextButton(enabled = selectedIds.isNotEmpty(), onClick = { onMoveBookmarks(selectedIds, true) }) { Text("左上へ") }
+                    TextButton(onClick = { editMode = false; selectedIds = emptySet() }) { Text("完了") }
+                }
+            }
+        }
         Column(
             modifier = Modifier.align(Alignment.BottomEnd),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -421,22 +459,37 @@ fun HomeScreen(bookmarks: List<Bookmark>, onOpenBookmark: (Bookmark) -> Unit, on
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     row.reversed().forEach { cell ->
                         when (cell) {
-                            is HomeCell.BookmarkCell -> Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.width(64.dp).clickable { onOpenBookmark(cell.bookmark) }
-                            ) {
-                                BookmarkFavicon(
-                                    url = cell.bookmark.url,
-                                    title = cell.bookmark.title.ifBlank { cell.bookmark.url },
-                                    modifier = Modifier.size(46.dp)
-                                )
-                                Text(
-                                    cell.bookmark.title.ifBlank { cell.bookmark.url },
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    style = MaterialTheme.typography.labelSmall
-                                )
+                            is HomeCell.BookmarkCell -> {
+                                val selected = cell.bookmark.id in selectedIds
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.width(64.dp).clip(RoundedCornerShape(10.dp))
+                                        .then(if (selected) Modifier.border(2.dp, Color(0xFF7EC8FF), RoundedCornerShape(10.dp)) else Modifier)
+                                        .combinedClickable(
+                                            onClick = {
+                                                if (editMode) {
+                                                    selectedIds = if (selected) selectedIds - cell.bookmark.id else selectedIds + cell.bookmark.id
+                                                } else onOpenBookmark(cell.bookmark)
+                                            },
+                                            onLongClick = {
+                                                editMode = true
+                                                selectedIds = selectedIds + cell.bookmark.id
+                                            }
+                                        )
+                                ) {
+                                    BookmarkFavicon(
+                                        url = cell.bookmark.url,
+                                        title = cell.bookmark.title.ifBlank { cell.bookmark.url },
+                                        modifier = Modifier.size(46.dp)
+                                    )
+                                    Text(
+                                        cell.bookmark.title.ifBlank { cell.bookmark.url },
+                                        color = Color.White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
                             }
                             HomeCell.AddCell -> Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,

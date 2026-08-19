@@ -71,15 +71,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistSoon()
     }
 
-    fun addTab(url: String = ""): BrowserTab {
+    fun addTab(url: String = "", isPrivate: Boolean = false): BrowserTab {
         val prepared = if (url.isBlank()) null else buildNavigation(url)
-        val tab = if (prepared == null) homeTab() else BrowserTab(
+        val tab = if (prepared == null) homeTab(isPrivate) else BrowserTab(
             url = prepared.url,
             title = prepared.displayText.ifBlank { "新しいタブ" },
             displayText = prepared.displayText,
             displayMode = prepared.displayMode,
             lastRequestedUrl = prepared.url,
-            isHome = false
+            isHome = false,
+            isPrivate = isPrivate
         )
         uiState = uiState.copy(
             tabs = uiState.tabs + tab,
@@ -200,6 +201,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun onPageStarted(tabId: String, url: String) {
         if (!isHttps(url)) return
         updateTab(tabId) { it.copy(lastRequestedUrl = url, isHome = false) }
+        // リンク、戻る、キーボード検索を含むすべての遷移で候補とキーボードを閉じる。
+        if (uiState.selectedTabId == tabId) {
+            suggestionJob?.cancel()
+            uiState = uiState.copy(isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
+        }
     }
 
     fun onPageFinished(tabId: String, url: String, title: String?) {
@@ -215,8 +221,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
         }
         val tab = uiState.tabs.firstOrNull { it.id == tabId } ?: return
-        val entry = HistoryEntry(title = tab.title, url = url, query = tab.displayText.takeIf { tab.displayMode == AddressDisplayMode.SEARCH })
-        uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
+        if (!tab.isPrivate) {
+            val entry = HistoryEntry(title = tab.title, url = url, query = tab.displayText.takeIf { tab.displayMode == AddressDisplayMode.SEARCH })
+            uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
+        }
         if (uiState.selectedTabId == tabId && !uiState.isAddressFocused) uiState = uiState.copy(addressInput = tab.displayText)
         persistSoon()
     }
@@ -236,6 +244,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun toggleTabSheet() { uiState = uiState.copy(isTabSheetVisible = !uiState.isTabSheetVisible) }
+
+    /** シークレット切替は既存の通常タブを変換せず、専用の非履歴タブを選択または作成する。 */
+    fun switchToPrivateTab() {
+        uiState.tabs.lastOrNull { it.isPrivate }?.let(::selectTab) ?: addTab(isPrivate = true)
+    }
+
+    fun switchToNormalTab() {
+        uiState.tabs.lastOrNull { !it.isPrivate }?.let(::selectTab) ?: addTab()
+    }
+
+    fun isPrivateTab(tabId: String): Boolean = uiState.tabs.firstOrNull { it.id == tabId }?.isPrivate == true
 
     fun openSettings(page: SettingsPage = SettingsPage.ROOT) {
         suggestionJob?.cancel()
@@ -274,12 +293,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         return true
     }
 
-    fun removeBookmark(id: String) {
-        uiState = uiState.copy(bookmarks = uiState.bookmarks.filterNot { it.id == id })
+    fun removeBookmark(id: String) = removeBookmarks(setOf(id))
+
+    fun removeBookmarks(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        uiState = uiState.copy(bookmarks = uiState.bookmarks.filterNot { it.id in ids })
+        persistSoon()
+    }
+
+    /** グリッドの右下側（リスト先頭）または左上側（リスト末尾）へ選択項目をまとめて移動する。 */
+    fun moveBookmarks(ids: Set<String>, toEnd: Boolean) {
+        if (ids.isEmpty()) return
+        val selected = uiState.bookmarks.filter { it.id in ids }
+        val remaining = uiState.bookmarks.filterNot { it.id in ids }
+        if (selected.isEmpty()) return
+        uiState = uiState.copy(bookmarks = if (toEnd) remaining + selected else selected + remaining)
         persistSoon()
     }
 
     fun isBookmarked(url: String): Boolean = url.isNotBlank() && uiState.bookmarks.any { it.url == url }
+
+    fun removeHistory(id: String) {
+        uiState = uiState.copy(history = uiState.history.filterNot { it.id == id })
+        persistSoon()
+    }
 
     fun clearBrowsingData(onDone: () -> Unit) {
         viewModelScope.launch {
@@ -309,20 +346,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun createSuggestions(input: String, googleQueries: List<String> = emptyList()): List<Suggestion> {
         val needle = input.trim()
         if (needle.isBlank()) return emptyList()
+        // reverseLayout の候補パネルでは先頭要素が最下部に表示されるため、
+        // この順序を「下側ほど高優先度」として定義する。
         val results = linkedMapOf<String, Suggestion>()
+        // Google 検索として保存された履歴だけから、入力先頭が一致する最新1件を最優先にする。
+        uiState.history.firstOrNull { entry -> entry.query?.startsWith(needle, ignoreCase = true) == true }?.let { entry ->
+            results.putIfAbsent(entry.url, Suggestion(entry.query.orEmpty(), "", entry.query.orEmpty(), SuggestionType.HISTORY))
+        }
         uiState.tabs.filter { !it.isHome && (it.title.contains(needle, true) || it.url.contains(needle, true)) }.forEach {
             results.putIfAbsent(it.url, Suggestion(it.title, it.url, it.url, SuggestionType.OPEN_TAB))
         }
         uiState.bookmarks.filter { it.title.contains(needle, true) || it.url.contains(needle, true) }.forEach {
             results.putIfAbsent(it.url, Suggestion(it.title, it.url, it.url, SuggestionType.BOOKMARK))
         }
-        // Google 検索として保存された履歴だけから、入力先頭が一致する最新1件を候補にする。
-        uiState.history.firstOrNull { entry -> entry.query?.startsWith(needle, ignoreCase = true) == true }?.let { entry ->
-            results.putIfAbsent(entry.url, Suggestion(entry.query.orEmpty(), "", entry.query.orEmpty(), SuggestionType.HISTORY))
-        }
         googleQueries.forEach { query ->
             results.putIfAbsent("google:$query", Suggestion(query, "", query, SuggestionType.GOOGLE_SEARCH))
         }
+        // 自分が入力した語だけで検索する候補は、補完候補より低優先として最上部に置く。
         results.putIfAbsent("google:$needle", Suggestion(needle, "", needle, SuggestionType.GOOGLE_SEARCH))
         return results.values.take(10)
     }
@@ -375,7 +415,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (uri.host?.endsWith("google.com") == true && uri.path == "/search") uri.getQueryParameter("q")?.takeIf(String::isNotBlank) else null
     }.getOrNull()
 
-    private fun homeTab() = BrowserTab()
+    private fun homeTab(isPrivate: Boolean = false) = BrowserTab(
+        title = if (isPrivate) "シークレット" else "ホーム",
+        isPrivate = isPrivate
+    )
 
     private companion object {
         const val GOOGLE_HOME = "https://www.google.com/"

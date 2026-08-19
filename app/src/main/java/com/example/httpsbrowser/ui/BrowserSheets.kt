@@ -61,20 +61,44 @@ object BrowserSheets {
         selectedTabId: String?,
         onSelect: (String) -> Unit,
         onClose: (String) -> Unit,
-        onNewTab: () -> Unit,
+        onNewTab: (Boolean) -> Unit,
+        onPrivateModeChanged: (Boolean) -> Unit,
         onDismiss: () -> Unit
     ) {
+        val selectedTab = tabs.firstOrNull { it.id == selectedTabId }
+        var privateMode by remember(selectedTabId, selectedTab?.isPrivate) { mutableStateOf(selectedTab?.isPrivate == true) }
         ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("タブ一覧", style = MaterialTheme.typography.titleLarge)
-                TextButton(onClick = onNewTab) { Icon(Icons.Default.Add, null); Text("新しいタブ") }
+                TextButton(onClick = { onNewTab(privateMode) }) { Icon(Icons.Default.Add, null); Text("新しいタブ") }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("シークレットタブ")
+                    Text("履歴・タブ復元に残さない", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = privateMode, onCheckedChange = { enabled ->
+                    privateMode = enabled
+                    onPrivateModeChanged(enabled)
+                })
             }
             LazyColumn(Modifier.padding(bottom = 24.dp)) {
                 items(tabs, key = { it.id }) { tab ->
                     ListItem(
                         modifier = Modifier.clickable { onSelect(tab.id) },
                         headlineContent = { Text(tab.title.ifBlank { "ホーム" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(if (tab.isHome) "独自ホーム" else tab.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        supportingContent = {
+                            Text(
+                                if (tab.isPrivate) "シークレット・履歴を保存しない"
+                                else if (tab.isHome) "独自ホーム" else tab.url,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
                         trailingContent = {
                             Row {
                                 if (tab.id == selectedTabId) Text("選択中", color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 12.dp))
@@ -100,6 +124,7 @@ object BrowserSheets {
         onSaveBookmark: (String, String) -> Boolean,
         onUpdateBookmark: (String, String, String) -> Boolean,
         onDeleteBookmark: (String) -> Unit,
+        onDeleteHistory: (String) -> Unit,
         onClear: () -> Unit,
         onDownloads: () -> Unit,
         onNotice: (String) -> Unit
@@ -108,7 +133,7 @@ object BrowserSheets {
             when (state.settingsPage) {
                 SettingsPage.ROOT -> SettingsRoot(state, onSettings, onOpenPage, onDownloads, onDismiss)
                 SettingsPage.BOOKMARKS -> BookmarkPage(state.bookmarks, onOpenUrl, onSaveBookmark, onUpdateBookmark, onDeleteBookmark, onBack, onNotice)
-                SettingsPage.HISTORY -> HistoryPage(state.history, onOpenUrl, onBack)
+                SettingsPage.HISTORY -> HistoryPage(state.history, onOpenUrl, onDeleteHistory, onBack)
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
                 SettingsPage.DATA -> DataPage(onClear, onBack)
             }
@@ -192,7 +217,12 @@ object BrowserSheets {
     }
 
     @Composable
-    private fun HistoryPage(history: List<com.example.httpsbrowser.data.HistoryEntry>, onOpenUrl: (String) -> Unit, onBack: () -> Unit) {
+    private fun HistoryPage(
+        history: List<com.example.httpsbrowser.data.HistoryEntry>,
+        onOpenUrl: (String) -> Unit,
+        onDelete: (String) -> Unit,
+        onBack: () -> Unit
+    ) {
         PageHeader("閲覧履歴", onBack)
         LazyColumn(Modifier.padding(bottom = 24.dp)) {
             if (history.isEmpty()) item { EmptyRow("閲覧履歴はまだありません。") }
@@ -201,7 +231,12 @@ object BrowserSheets {
                     modifier = Modifier.clickable { onOpenUrl(entry.url) },
                     headlineContent = { Text(entry.query ?: entry.title.ifBlank { entry.url }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text(entry.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    trailingContent = { Icon(Icons.Default.OpenInNew, null) }
+                    trailingContent = {
+                        Row {
+                            Icon(Icons.Default.OpenInNew, null)
+                            IconButton(onClick = { onDelete(entry.id) }) { Icon(Icons.Default.Delete, "この履歴を削除") }
+                        }
+                    }
                 )
             }
         }

@@ -52,6 +52,8 @@ import com.example.httpsbrowser.web.BrowserWebCallbacks
 import com.example.httpsbrowser.web.BrowserWebViewRegistry
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import java.io.File
+import java.io.FileInputStream
 
 private data class PendingWebPermission(
     val origin: String,
@@ -83,6 +85,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var externalAppUrl by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var addBookmarkDialog by remember { mutableStateOf(false) }
+    var editingHomeBookmark by remember { mutableStateOf<com.example.httpsbrowser.data.Bookmark?>(null) }
+    var pendingPageArchive by remember { mutableStateOf<File?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -92,6 +96,25 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED }
         pending.reply(granted)
         pendingPermission = null
+    }
+
+    val pageArchiveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { destination ->
+        val archive = pendingPageArchive
+        pendingPageArchive = null
+        if (destination != null && archive != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(destination)?.use { output ->
+                    FileInputStream(archive).use { input -> input.copyTo(output) }
+                } ?: error("保存先を開けませんでした。")
+            }.onSuccess {
+                notice = "ページを保存しました。"
+            }.onFailure {
+                notice = "ページを保存できませんでした: ${it.message ?: "保存先を確認してください。"}"
+            }
+        }
+        archive?.delete()
     }
 
     LaunchedEffect(Unit) {
@@ -104,7 +127,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
     DisposableEffect(selectedTab?.id) {
         selectedTab?.takeIf { !it.isHome }?.let { registry.resume(it.id) }
-        onDispose { selectedTab?.takeIf { !it.isHome }?.let { registry.pause(it.id) } }
+        // タブ切替だけで WebView を pause すると、ユーザーが開始した音声・動画も停止する。
+        // レンダラはアプリ終了時またはタブを閉じた時に確実に破棄する。
+        onDispose { }
     }
     DisposableEffect(Unit) { onDispose { registry.destroyAll() } }
     LaunchedEffect(selectedTab?.id, selectedTab?.lastRequestedUrl, selectedTab?.isHome) {
@@ -166,7 +191,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         HomeScreen(
                             bookmarks = state.bookmarks,
                             onOpenBookmark = { bookmark -> viewModel.prepareNavigation(bookmark.url) },
-                            onAddBookmark = { addBookmarkDialog = true }
+                            onAddBookmark = { addBookmarkDialog = true },
+                            onEditBookmark = { bookmark -> editingHomeBookmark = bookmark },
+                            onDeleteBookmarks = viewModel::removeBookmarks,
+                            onMoveBookmarks = viewModel::moveBookmarks
                         )
                     } else {
                         androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
@@ -186,7 +214,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         onLongPress = { longPressedLink = it },
                                         showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = { rendererVersion++ }
+                                        onRendererGone = { rendererVersion++ },
+                                        onPageArchiveReady = { sourcePath, fileName ->
+                                            pendingPageArchive = File(sourcePath)
+                                            pageArchiveLauncher.launch(fileName)
+                                        }
                                     ))
                                 },
                                 update = {
@@ -204,7 +236,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         onLongPress = { longPressedLink = it },
                                         showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = { rendererVersion++ }
+                                        onRendererGone = { rendererVersion++ },
+                                        onPageArchiveReady = { sourcePath, fileName ->
+                                            pendingPageArchive = File(sourcePath)
+                                            pageArchiveLauncher.launch(fileName)
+                                        }
                                     ))
                                 },
                                 modifier = Modifier.fillMaxSize().pointerInput(state.isAddressFocused) {
@@ -229,7 +265,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         progress = progress,
                         isEditing = state.isAddressFocused,
                         onValueChange = viewModel::setAddressInput,
-                        onSubmit = { viewModel.stopAddressEditing(); viewModel.prepareNavigation() },
+                        // prepareNavigation が入力内容を確定してから候補・キーボードを閉じる。
+                        onSubmit = { viewModel.prepareNavigation() },
                         onTranslate = { if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
                         onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
                         onEditingStarted = viewModel::startAddressEditing
@@ -244,6 +281,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
                         onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
                         onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
+                        onSavePage = {
+                            viewModel.stopAddressEditing()
+                            if (!selectedTab.isHome) registry.savePageArchive(selectedTab.id, selectedTab.title)
+                        },
                         onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
                         onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
                     )
@@ -264,7 +305,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 selectedTabId = state.selectedTabId,
                 onSelect = viewModel::selectTab,
                 onClose = { id -> registry.remove(id); viewModel.closeTab(id) },
-                onNewTab = { viewModel.addTab() },
+                onNewTab = { isPrivate -> viewModel.addTab(isPrivate = isPrivate) },
+                onPrivateModeChanged = { enabled ->
+                    if (enabled) viewModel.switchToPrivateTab() else viewModel.switchToNormalTab()
+                },
                 onDismiss = viewModel::toggleTabSheet
             )
         }
@@ -273,13 +317,17 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 state = state,
                 listRepository = listRepository,
                 onSettings = viewModel::updateSettings,
-                onOpenUrl = { url -> viewModel.prepareNavigation(url) },
+                onOpenUrl = { url ->
+                    viewModel.prepareNavigation(url)
+                    viewModel.closeSettings()
+                },
                 onOpenPage = viewModel::showSettingsPage,
                 onBack = viewModel::backFromSettingsPage,
                 onDismiss = viewModel::closeSettings,
                 onSaveBookmark = viewModel::addBookmark,
                 onUpdateBookmark = viewModel::updateBookmark,
                 onDeleteBookmark = viewModel::removeBookmark,
+                onDeleteHistory = viewModel::removeHistory,
                 onClear = { viewModel.clearBrowsingData { registry.clearAllBrowsingData() }; viewModel.closeSettings() },
                 onDownloads = { runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
                 onNotice = { notice = it }
@@ -297,6 +345,19 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 if (viewModel.addBookmark(title, url)) addBookmarkDialog = false else notice = "HTTPS URL または検索語を入力してください。"
             },
             onDismiss = { addBookmarkDialog = false }
+        )
+    }
+
+    editingHomeBookmark?.let { bookmark ->
+        BrowserSheets.BookmarkEditorDialog(
+            title = "ブックマークを編集",
+            initialTitle = bookmark.title,
+            initialUrl = bookmark.url,
+            onConfirm = { title, url ->
+                if (viewModel.updateBookmark(bookmark.id, title, url)) editingHomeBookmark = null
+                else notice = "HTTPS URL または検索語を入力してください。"
+            },
+            onDismiss = { editingHomeBookmark = null }
         )
     }
 
@@ -365,7 +426,8 @@ private fun callbacksFor(
     onLongPress: (String) -> Unit,
     showNotice: (String) -> Unit,
     onExternalApp: (String) -> Unit,
-    onRendererGone: () -> Unit
+    onRendererGone: () -> Unit,
+    onPageArchiveReady: (String, String) -> Unit
 ) = object : BrowserWebCallbacks {
     override fun onPageStarted(tabId: String, url: String) = viewModel.onPageStarted(tabId, url)
     override fun onPageFinished(tabId: String, url: String, title: String?) = viewModel.onPageFinished(tabId, url, title)
@@ -381,10 +443,11 @@ private fun callbacksFor(
     override fun onHideFullscreen() = onHideFullscreen()
     override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = onPermission(origin, resources, reply)
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
-    override fun onPopupRequested(): String? = viewModel.addTab().id
+    override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id
     override fun onLinkLongPressed(url: String) = onLongPress(url)
     override fun onDownloadStarted(fileName: String, destination: String) =
         showNotice("ダウンロードを開始しました: $fileName（保存先: $destination）")
+    override fun onPageArchiveReady(sourcePath: String, fileName: String) = onPageArchiveReady(sourcePath, fileName)
     override fun onExternalAppRequested(url: String) = onExternalApp(url)
     override fun onPageInteraction() = viewModel.stopAddressEditing()
     override fun onNotice(message: String) = showNotice(message)

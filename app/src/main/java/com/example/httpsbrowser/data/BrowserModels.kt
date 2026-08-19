@@ -15,7 +15,9 @@ data class BrowserTab(
     val lastRequestedUrl: String = "",
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
-    val isHome: Boolean = true
+    val isHome: Boolean = true,
+    /** シークレットタブは履歴・タブ復元へ保存しない。Cookie の完全分離は別途必要。 */
+    val isPrivate: Boolean = false
 )
 
 data class HistoryEntry(

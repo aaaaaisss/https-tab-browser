@@ -50,9 +50,14 @@ class BrowserRepository(private val context: Context) {
     }
 
     suspend fun save(state: BrowserUiState) {
+        // シークレットタブはアプリ終了後に復元せず、履歴・通常タブだけを永続化する。
+        val persistentTabs = state.tabs.filterNot { it.isPrivate }
+        val persistentSelectedId = state.selectedTab?.takeUnless { it.isPrivate }?.id
+            ?: persistentTabs.firstOrNull()?.id
         context.browserDataStore.edit { preferences ->
-            preferences[Keys.tabs] = encodeTabs(state.tabs).toString()
-            state.selectedTab?.id?.let { preferences[Keys.selectedTab] = it }
+            preferences[Keys.tabs] = encodeTabs(persistentTabs).toString()
+            if (persistentSelectedId != null) preferences[Keys.selectedTab] = persistentSelectedId
+            else preferences.remove(Keys.selectedTab)
             preferences[Keys.history] = encodeHistory(state.history.take(500)).toString()
             preferences[Keys.bookmarks] = encodeBookmarks(state.bookmarks).toString()
             preferences[Keys.forceDark] = state.settings.forceDarkPages
@@ -82,7 +87,8 @@ class BrowserRepository(private val context: Context) {
             lastRequestedUrl = item.optString("lastRequestedUrl", item.optString("url")),
             canGoBack = item.optBoolean("canGoBack"),
             canGoForward = item.optBoolean("canGoForward"),
-            isHome = item.optBoolean("isHome", item.optString("url").isBlank())
+            isHome = item.optBoolean("isHome", item.optString("url").isBlank()),
+            isPrivate = item.optBoolean("isPrivate", false)
         )
     }
 
@@ -115,7 +121,7 @@ class BrowserRepository(private val context: Context) {
             put("id", tab.id); put("url", tab.url); put("title", tab.title)
             put("displayText", tab.displayText); put("displayMode", tab.displayMode.name)
             put("lastRequestedUrl", tab.lastRequestedUrl); put("canGoBack", tab.canGoBack)
-            put("canGoForward", tab.canGoForward); put("isHome", tab.isHome)
+            put("canGoForward", tab.canGoForward); put("isHome", tab.isHome); put("isPrivate", tab.isPrivate)
         }) }
     }
 
