@@ -41,6 +41,9 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tab
+import androidx.compose.material.icons.filled.Translate
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -100,6 +103,7 @@ fun AddressBar(
     isEditing: Boolean,
     onValueChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onTranslate: () -> Unit,
     onRefresh: () -> Unit,
     onEditingStarted: () -> Unit
 ) {
@@ -141,8 +145,13 @@ fun AddressBar(
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit() })
             )
             IconButton(
+                onClick = onTranslate,
+                modifier = Modifier.size(40.dp),
+                colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)
+            ) { Icon(Icons.Default.Translate, contentDescription = "このページを日本語へ翻訳") }
+            IconButton(
                 onClick = onRefresh,
-                modifier = Modifier.size(42.dp),
+                modifier = Modifier.size(40.dp),
                 colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)
             ) { Icon(Icons.Default.Refresh, contentDescription = "再読み込み") }
         }
@@ -163,7 +172,10 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
         shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        LazyColumn(Modifier.height((suggestions.size * 48).coerceAtMost(216).dp)) {
+        LazyColumn(
+            modifier = Modifier.height((suggestions.size * 48).coerceAtMost(216).dp),
+            reverseLayout = true
+        ) {
             items(suggestions, key = { "${it.type}:${it.url}" }) { suggestion ->
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable { onClick(suggestion) }.padding(horizontal = 14.dp, vertical = 7.dp),
@@ -181,7 +193,9 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(suggestion.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(suggestion.secondary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (suggestion.secondary.isNotBlank()) {
+                            Text(suggestion.secondary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
             }
@@ -201,6 +215,9 @@ fun NavigationRow(
     onHistory: () -> Unit,
     onDownloads: () -> Unit,
     onShare: () -> Unit,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+    onZoomReset: () -> Unit,
     onSettings: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -220,6 +237,9 @@ fun NavigationRow(
                 DropdownMenuItem(text = { Text("履歴") }, leadingIcon = { Icon(Icons.Default.History, null) }, onClick = { menuExpanded = false; onHistory() })
                 DropdownMenuItem(text = { Text("ダウンロード") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onDownloads() })
                 DropdownMenuItem(text = { Text("共有") }, leadingIcon = { Icon(Icons.Default.Share, null) }, onClick = { menuExpanded = false; onShare() })
+                DropdownMenuItem(text = { Text("表示を拡大") }, leadingIcon = { Icon(Icons.Default.ZoomIn, null) }, onClick = { menuExpanded = false; onZoomIn() })
+                DropdownMenuItem(text = { Text("表示を縮小") }, leadingIcon = { Icon(Icons.Default.ZoomOut, null) }, onClick = { menuExpanded = false; onZoomOut() })
+                DropdownMenuItem(text = { Text("倍率を標準に戻す") }, onClick = { menuExpanded = false; onZoomReset() })
                 DropdownMenuItem(text = { Text("設定") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { menuExpanded = false; onSettings() })
             }
         }
@@ -250,39 +270,47 @@ private fun NavButton(
 @Composable
 fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(start = 5.dp, top = 2.dp, bottom = 3.dp),
+        modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(start = 4.dp, top = 1.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row(
+            Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
             tabs.forEach { tab ->
                 val selected = tab.id == selectedTabId
                 Row(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (selected) Color(0xFF18375B) else Color(0xFF1A2029))
-                        .then(if (selected) Modifier.border(2.dp, Color(0xFF66B5FF), RoundedCornerShape(12.dp)) else Modifier.border(1.dp, Color(0xFF394554), RoundedCornerShape(12.dp)))
+                        .height(24.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(if (selected) Color(0xFF858585) else Color(0xFF4A4A4A))
+                        .border(1.dp, if (selected) Color(0xFFD8D8D8) else Color(0xFF666666), RoundedCornerShape(50))
                         .clickable { onSelect(tab.id) }
-                        .padding(start = 9.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
+                        .padding(start = 7.dp, end = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         tab.title.ifBlank { "ホーム" },
-                        color = BottomBarText,
-                        modifier = Modifier.width(148.dp),
+                        color = Color.White,
+                        modifier = Modifier.width(34.dp),
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelMedium
+                        style = MaterialTheme.typography.labelSmall
                     )
-                    IconButton(onClick = { onClose(tab.id) }, modifier = Modifier.size(26.dp), colors = IconButtonDefaults.iconButtonColors(contentColor = BottomBarText)) {
-                        Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(16.dp))
+                    Box(
+                        modifier = Modifier.size(16.dp).clickable { onClose(tab.id) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(13.dp), tint = Color.White)
                     }
                 }
             }
         }
-        IconButton(onClick = onAdd, modifier = Modifier.size(40.dp), colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)) {
-            Icon(Icons.Default.Add, contentDescription = "新しいタブ")
-        }
+        Box(
+            modifier = Modifier.size(26.dp).clip(CircleShape).background(Color(0xFF555555)).clickable { onAdd() },
+            contentAlignment = Alignment.Center
+        ) { Icon(Icons.Default.Add, contentDescription = "新しいタブ", modifier = Modifier.size(17.dp), tint = Color.White) }
     }
 }
 
@@ -381,38 +409,56 @@ private fun loadFavicon(pageUrl: String): ImageBitmap? = runCatching {
 
 @Composable
 fun HomeScreen(bookmarks: List<Bookmark>, onOpenBookmark: (Bookmark) -> Unit, onAddBookmark: () -> Unit) {
+    val cells = bookmarks.take(24).map { HomeCell.BookmarkCell(it) } + HomeCell.AddCell
+    val rows = cells.chunked(4)
     Box(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(start = 16.dp, top = 28.dp, bottom = 12.dp)
+        modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
-        Column(horizontalAlignment = Alignment.Start) {
-            Text("HTTPS Tab Browser", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
-            Text("ブックマーク", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
-        }
         Column(
-            modifier = Modifier.align(Alignment.BottomStart),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier.align(Alignment.BottomEnd),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalAlignment = Alignment.End
         ) {
-            bookmarks.take(6).reversed().forEach { bookmark ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(68.dp).clickable { onOpenBookmark(bookmark) }) {
-                    BookmarkFavicon(
-                        url = bookmark.url,
-                        title = bookmark.title.ifBlank { bookmark.url },
-                        modifier = Modifier.size(48.dp)
-                    )
-                    Text(
-                        bookmark.title.ifBlank { bookmark.url },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall
-                    )
+            rows.reversed().forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.reversed().forEach { cell ->
+                        when (cell) {
+                            is HomeCell.BookmarkCell -> Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.width(64.dp).clickable { onOpenBookmark(cell.bookmark) }
+                            ) {
+                                BookmarkFavicon(
+                                    url = cell.bookmark.url,
+                                    title = cell.bookmark.title.ifBlank { cell.bookmark.url },
+                                    modifier = Modifier.size(46.dp)
+                                )
+                                Text(
+                                    cell.bookmark.title.ifBlank { cell.bookmark.url },
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                            HomeCell.AddCell -> Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.width(64.dp).clickable { onAddBookmark() }
+                            ) {
+                                Box(
+                                    modifier = Modifier.size(46.dp).clip(CircleShape).background(Color(0xFF3D3D3D)),
+                                    contentAlignment = Alignment.Center
+                                ) { Icon(Icons.Default.Add, contentDescription = "ブックマークを追加", tint = Color.White) }
+                                Text("追加", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
             }
-            IconButton(
-                onClick = onAddBookmark,
-                modifier = Modifier.size(50.dp).background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
-                colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
-            ) { Icon(Icons.Default.Add, contentDescription = "ブックマークを追加") }
         }
     }
+}
+
+private sealed interface HomeCell {
+    data class BookmarkCell(val bookmark: Bookmark) : HomeCell
+    data object AddCell : HomeCell
 }

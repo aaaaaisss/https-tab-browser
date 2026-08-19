@@ -4,6 +4,7 @@ import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.view.View
 import android.webkit.CookieManager
@@ -20,6 +21,7 @@ import android.webkit.WebViewClient
 import android.webkit.URLUtil
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
+import android.content.Intent
 import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.UrlRuleBlocker
@@ -62,6 +64,15 @@ class BrowserWebViewRegistry(
 
     fun reload(tabId: String) = entries[tabId]?.webView?.reload()
     fun goBack(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoBack() }?.goBack()
+    fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
+    fun zoomIn(tabId: String) = entries[tabId]?.webView?.zoomIn()
+    fun zoomOut(tabId: String) = entries[tabId]?.webView?.zoomOut()
+    fun resetZoom(tabId: String) = entries[tabId]?.webView?.zoomBy(1f)
+    fun translateToJapanese(tabId: String) = entries[tabId]?.webView?.let { view ->
+        val url = view.url ?: return@let
+        val encoded = Uri.encode(url)
+        view.loadUrl("https://translate.google.com/translate?sl=auto&tl=ja&u=$encoded")
+    }
     fun goForward(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoForward() }?.goForward()
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
     fun scrollToTop(tabId: String) = entries[tabId]?.webView?.scrollTo(0, 0)
@@ -106,18 +117,19 @@ class BrowserWebViewRegistry(
             entries[tabId]?.callbacks?.onScrollPosition(tabId, fraction.coerceIn(0f, 1f))
         }
     }.apply {
-        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        setBackgroundColor(android.graphics.Color.BLACK)
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             // 一部の Google/YouTube 埋め込みが WebView 専用表示で白画面になるのを避ける。
             userAgentString = userAgentString.replace("; wv", "")
-            // モバイル向けページの viewport を端末幅へ合わせ、動画・Shorts の左右切れを防ぐ。
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            builtInZoomControls = false
+            // 常にモバイル viewport を優先し、YouTube/Shorts や動画 iframe の縮尺崩れを避ける。
+            useWideViewPort = false
+            loadWithOverviewMode = false
+            builtInZoomControls = true
             displayZoomControls = false
+            supportZoom = true
             databaseEnabled = false
             allowFileAccess = false
             allowContentAccess = false
@@ -145,8 +157,8 @@ class BrowserWebViewRegistry(
 
     private fun configure(view: WebView, settings: BrowserSettings) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        // Android 13 以降のアルゴリズム暗色化と旧 WebView の Force Dark の双方を設定する。
-        // 片方だけを else 分岐にすると、端末によって切替が反映されないことがある。
+        // Activity と親 View も暗色化を許可しないと、WebView の Force Dark が端末によって無効になる。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(settings.forceDarkPages)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, settings.forceDarkPages)
         }
@@ -156,12 +168,41 @@ class BrowserWebViewRegistry(
                 if (settings.forceDarkPages) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
         }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+            WebSettingsCompat.setForceDarkStrategy(
+                view.settings,
+                WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
+            )
+        }
+    }
+
+    private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
+        val script = if (enabled) """
+            (function() {
+              var id = '__https_browser_deep_dark';
+              var style = document.getElementById(id);
+              if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
+              style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
+                'body{background:#fff!important;filter:invert(1) hue-rotate(180deg)!important}' +
+                'img,video,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
+                'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
+            })();
+        """.trimIndent() else """
+            (function() { document.getElementById('__https_browser_deep_dark')?.remove(); })();
+        """.trimIndent()
+        view.evaluateJavascript(script, null)
     }
 
     private inner class SecureClient(private val tabId: String) : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val url = request.url.toString()
             if (!request.isForMainFrame) return false
+            if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
+                val fallback = intentFallbackUrl(url)
+                if (fallback != null) entries[tabId]?.callbacks?.onHttpsUpgrade(fallback)
+                else entries[tabId]?.callbacks?.onExternalAppRequested(url)
+                return true
+            }
             val secureUrl = upgradeToHttps(url)
             return when {
                 secureUrl == null -> {
@@ -195,7 +236,10 @@ class BrowserWebViewRegistry(
         }
 
         override fun onPageFinished(view: WebView, url: String) {
-            entries[tabId]?.callbacks?.onPageFinished(tabId, url, view.title)
+            val entry = entries[tabId]
+            // 動画表示中の白画面を防ぐため Google 動画検索・YouTube には CSS 反転を重ねない。
+            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
+            entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
         }
 
@@ -205,6 +249,8 @@ class BrowserWebViewRegistry(
         }
 
         override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+            // OS が WebView レンダラを終了した場合のみ、同じタブの URL を静かに再生成する。
+            // 通知ダイアログやタブ削除は行わない。
             entries[tabId]?.callbacks?.onRendererGone(tabId)
             remove(tabId)
             return true
@@ -298,6 +344,18 @@ class BrowserWebViewRegistry(
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
 
+    private fun isVideoSensitivePage(url: String): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase().orEmpty()
+        return isYoutubePlaybackResource(url) ||
+            (host.endsWith("google.com") && uri.path == "/search" && uri.query?.contains("tbm=vid") == true)
+    }
+
+    private fun intentFallbackUrl(url: String): String? = runCatching {
+        val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+        intent.getStringExtra("browser_fallback_url")?.let(::upgradeToHttps)
+    }.getOrNull()
+
     private fun isYoutubePlaybackResource(url: String): Boolean {
         val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
         return host == "youtube.com" || host.endsWith(".youtube.com") ||
@@ -334,6 +392,7 @@ interface BrowserWebCallbacks {
     fun onPopupRequested(): String?
     fun onLinkLongPressed(url: String)
     fun onDownloadStarted(fileName: String)
+    fun onExternalAppRequested(url: String)
 
     data object Empty : BrowserWebCallbacks {
         override fun onPageStarted(tabId: String, url: String) = Unit
@@ -353,5 +412,6 @@ interface BrowserWebCallbacks {
         override fun onPopupRequested(): String? = null
         override fun onLinkLongPressed(url: String) = Unit
         override fun onDownloadStarted(fileName: String) = Unit
+        override fun onExternalAppRequested(url: String) = Unit
     }
 }

@@ -291,9 +291,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             results.putIfAbsent(it.url, Suggestion(it.query ?: it.title, it.url, it.url, SuggestionType.HISTORY))
         }
         googleQueries.forEach { query ->
-            results.putIfAbsent("google:$query", Suggestion("Google 検索: $query", "Google の候補", query, SuggestionType.GOOGLE_SEARCH))
+            results.putIfAbsent("google:$query", Suggestion(query, "", query, SuggestionType.GOOGLE_SEARCH))
         }
-        results.putIfAbsent("google:$input", Suggestion("Google 検索: $input", "Google", input, SuggestionType.GOOGLE_SEARCH))
+        results.putIfAbsent("google:$input", Suggestion(input, "", input, SuggestionType.GOOGLE_SEARCH))
         return results.values.take(8)
     }
 

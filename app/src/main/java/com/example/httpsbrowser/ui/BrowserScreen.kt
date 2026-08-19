@@ -65,7 +65,7 @@ private data class FullscreenContent(
 )
 
 @Composable
-fun BrowserScreen(viewModel: BrowserViewModel) {
+fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val context = LocalContext.current
     val activity = context as? Activity
     val blocker = remember { com.example.httpsbrowser.data.UrlRuleBlocker() }
@@ -79,6 +79,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
     var pendingPermission by remember { mutableStateOf<PendingWebPermission?>(null) }
     var fullscreenContent by remember { mutableStateOf<FullscreenContent?>(null) }
     var longPressedLink by remember { mutableStateOf<String?>(null) }
+    var externalAppUrl by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var addBookmarkDialog by remember { mutableStateOf(false) }
 
@@ -93,6 +94,9 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
     }
 
     LaunchedEffect(Unit) { listRepository.loadAndCompile() }
+    LaunchedEffect(externalUrl) {
+        externalUrl?.let { viewModel.prepareNavigation(it) }
+    }
     DisposableEffect(selectedTab?.id) {
         selectedTab?.takeIf { !it.isHome }?.let { registry.resume(it.id) }
         onDispose { selectedTab?.takeIf { !it.isHome }?.let { registry.pause(it.id) } }
@@ -128,8 +132,9 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
             state.isAddressFocused -> viewModel.stopAddressEditing()
             state.isTabSheetVisible -> viewModel.toggleTabSheet()
             state.isSettingsSheetVisible -> viewModel.backFromSettingsPage()
-            selectedTab?.canGoBack == true && selectedTab?.isHome == false -> selectedTab.let { registry.goBack(it.id) }
-            else -> activity?.moveTaskToBack(true)
+            selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
+            selectedTab?.isHome == false -> viewModel.openHome()
+            else -> Unit // 履歴が尽きても戻る操作でアプリを終了しない。
         }
     }
 
@@ -175,6 +180,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                         },
                                         onLongPress = { longPressedLink = it },
                                         onNotice = { notice = it },
+                                        onExternalApp = { externalAppUrl = it },
                                         onRendererGone = { rendererVersion++ }
                                     ))
                                 },
@@ -192,6 +198,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                                         },
                                         onLongPress = { longPressedLink = it },
                                         onNotice = { notice = it },
+                                        onExternalApp = { externalAppUrl = it },
                                         onRendererGone = { rendererVersion++ }
                                     ))
                                 },
@@ -216,6 +223,7 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                         isEditing = state.isAddressFocused,
                         onValueChange = viewModel::setAddressInput,
                         onSubmit = { viewModel.prepareNavigation() },
+                        onTranslate = { if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
                         onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
                         onEditingStarted = viewModel::startAddressEditing
                     )
@@ -230,14 +238,17 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
                         onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
                         onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
                         onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
+                        onZoomIn = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.zoomIn(selectedTab.id) },
+                        onZoomOut = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.zoomOut(selectedTab.id) },
+                        onZoomReset = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.resetZoom(selectedTab.id) },
                         onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
                     )
                     TabBar(
                         tabs = state.tabs,
                         selectedTabId = state.selectedTabId,
-                        onSelect = viewModel::selectTab,
-                        onClose = { id -> registry.remove(id); viewModel.closeTab(id) },
-                        onAdd = { viewModel.addTab() }
+                        onSelect = { id -> viewModel.stopAddressEditing(); viewModel.selectTab(id) },
+                        onClose = { id -> viewModel.stopAddressEditing(); registry.remove(id); viewModel.closeTab(id) },
+                        onAdd = { viewModel.stopAddressEditing(); viewModel.addTab() }
                     )
                 }
             }
@@ -300,6 +311,21 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
         )
     }
 
+    externalAppUrl?.let { url ->
+        AlertDialog(
+            onDismissRequest = { externalAppUrl = null },
+            title = { Text("外部アプリをブロックしました") },
+            text = { Text("このリンクはアプリを開こうとしました。対応アプリで開く場合だけ、下のボタンを押してください。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching { context.startActivity(Intent.parseUri(url, Intent.URI_INTENT_SCHEME)) }
+                    externalAppUrl = null
+                }) { Text("アプリで開く") }
+            },
+            dismissButton = { TextButton(onClick = { externalAppUrl = null }) { Text("このブラウザに留まる") } }
+        )
+    }
+
     longPressedLink?.let { url ->
         AlertDialog(
             onDismissRequest = { longPressedLink = null },
@@ -334,6 +360,7 @@ private fun callbacksFor(
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
     onLongPress: (String) -> Unit,
     onNotice: (String) -> Unit,
+    onExternalApp: (String) -> Unit,
     onRendererGone: () -> Unit
 ) = object : BrowserWebCallbacks {
     override fun onPageStarted(tabId: String, url: String) = viewModel.onPageStarted(tabId, url)
@@ -345,7 +372,7 @@ private fun callbacksFor(
     override fun onHttpsUpgrade(url: String) = registry.load(tabId, url)
     override fun onBlockedNavigation(url: String) = onNotice("HTTPS 接続のみ許可されています。\n$url")
     override fun onSslError(url: String) = onNotice("証明書エラーのため安全に接続できませんでした。\n$url")
-    override fun onRendererGone(tabId: String) { onNotice("ページ描画を再起動します。"); onRendererGone() }
+    override fun onRendererGone(tabId: String) = onRendererGone()
     override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = onFullscreen(view, callback)
     override fun onHideFullscreen() = onHideFullscreen()
     override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = onPermission(origin, resources, reply)
@@ -353,6 +380,7 @@ private fun callbacksFor(
     override fun onPopupRequested(): String? = viewModel.addTab().id
     override fun onLinkLongPressed(url: String) = onLongPress(url)
     override fun onDownloadStarted(fileName: String) = onNotice("ダウンロードを開始しました: $fileName")
+    override fun onExternalAppRequested(url: String) = onExternalApp(url)
 }
 
 private fun requiredAndroidPermissions(resources: Set<String>): Array<String> = buildSet {
