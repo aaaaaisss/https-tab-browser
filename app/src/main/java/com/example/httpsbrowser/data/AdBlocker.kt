@@ -44,8 +44,10 @@ class UrlRuleBlocker(context: Context? = null) {
         val target = runCatching { URI(url) }.getOrNull() ?: return false
         val host = target.host?.lowercase().orEmpty()
         val set = rules.get()
-        if (matchesDomainSet(host, set.allowDomains) || set.allowOther.any { it.matches(target, url) }) return false
-        val blocked = matchesDomainSet(host, set.blockDomains) || set.blockOther.any { it.matches(target, url) }
+        if (matchesDomainSet(host, set.allowDomains) || matchesDomainPathRules(target, url, host, set.allowDomainPaths) ||
+            set.allowOther.any { it.matches(target, url) }) return false
+        val blocked = matchesDomainSet(host, set.blockDomains) || matchesDomainPathRules(target, url, host, set.blockDomainPaths) ||
+            set.blockOther.any { it.matches(target, url) }
         if (blocked) recordBlockedRequest()
         return blocked
     }
@@ -56,8 +58,8 @@ class UrlRuleBlocker(context: Context? = null) {
         val set = rules.get()
         return AdBlockStatus(
             blockedToday = blockedToday.get(),
-            networkRuleCount = set.blockDomains.size + set.blockOther.size,
-            cosmeticRuleCount = set.cosmeticRules.size
+            networkRuleCount = set.blockDomains.size + set.blockDomainPaths.values.sumOf { it.size } + set.blockOther.size,
+            cosmeticRuleCount = FALLBACK_COSMETIC_SELECTORS.size
         )
     }
 
@@ -94,41 +96,35 @@ class UrlRuleBlocker(context: Context? = null) {
 
     private fun localDayKey(): String = LocalDate.now(ZoneId.systemDefault()).toString()
 
-    /** 現在のページだけに適用する、リスト由来の安全な CSS 非表示規則を返す。 */
-    fun cosmeticCssFor(pageUrl: String): String {
-        val host = runCatching { URI(pageUrl).host?.lowercase().orEmpty() }.getOrDefault("")
-        val matchingSelectors = rules.get().cosmeticRules.asSequence()
-            .filter { rule -> rule.domains.isEmpty() || rule.domains.any { domain -> host == domain || host.endsWith(".$domain") } }
-            .map { it.selector }
-            .distinct()
-            .take(MAX_COSMETIC_SELECTORS_PER_PAGE)
-            .toList()
+    /** 全サイトへ安全に適用できる、汎用広告タグだけの最小 CSS 非表示規則を返す。 */
+    fun cosmeticCssFor(): String {
         val declarations = "{display:none!important;visibility:hidden!important;}"
-        return FALLBACK_COSMETIC_SELECTORS.joinToString(",") + declarations +
-            matchingSelectors.joinToString(separator = "") { selector -> "$selector$declarations" }
+        return FALLBACK_COSMETIC_SELECTORS.joinToString(",") + declarations
     }
 
     fun replaceRules(lines: Sequence<String>) {
         val allowDomains = HashSet<String>()
         val blockDomains = HashSet<String>()
+        val allowDomainPaths = HashMap<String, MutableList<UrlRule.DomainPath>>()
+        val blockDomainPaths = HashMap<String, MutableList<UrlRule.DomainPath>>()
         val allowOther = mutableListOf<UrlRule>()
         val blockOther = mutableListOf<UrlRule>()
-        val cosmeticRules = mutableListOf<CosmeticRule>()
         lines.forEach { raw ->
             val line = raw.trim()
-            CosmeticRule.parse(line)?.let { rule ->
-                if (cosmeticRules.size < MAX_COSMETIC_RULES) cosmeticRules += rule
-                return@forEach
-            }
-            if (line.isBlank() || line.startsWith("!") || line.startsWith("[") || line.startsWith("#")) return@forEach
+            if (line.isBlank() || line.startsWith("!") || line.startsWith("[") || line.startsWith("#") ||
+                line.contains("##") || line.contains("#@#") || line.contains("#%#") || line.contains("#$#")) return@forEach
             val isAllow = line.startsWith("@@")
             val rule = UrlRule.parse(if (isAllow) line.removePrefix("@@") else line) ?: return@forEach
             when (rule) {
                 is UrlRule.Domain -> if (isAllow) allowDomains += rule.domain else blockDomains += rule.domain
+                is UrlRule.DomainPath -> {
+                    val target = if (isAllow) allowDomainPaths else blockDomainPaths
+                    target.getOrPut(rule.domain) { mutableListOf() } += rule
+                }
                 else -> if (isAllow) allowOther += rule else blockOther += rule
             }
         }
-        rules.set(RuleSet(allowDomains, blockDomains, allowOther, blockOther, cosmeticRules))
+        rules.set(RuleSet(allowDomains, blockDomains, allowDomainPaths, blockDomainPaths, allowOther, blockOther))
     }
 
     private fun matchesDomainSet(host: String, rules: Set<String>): Boolean {
@@ -140,40 +136,37 @@ class UrlRuleBlocker(context: Context? = null) {
         return false
     }
 
+    private fun matchesDomainPathRules(
+        uri: URI,
+        rawUrl: String,
+        host: String,
+        rulesByDomain: Map<String, List<UrlRule.DomainPath>>
+    ): Boolean {
+        var candidate = host
+        while (candidate.isNotBlank()) {
+            if (rulesByDomain[candidate]?.any { it.matches(uri, rawUrl) } == true) return true
+            candidate = candidate.substringAfter('.', "")
+        }
+        return false
+    }
+
     private data class RuleSet(
         val allowDomains: Set<String> = emptySet(),
         val blockDomains: Set<String> = emptySet(),
+        val allowDomainPaths: Map<String, List<UrlRule.DomainPath>> = emptyMap(),
+        val blockDomainPaths: Map<String, List<UrlRule.DomainPath>> = emptyMap(),
         val allowOther: List<UrlRule> = emptyList(),
-        val blockOther: List<UrlRule> = emptyList(),
-        val cosmeticRules: List<CosmeticRule> = emptyList()
+        val blockOther: List<UrlRule> = emptyList()
     )
 
-    private data class CosmeticRule(val domains: List<String>, val selector: String) {
-        companion object {
-            fun parse(line: String): CosmeticRule? {
-                if (line.startsWith("!") || line.contains("#%#") || line.contains("#$#") || line.contains("#@#")) return null
-                val divider = line.indexOf("##")
-                if (divider < 0) return null
-                val selector = line.substring(divider + 2).trim()
-                if (selector.isBlank() || selector.length > 500 || selector.contains("scriptlet", true)) return null
-                val domains = line.substring(0, divider).split(',').map(String::trim)
-                    .filter { it.isNotBlank() && it.none { character -> character == '~' || character == '*' } }
-                    .map(String::lowercase)
-                return CosmeticRule(domains, selector)
-            }
-        }
-    }
-
     private companion object {
-        const val MAX_COSMETIC_RULES = 4_000
         const val STATISTICS_FILE = "adblock_statistics"
         const val STATISTICS_DAY_KEY = "day"
         const val STATISTICS_COUNT_KEY = "blocked_count"
-        const val MAX_COSMETIC_SELECTORS_PER_PAGE = 450
         val FALLBACK_COSMETIC_SELECTORS = listOf(
             "ins.adsbygoogle", "[data-ad-client]", "[data-ad-slot]", "[id^='google_ads']",
             "iframe[src*='doubleclick']", "iframe[src*='googlesyndication']", "iframe[src*='adservice']",
-            "[class~='advertisement']", "[class~='advert']", "[aria-label='Advertisement']"
+            "[aria-label='Advertisement']"
         )
     }
 }
@@ -208,13 +201,12 @@ private sealed interface UrlRule {
         }
     }
 
-    data class Contains(val needle: String) : UrlRule {
-        override fun matches(uri: URI, rawUrl: String) = rawUrl.contains(needle, ignoreCase = true)
-    }
-
     companion object {
         fun parse(source: String): UrlRule? {
-            val withoutOptions = source.substringBefore("$").trim()
+            // 第三者判定・リダイレクト・scriptlet などを伴う高度な ABP オプションは、
+            // WebView の URL だけでは正確に再現できない。誤遮断を避けるため読み飛ばす。
+            if (source.contains("$")) return null
+            val withoutOptions = source.trim()
             return when {
                 withoutOptions.startsWith("||") -> {
                     val body = withoutOptions.removePrefix("||")
@@ -226,7 +218,6 @@ private sealed interface UrlRule {
                 }
                 withoutOptions.startsWith("|https://") -> Prefix(withoutOptions.removePrefix("|"))
                 withoutOptions.startsWith("http://") || withoutOptions.startsWith("https://") -> Prefix(withoutOptions)
-                withoutOptions.length >= 4 && !withoutOptions.startsWith("/") -> Contains(withoutOptions.replace("*", ""))
                 else -> null
             }
         }

@@ -42,13 +42,7 @@ class BrowserWebViewRegistry(
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
         entry.settings = settings
-        val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages
-        configure(entry.webView, settings, isVideoSensitivePage(tab.lastRequestedUrl))
-        entry.appliedForceDark = settings.forceDarkPages
-        if (darkModeChanged && entry.loadedUrl != null) {
-            // 再読み込みせず、現在のページへ直ちに暗色スタイルだけを反映する。
-            applyDeepDarkCss(entry.webView, settings.forceDarkPages && !isVideoSensitivePage(entry.loadedUrl.orEmpty()))
-        }
+        configure(entry.webView, settings)
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
             entry.webView.loadUrl(tab.lastRequestedUrl)
@@ -173,27 +167,22 @@ class BrowserWebViewRegistry(
         }
     }
 
-    private fun configure(view: WebView, settings: BrowserSettings, videoPage: Boolean) {
+    private fun configure(view: WebView, settings: BrowserSettings) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        // プレーヤー DOM を直接書き換えず、WebView 標準の暗色化だけを許可する。
-        // 映像は GPU の別レイヤーで描画されるため、CSS 反転より再生を壊しにくい。
-        val allowDarkTransforms = settings.forceDarkPages
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowDarkTransforms)
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowDarkTransforms)
+        // ダーク化は WebView の標準 API を一系統だけ使う。CSS 反転は動画・地図・iframe を
+        // 壊しやすいため使用しない。サイトが自前のダークテーマを持つ場合はそちらを優先する。
+        val enabled = settings.forceDarkPages
+        val hasAlgorithmicDarkening = WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)
+        if (hasAlgorithmicDarkening) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, enabled)
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
             WebSettingsCompat.setForceDark(
                 view.settings,
-                if (allowDarkTransforms) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+                if (!hasAlgorithmicDarkening && enabled) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
         }
-        if (allowDarkTransforms && WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-            WebSettingsCompat.setForceDarkStrategy(
-                view.settings,
-                WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
-            )
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(enabled)
     }
 
     private fun applyCosmeticAdFilters(view: WebView, url: String, enabled: Boolean) {
@@ -204,7 +193,7 @@ class BrowserWebViewRegistry(
             return
         }
         val script = if (enabled) {
-            val css = blocker.cosmeticCssFor(url)
+            val css = blocker.cosmeticCssFor()
             """
                 (function() {
                   var id = '__https_browser_adblock_css';
@@ -238,23 +227,6 @@ class BrowserWebViewRegistry(
               if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
               style.textContent = ${JSONObject.quote(css)};
             })();
-        """.trimIndent()
-        view.evaluateJavascript(script, null)
-    }
-
-    private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
-        val script = if (enabled) """
-            (function() {
-              var id = '__https_browser_deep_dark';
-              var style = document.getElementById(id);
-              if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
-              style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
-                'body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}' +
-                'img,video,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
-                'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
-            })();
-        """.trimIndent() else """
-            (function() { document.getElementById('__https_browser_deep_dark')?.remove(); })();
         """.trimIndent()
         view.evaluateJavascript(script, null)
     }
@@ -301,7 +273,7 @@ class BrowserWebViewRegistry(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             val entry = entries[tabId]
             view.setBackgroundColor(android.graphics.Color.BLACK)
-            entry?.let { configure(view, it.settings, isVideoSensitivePage(url)) }
+            entry?.let { configure(view, it.settings) }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
@@ -310,7 +282,6 @@ class BrowserWebViewRegistry(
             // 初回描画の時点で黒背景を注入し、読み込み完了まで白く見える時間を短くする。
             applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             applyYoutubeAdUiFilters(view, url, entry?.settings?.adBlockingEnabled == true)
-            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             super.onPageCommitVisible(view, url)
         }
 
@@ -318,7 +289,6 @@ class BrowserWebViewRegistry(
             val entry = entries[tabId]
             applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             applyYoutubeAdUiFilters(view, url, entry?.settings?.adBlockingEnabled == true)
-            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             CookieManager.getInstance().flush()
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
@@ -376,14 +346,13 @@ class BrowserWebViewRegistry(
             val current = entries[tabId] ?: return false
             val newTabId = current.callbacks.onPopupRequested() ?: return false
             val popupView = createWebView(newTabId)
-            configure(popupView, current.settings, false)
+            configure(popupView, current.settings)
             // 新規ウィンドウの WebView を、そのまま新しいタブへ接続する。
             // 空文字を loadedUrl に入れると Compose 再構成時に読み込み状態が不整合になるため null を維持する。
             entries[newTabId] = Entry(
                 webView = popupView,
                 callbacks = current.callbacks,
-                settings = current.settings,
-                appliedForceDark = current.settings.forceDarkPages
+                settings = current.settings
             )
             (resultMsg.obj as? WebView.WebViewTransport)?.webView = popupView
             resultMsg.sendToTarget()
@@ -419,19 +388,10 @@ class BrowserWebViewRegistry(
         val webView: WebView,
         var loadedUrl: String? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
-        var settings: BrowserSettings = BrowserSettings(),
-        var appliedForceDark: Boolean? = null
+        var settings: BrowserSettings = BrowserSettings()
     )
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
-
-    private fun isVideoSensitivePage(url: String): Boolean {
-        val uri = runCatching { URI(url) }.getOrNull() ?: return false
-        val host = uri.host?.lowercase().orEmpty()
-        val query = uri.query.orEmpty()
-        return isYoutubePlaybackResource(url) ||
-            (host.endsWith("google.com") && uri.path == "/search" && (query.contains("tbm=vid") || query.contains("udm=7")))
-    }
 
     private fun intentFallbackUrl(url: String): String? = runCatching {
         val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
