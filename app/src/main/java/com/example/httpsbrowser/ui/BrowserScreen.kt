@@ -46,6 +46,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.example.httpsbrowser.data.AdBlockListRepository
+import com.example.httpsbrowser.data.AdBlockUpdateWorker
 import com.example.httpsbrowser.data.SettingsPage
 import com.example.httpsbrowser.web.BrowserWebCallbacks
 import com.example.httpsbrowser.web.BrowserWebViewRegistry
@@ -93,7 +94,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         pendingPermission = null
     }
 
-    LaunchedEffect(Unit) { listRepository.loadAndCompile() }
+    LaunchedEffect(Unit) {
+        listRepository.ensureStandardLists()
+        listRepository.loadAndCompile()
+        AdBlockUpdateWorker.schedule(context.applicationContext)
+    }
     LaunchedEffect(externalUrl) {
         externalUrl?.let { viewModel.prepareNavigation(it) }
     }
@@ -216,13 +221,16 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     }
                 }
                 Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
-                    if (state.isAddressFocused) SuggestionPanel(state.suggestions) { suggestion -> viewModel.openSuggestion(suggestion) }
+                    if (state.isAddressFocused) SuggestionPanel(state.suggestions) { suggestion ->
+                        viewModel.stopAddressEditing()
+                        viewModel.openSuggestion(suggestion)
+                    }
                     AddressBar(
                         value = state.addressInput,
                         progress = progress,
                         isEditing = state.isAddressFocused,
                         onValueChange = viewModel::setAddressInput,
-                        onSubmit = { viewModel.prepareNavigation() },
+                        onSubmit = { viewModel.stopAddressEditing(); viewModel.prepareNavigation() },
                         onTranslate = { if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
                         onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
                         onEditingStarted = viewModel::startAddressEditing
@@ -238,9 +246,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
                         onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
                         onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
-                        onZoomIn = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.zoomIn(selectedTab.id) },
-                        onZoomOut = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.zoomOut(selectedTab.id) },
-                        onZoomReset = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.resetZoom(selectedTab.id) },
                         onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
                     )
                     TabBar(

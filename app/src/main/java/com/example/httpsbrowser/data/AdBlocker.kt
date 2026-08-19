@@ -1,6 +1,13 @@
 package com.example.httpsbrowser.data
 
 import android.content.Context
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import androidx.work.Constraints
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -10,6 +17,7 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 data class BlockListSource(
@@ -17,7 +25,8 @@ data class BlockListSource(
     val name: String,
     val sourceUrl: String,
     val enabled: Boolean = true,
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+    val builtIn: Boolean = false
 )
 
 /** EasyList/ABP 構文のネットワーク規則サブセット（||domain^、|https://、部分文字列）を扱う。 */
@@ -26,25 +35,45 @@ class UrlRuleBlocker {
 
     fun shouldBlock(url: String): Boolean {
         val target = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = target.host?.lowercase().orEmpty()
         val set = rules.get()
-        if (set.allow.any { it.matches(target, url) }) return false
-        return set.block.any { it.matches(target, url) }
+        if (matchesDomainSet(host, set.allowDomains) || set.allowOther.any { it.matches(target, url) }) return false
+        return matchesDomainSet(host, set.blockDomains) || set.blockOther.any { it.matches(target, url) }
     }
 
     fun replaceRules(lines: Sequence<String>) {
-        val allow = mutableListOf<UrlRule>()
-        val block = mutableListOf<UrlRule>()
+        val allowDomains = HashSet<String>()
+        val blockDomains = HashSet<String>()
+        val allowOther = mutableListOf<UrlRule>()
+        val blockOther = mutableListOf<UrlRule>()
         lines.forEach { raw ->
             val line = raw.trim()
-            if (line.isBlank() || line.startsWith("!") || line.startsWith("[")) return@forEach
+            if (line.isBlank() || line.startsWith("!") || line.startsWith("[") || line.startsWith("#")) return@forEach
             val isAllow = line.startsWith("@@")
             val rule = UrlRule.parse(if (isAllow) line.removePrefix("@@") else line) ?: return@forEach
-            if (isAllow) allow += rule else block += rule
+            when (rule) {
+                is UrlRule.Domain -> if (isAllow) allowDomains += rule.domain else blockDomains += rule.domain
+                else -> if (isAllow) allowOther += rule else blockOther += rule
+            }
         }
-        rules.set(RuleSet(allow, block))
+        rules.set(RuleSet(allowDomains, blockDomains, allowOther, blockOther))
     }
 
-    private data class RuleSet(val allow: List<UrlRule> = emptyList(), val block: List<UrlRule> = emptyList())
+    private fun matchesDomainSet(host: String, rules: Set<String>): Boolean {
+        var candidate = host
+        while (candidate.isNotBlank()) {
+            if (candidate in rules) return true
+            candidate = candidate.substringAfter('.', "")
+        }
+        return false
+    }
+
+    private data class RuleSet(
+        val allowDomains: Set<String> = emptySet(),
+        val blockDomains: Set<String> = emptySet(),
+        val allowOther: List<UrlRule> = emptyList(),
+        val blockOther: List<UrlRule> = emptyList()
+    )
 }
 
 private sealed interface UrlRule {
@@ -71,10 +100,10 @@ private sealed interface UrlRule {
             return when {
                 withoutOptions.startsWith("||") -> withoutOptions.removePrefix("||")
                     .substringBefore('^').substringBefore('/').lowercase()
-                    .takeIf { it.contains('.') }?.let(::Domain)
+                    .takeIf { it.contains('.') && !it.contains('*') }?.let(::Domain)
                 withoutOptions.startsWith("|https://") -> Prefix(withoutOptions.removePrefix("|"))
                 withoutOptions.startsWith("http://") || withoutOptions.startsWith("https://") -> Prefix(withoutOptions)
-                withoutOptions.length >= 4 -> Contains(withoutOptions.replace("*", ""))
+                withoutOptions.length >= 4 && !withoutOptions.startsWith("/") -> Contains(withoutOptions.replace("*", ""))
                 else -> null
             }
         }
@@ -91,34 +120,58 @@ class AdBlockListRepository(
     suspend fun loadAndCompile(): List<BlockListSource> = withContext(Dispatchers.IO) {
         val sources = listSourcesInternal()
         val allLines = sources.asSequence().filter { it.enabled }.flatMap { source ->
-            File(directory, "${source.id}.txt").takeIf(File::exists)?.readLines()?.asSequence() ?: emptySequence()
+            File(directory, "${source.id}.txt").takeIf(File::exists)?.useLines { it.toList().asSequence() } ?: emptySequence()
         }
         blocker.replaceRules(allLines)
         sources
     }
 
+    /** 初回導入時に公式・HTTPS の標準リストだけを登録する。ユーザー追加リストは触らない。 */
+    suspend fun ensureStandardLists(): List<BlockListSource> = withContext(Dispatchers.IO) {
+        var sources = listSourcesInternal()
+        STANDARD_LISTS.forEach { standard ->
+            val existing = sources.firstOrNull { it.sourceUrl == standard.sourceUrl }
+            if (existing == null) {
+                fetchToFile(standard, standard.id)
+                sources = sources + standard.copy(updatedAt = System.currentTimeMillis())
+            }
+        }
+        saveSources(sources)
+        loadAndCompile()
+    }
+
+    /** 7 日以上更新されていない標準リストのみを更新する。失敗時は直前の正常ファイルを維持する。 */
+    suspend fun updateDueStandardLists(): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            val now = System.currentTimeMillis()
+            var updatedCount = 0
+            var sources = listSourcesInternal()
+            STANDARD_LISTS.forEach { standard ->
+                val source = sources.firstOrNull { it.sourceUrl == standard.sourceUrl } ?: return@forEach
+                if (now - source.updatedAt < UPDATE_INTERVAL_MS) return@forEach
+                fetchToFile(source, source.id)
+                sources = sources.map { if (it.id == source.id) it.copy(updatedAt = now) else it }
+                updatedCount++
+            }
+            saveSources(sources)
+            loadAndCompile()
+            updatedCount
+        }
+    }
+
     suspend fun addOrUpdate(name: String, sourceUrl: String): Result<BlockListSource> = withContext(Dispatchers.IO) {
         runCatching {
-            val uri = URI(sourceUrl)
-            require(uri.scheme.equals("https", ignoreCase = true)) { "ブロックリストは HTTPS URL のみ登録できます。" }
-            require(!uri.host.isNullOrBlank()) { "有効な URL を入力してください。" }
-            val source = listSourcesInternal().firstOrNull { it.sourceUrl == sourceUrl }
-                ?: BlockListSource(name = name.ifBlank { uri.host }, sourceUrl = sourceUrl)
-            val request = (uri.toURL().openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10_000
-                readTimeout = 15_000
-                instanceFollowRedirects = false
-                setRequestProperty("User-Agent", "HttpsTabBrowser/1.0")
-            }
-            require(request.responseCode in 200..299) { "リストを取得できませんでした: HTTP ${request.responseCode}" }
-            val content = BufferedInputStream(request.inputStream).use { input ->
-                input.readBytesLimited(5 * 1024 * 1024)
-            }.toString(Charsets.UTF_8)
-            require(content.isNotBlank()) { "空のリストは登録できません。" }
-            File(directory, "${source.id}.txt").writeText(content)
-            val updated = source.copy(name = name.ifBlank { source.name }, updatedAt = System.currentTimeMillis())
-            val updatedSources = listSourcesInternal().filterNot { it.id == source.id } + updated
-            saveSources(updatedSources)
+            val normalizedUrl = validateHttpsUrl(sourceUrl)
+            val existing = listSourcesInternal().firstOrNull { it.sourceUrl == normalizedUrl }
+            val source = existing ?: BlockListSource(name = name.ifBlank { URI(normalizedUrl).host }, sourceUrl = normalizedUrl)
+            fetchToFile(source, source.id)
+            val updated = source.copy(
+                name = name.ifBlank { source.name },
+                sourceUrl = normalizedUrl,
+                updatedAt = System.currentTimeMillis(),
+                builtIn = existing?.builtIn ?: false
+            )
+            saveSources(listSourcesInternal().filterNot { it.id == source.id } + updated)
             loadAndCompile()
             updated
         }
@@ -128,20 +181,10 @@ class AdBlockListRepository(
         runCatching {
             val previous = listSourcesInternal().firstOrNull { it.id == id }
                 ?: error("更新対象のリストが見つかりません。")
-            val uri = URI(sourceUrl)
-            require(uri.scheme.equals("https", ignoreCase = true)) { "ブロックリストは HTTPS URL のみ登録できます。" }
-            require(!uri.host.isNullOrBlank()) { "有効な URL を入力してください。" }
-            val request = (uri.toURL().openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10_000
-                readTimeout = 15_000
-                instanceFollowRedirects = false
-                setRequestProperty("User-Agent", "HttpsTabBrowser/1.0")
-            }
-            require(request.responseCode in 200..299) { "リストを取得できませんでした: HTTP ${request.responseCode}" }
-            val content = BufferedInputStream(request.inputStream).use { input -> input.readBytesLimited(5 * 1024 * 1024) }.toString(Charsets.UTF_8)
-            require(content.isNotBlank()) { "空のリストは登録できません。" }
-            File(directory, "${previous.id}.txt").writeText(content)
-            val updated = previous.copy(name = name.ifBlank { uri.host }, sourceUrl = sourceUrl, updatedAt = System.currentTimeMillis())
+            val normalizedUrl = validateHttpsUrl(sourceUrl)
+            val replacement = previous.copy(name = name.ifBlank { URI(normalizedUrl).host }, sourceUrl = normalizedUrl)
+            fetchToFile(replacement, replacement.id)
+            val updated = replacement.copy(updatedAt = System.currentTimeMillis())
             saveSources(listSourcesInternal().map { if (it.id == id) updated else it })
             loadAndCompile()
             updated
@@ -159,13 +202,45 @@ class AdBlockListRepository(
         loadAndCompile()
     }
 
+    private fun validateHttpsUrl(sourceUrl: String): String {
+        val uri = URI(sourceUrl)
+        require(uri.scheme.equals("https", ignoreCase = true)) { "ブロックリストは HTTPS URL のみ登録できます。" }
+        require(!uri.host.isNullOrBlank()) { "有効な URL を入力してください。" }
+        return uri.toString()
+    }
+
+    private fun fetchToFile(source: BlockListSource, fileId: String) {
+        val uri = URI(validateHttpsUrl(source.sourceUrl))
+        val request = (uri.toURL().openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 20_000
+            instanceFollowRedirects = false
+            setRequestProperty("User-Agent", "HttpsTabBrowser/1.0")
+        }
+        require(request.responseCode in 200..299) { "リストを取得できませんでした: HTTP ${request.responseCode}" }
+        val content = BufferedInputStream(request.inputStream).use { input ->
+            input.readBytesLimited(MAX_LIST_BYTES)
+        }.toString(Charsets.UTF_8)
+        require(content.isNotBlank()) { "空のリストは登録できません。" }
+        val temporary = File(directory, "$fileId.tmp")
+        temporary.writeText(content)
+        val destination = File(directory, "$fileId.txt")
+        if (!temporary.renameTo(destination)) {
+            temporary.copyTo(destination, overwrite = true)
+            temporary.delete()
+        }
+    }
+
     private fun listSourcesInternal(): List<BlockListSource> = runCatching {
         val array = JSONArray(metadata.takeIf(File::exists)?.readText() ?: "[]")
         List(array.length()) { index -> array.getJSONObject(index).let { item ->
             BlockListSource(
-                id = item.getString("id"), name = item.getString("name"),
-                sourceUrl = item.getString("sourceUrl"), enabled = item.optBoolean("enabled", true),
-                updatedAt = item.optLong("updatedAt")
+                id = item.getString("id"),
+                name = item.getString("name"),
+                sourceUrl = item.getString("sourceUrl"),
+                enabled = item.optBoolean("enabled", true),
+                updatedAt = item.optLong("updatedAt"),
+                builtIn = item.optBoolean("builtIn", false)
             )
         } }
     }.getOrDefault(emptyList())
@@ -174,9 +249,68 @@ class AdBlockListRepository(
         metadata.writeText(JSONArray().apply {
             sources.forEach { source -> put(JSONObject().apply {
                 put("id", source.id); put("name", source.name); put("sourceUrl", source.sourceUrl)
-                put("enabled", source.enabled); put("updatedAt", source.updatedAt)
+                put("enabled", source.enabled); put("updatedAt", source.updatedAt); put("builtIn", source.builtIn)
             }) }
         }.toString())
+    }
+
+    companion object {
+        private const val UPDATE_INTERVAL_MS = 7L * 24L * 60L * 60L * 1000L
+        private const val MAX_LIST_BYTES = 12 * 1024 * 1024
+
+        val STANDARD_LISTS = listOf(
+            BlockListSource(
+                id = "adguard_base",
+                name = "AdGuard ベースフィルタ",
+                sourceUrl = "https://filters.adtidy.org/extension/chromium/filters/2.txt",
+                builtIn = true
+            ),
+            BlockListSource(
+                id = "adguard_tracking",
+                name = "AdGuard 追跡防止フィルタ",
+                sourceUrl = "https://filters.adtidy.org/extension/chromium/filters/3.txt",
+                builtIn = true
+            ),
+            BlockListSource(
+                id = "adguard_mobile",
+                name = "AdGuard モバイル広告フィルタ",
+                sourceUrl = "https://filters.adtidy.org/extension/chromium/filters/11.txt",
+                builtIn = true
+            ),
+            BlockListSource(
+                id = "adguard_japanese",
+                name = "AdGuard 日本語フィルタ",
+                sourceUrl = "https://filters.adtidy.org/extension/chromium/filters/7.txt",
+                builtIn = true
+            )
+        )
+    }
+}
+
+/** ネットワーク接続時に 7 日ごとを目安として更新する。端末の省電力設定により実行時刻は前後する。 */
+class AdBlockUpdateWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        val repository = AdBlockListRepository(applicationContext, UrlRuleBlocker())
+        repository.ensureStandardLists()
+        return repository.updateDueStandardLists().fold(
+            onSuccess = { Result.success() },
+            onFailure = { Result.retry() }
+        )
+    }
+
+    companion object {
+        private const val WORK_NAME = "https_tab_browser_adblock_update"
+
+        fun schedule(context: Context) {
+            val request = PeriodicWorkRequestBuilder<AdBlockUpdateWorker>(7, TimeUnit.DAYS)
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request
+            )
+        }
     }
 }
 
@@ -186,7 +320,7 @@ private fun BufferedInputStream.readBytesLimited(maxBytes: Int): ByteArray {
     while (true) {
         val count = read(buffer)
         if (count < 0) break
-        require(output.size() + count <= maxBytes) { "ブロックリストが上限 5 MB を超えています。" }
+        require(output.size() + count <= maxBytes) { "ブロックリストが上限 ${maxBytes / (1024 * 1024)} MB を超えています。" }
         output.write(buffer, 0, count)
     }
     return output.toByteArray()

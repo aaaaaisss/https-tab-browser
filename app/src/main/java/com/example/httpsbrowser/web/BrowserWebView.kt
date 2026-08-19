@@ -34,17 +34,18 @@ class BrowserWebViewRegistry(
     private val blocker: UrlRuleBlocker
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
+    private val pageTranslator = PageTranslator()
 
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
         entry.settings = settings
         val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages
-        configure(entry.webView, settings)
+        configure(entry.webView, settings, isVideoSensitivePage(tab.lastRequestedUrl))
         entry.appliedForceDark = settings.forceDarkPages
         if (darkModeChanged && entry.loadedUrl != null) {
-            // 既に表示中のページにもダーク化設定を確実に反映する。
-            entry.webView.post { entry.webView.reload() }
+            // 再読み込みせず、現在のページへ直ちに暗色スタイルだけを反映する。
+            applyDeepDarkCss(entry.webView, settings.forceDarkPages && !isVideoSensitivePage(entry.loadedUrl.orEmpty()))
         }
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
@@ -65,13 +66,8 @@ class BrowserWebViewRegistry(
     fun reload(tabId: String) = entries[tabId]?.webView?.reload()
     fun goBack(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoBack() }?.goBack()
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
-    fun zoomIn(tabId: String) = entries[tabId]?.webView?.zoomIn()
-    fun zoomOut(tabId: String) = entries[tabId]?.webView?.zoomOut()
-    fun resetZoom(tabId: String) = entries[tabId]?.webView?.zoomBy(1f)
-    fun translateToJapanese(tabId: String) = entries[tabId]?.webView?.let { view ->
-        val url = view.url ?: return@let
-        val encoded = Uri.encode(url)
-        view.loadUrl("https://translate.google.com/translate?sl=auto&tl=ja&u=$encoded")
+    fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
+        pageTranslator.translatePage(entry.webView) { message -> entry.callbacks.onNotice(message) }
     }
     fun goForward(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoForward() }?.goForward()
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
@@ -96,6 +92,7 @@ class BrowserWebViewRegistry(
 
     fun destroyAll() {
         entries.keys.toList().forEach(::remove)
+        pageTranslator.close()
     }
 
     fun clearAllBrowsingData() {
@@ -155,20 +152,21 @@ class BrowserWebViewRegistry(
         }
     }
 
-    private fun configure(view: WebView, settings: BrowserSettings) {
+    private fun configure(view: WebView, settings: BrowserSettings, videoPage: Boolean) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        // Activity と親 View も暗色化を許可しないと、WebView の Force Dark が端末によって無効になる。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(settings.forceDarkPages)
+        // Google 動画検索と YouTube は暗色化のフィルタ対象から外し、映像デコーダを標準描画する。
+        val allowDarkTransforms = settings.forceDarkPages && !videoPage
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowDarkTransforms)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, settings.forceDarkPages)
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowDarkTransforms)
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
             WebSettingsCompat.setForceDark(
                 view.settings,
-                if (settings.forceDarkPages) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+                if (allowDarkTransforms) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
         }
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+        if (allowDarkTransforms && WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
             WebSettingsCompat.setForceDarkStrategy(
                 view.settings,
                 WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
@@ -183,7 +181,7 @@ class BrowserWebViewRegistry(
               var style = document.getElementById(id);
               if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
               style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
-                'body{background:#fff!important;filter:invert(1) hue-rotate(180deg)!important}' +
+                'body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}' +
                 'img,video,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
                 'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
             })();
@@ -232,12 +230,21 @@ class BrowserWebViewRegistry(
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-            entries[tabId]?.callbacks?.onPageStarted(tabId, url)
+            val entry = entries[tabId]
+            view.setBackgroundColor(android.graphics.Color.BLACK)
+            entry?.let { configure(view, it.settings, isVideoSensitivePage(url)) }
+            entry?.callbacks?.onPageStarted(tabId, url)
+        }
+
+        override fun onPageCommitVisible(view: WebView, url: String) {
+            val entry = entries[tabId]
+            // 初回描画の時点で黒背景を注入し、読み込み完了まで白く見える時間を短くする。
+            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
+            super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
-            // 動画表示中の白画面を防ぐため Google 動画検索・YouTube には CSS 反転を重ねない。
             applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
@@ -295,7 +302,7 @@ class BrowserWebViewRegistry(
             val current = entries[tabId] ?: return false
             val newTabId = current.callbacks.onPopupRequested() ?: return false
             val popupView = createWebView(newTabId)
-            configure(popupView, current.settings)
+            configure(popupView, current.settings, false)
             // 新規ウィンドウの WebView を、そのまま新しいタブへ接続する。
             // 空文字を loadedUrl に入れると Compose 再構成時に読み込み状態が不整合になるため null を維持する。
             entries[newTabId] = Entry(
@@ -347,8 +354,9 @@ class BrowserWebViewRegistry(
     private fun isVideoSensitivePage(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         val host = uri.host?.lowercase().orEmpty()
+        val query = uri.query.orEmpty()
         return isYoutubePlaybackResource(url) ||
-            (host.endsWith("google.com") && uri.path == "/search" && uri.query?.contains("tbm=vid") == true)
+            (host.endsWith("google.com") && uri.path == "/search" && (query.contains("tbm=vid") || query.contains("udm=7")))
     }
 
     private fun intentFallbackUrl(url: String): String? = runCatching {

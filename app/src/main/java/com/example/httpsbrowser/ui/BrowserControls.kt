@@ -42,8 +42,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.Translate
-import androidx.compose.material.icons.filled.ZoomIn
-import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -54,6 +52,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -130,9 +129,24 @@ fun AddressBar(
             OutlinedTextField(
                 value = textFieldValue,
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
-                modifier = Modifier.weight(1f).height(54.dp).focusRequester(focusRequester).onFocusChanged { focus ->
+                modifier = Modifier.weight(1f).height(42.dp).focusRequester(focusRequester).onFocusChanged { focus ->
                     if (focus.isFocused && !isEditing) onEditingStarted()
                 },
+                shape = RoundedCornerShape(50),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = Color(0xFF505050),
+                    unfocusedContainerColor = Color(0xFF404040),
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedPlaceholderColor = Color(0xFFD0D0D0),
+                    unfocusedPlaceholderColor = Color(0xFFD0D0D0),
+                    focusedLeadingIconColor = Color.White,
+                    unfocusedLeadingIconColor = Color.White,
+                    focusedTrailingIconColor = Color.White,
+                    unfocusedTrailingIconColor = Color.White
+                ),
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Google 検索または HTTPS URL を入力") },
                 trailingIcon = {
@@ -215,9 +229,6 @@ fun NavigationRow(
     onHistory: () -> Unit,
     onDownloads: () -> Unit,
     onShare: () -> Unit,
-    onZoomIn: () -> Unit,
-    onZoomOut: () -> Unit,
-    onZoomReset: () -> Unit,
     onSettings: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -237,9 +248,6 @@ fun NavigationRow(
                 DropdownMenuItem(text = { Text("履歴") }, leadingIcon = { Icon(Icons.Default.History, null) }, onClick = { menuExpanded = false; onHistory() })
                 DropdownMenuItem(text = { Text("ダウンロード") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onDownloads() })
                 DropdownMenuItem(text = { Text("共有") }, leadingIcon = { Icon(Icons.Default.Share, null) }, onClick = { menuExpanded = false; onShare() })
-                DropdownMenuItem(text = { Text("表示を拡大") }, leadingIcon = { Icon(Icons.Default.ZoomIn, null) }, onClick = { menuExpanded = false; onZoomIn() })
-                DropdownMenuItem(text = { Text("表示を縮小") }, leadingIcon = { Icon(Icons.Default.ZoomOut, null) }, onClick = { menuExpanded = false; onZoomOut() })
-                DropdownMenuItem(text = { Text("倍率を標準に戻す") }, onClick = { menuExpanded = false; onZoomReset() })
                 DropdownMenuItem(text = { Text("設定") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { menuExpanded = false; onSettings() })
             }
         }
@@ -270,47 +278,39 @@ private fun NavButton(
 @Composable
 fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(start = 4.dp, top = 1.dp, bottom = 2.dp),
+        modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(start = 5.dp, top = 2.dp, bottom = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            Modifier.weight(1f).horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
-        ) {
+        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             tabs.forEach { tab ->
                 val selected = tab.id == selectedTabId
                 Row(
                     modifier = Modifier
-                        .height(24.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(if (selected) Color(0xFF858585) else Color(0xFF4A4A4A))
-                        .border(1.dp, if (selected) Color(0xFFD8D8D8) else Color(0xFF666666), RoundedCornerShape(50))
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) Color(0xFF18375B) else Color(0xFF1A2029))
+                        .then(if (selected) Modifier.border(2.dp, Color(0xFF66B5FF), RoundedCornerShape(12.dp)) else Modifier.border(1.dp, Color(0xFF394554), RoundedCornerShape(12.dp)))
                         .clickable { onSelect(tab.id) }
-                        .padding(start = 7.dp, end = 3.dp),
+                        .padding(start = 8.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         tab.title.ifBlank { "ホーム" },
-                        color = Color.White,
-                        modifier = Modifier.width(34.dp),
+                        color = BottomBarText,
+                        modifier = Modifier.width(46.dp),
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall
+                        style = MaterialTheme.typography.labelMedium
                     )
-                    Box(
-                        modifier = Modifier.size(16.dp).clickable { onClose(tab.id) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(13.dp), tint = Color.White)
+                    IconButton(onClick = { onClose(tab.id) }, modifier = Modifier.size(25.dp), colors = IconButtonDefaults.iconButtonColors(contentColor = BottomBarText)) {
+                        Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(16.dp))
                     }
                 }
             }
         }
-        Box(
-            modifier = Modifier.size(26.dp).clip(CircleShape).background(Color(0xFF555555)).clickable { onAdd() },
-            contentAlignment = Alignment.Center
-        ) { Icon(Icons.Default.Add, contentDescription = "新しいタブ", modifier = Modifier.size(17.dp), tint = Color.White) }
+        IconButton(onClick = onAdd, modifier = Modifier.size(34.dp), colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)) {
+            Icon(Icons.Default.Add, contentDescription = "新しいタブ")
+        }
     }
 }
 
