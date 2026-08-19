@@ -37,7 +37,13 @@ class BrowserWebViewRegistry(
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
         entry.settings = settings
+        val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages
         configure(entry.webView, settings)
+        entry.appliedForceDark = settings.forceDarkPages
+        if (darkModeChanged && entry.loadedUrl != null) {
+            // 既に表示中のページにもダーク化設定を確実に反映する。
+            entry.webView.post { entry.webView.reload() }
+        }
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
             entry.webView.loadUrl(tab.lastRequestedUrl)
@@ -122,9 +128,12 @@ class BrowserWebViewRegistry(
 
     private fun configure(view: WebView, settings: BrowserSettings) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
+        // Android 13 以降のアルゴリズム暗色化と旧 WebView の Force Dark の双方を設定する。
+        // 片方だけを else 分岐にすると、端末によって切替が反映されないことがある。
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, settings.forceDarkPages)
-        } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
             WebSettingsCompat.setForceDark(
                 view.settings,
                 if (settings.forceDarkPages) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
@@ -257,7 +266,8 @@ class BrowserWebViewRegistry(
         val webView: WebView,
         var loadedUrl: String? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
-        var settings: BrowserSettings = BrowserSettings()
+        var settings: BrowserSettings = BrowserSettings(),
+        var appliedForceDark: Boolean? = null
     )
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)

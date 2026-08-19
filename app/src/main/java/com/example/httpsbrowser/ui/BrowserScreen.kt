@@ -16,8 +16,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -130,105 +133,107 @@ fun BrowserScreen(viewModel: BrowserViewModel) {
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (selectedTab?.isHome == true) {
-            HomeScreen(
-                bookmarks = state.bookmarks,
-                onOpenBookmark = { bookmark -> viewModel.prepareNavigation(bookmark.url) },
-                onAddBookmark = { addBookmarkDialog = true }
-            )
-        } else if (selectedTab != null) {
-            androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
+        if (state.isFullscreen) {
+            fullscreenContent?.let { content ->
                 AndroidView(
-                    factory = {
-                        registry.obtain(selectedTab, state.settings, callbacksFor(
-                            viewModel = viewModel,
-                            registry = registry,
-                            tabId = selectedTab.id,
-                            onProgress = { progress = it },
-                            onFullscreen = ::enterFullscreen,
-                            onHideFullscreen = { finishFullscreen(false) },
-                            onPermission = { origin, resources, reply ->
-                                pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
-                            },
-                            onLongPress = { longPressedLink = it },
-                            onNotice = { notice = it },
-                            onRendererGone = { rendererVersion++ }
-                        ))
+                    factory = { FrameLayout(it).apply { setBackgroundColor(android.graphics.Color.BLACK) } },
+                    update = { host ->
+                        if (content.view.parent !== host) {
+                            (content.view.parent as? ViewGroup)?.removeView(content.view)
+                            host.removeAllViews()
+                            host.addView(content.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                        }
                     },
-                    update = {
-                        registry.obtain(selectedTab, state.settings, callbacksFor(
-                            viewModel = viewModel,
-                            registry = registry,
-                            tabId = selectedTab.id,
-                            onProgress = { progress = it },
-                            onFullscreen = ::enterFullscreen,
-                            onHideFullscreen = { finishFullscreen(false) },
-                            onPermission = { origin, resources, reply ->
-                                pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
-                            },
-                            onLongPress = { longPressedLink = it },
-                            onNotice = { notice = it },
-                            onRendererGone = { rendererVersion++ }
-                        ))
-                    },
-                    modifier = Modifier.fillMaxSize().pointerInput(state.isAddressFocused) {
-                        detectTapGestures(onTap = { if (state.isAddressFocused) viewModel.stopAddressEditing() })
-                    }
+                    modifier = Modifier.fillMaxSize()
                 )
             }
-        }
-
-        fullscreenContent?.let { content ->
-            AndroidView(
-                factory = { FrameLayout(it).apply { setBackgroundColor(android.graphics.Color.BLACK) } },
-                update = { host ->
-                    if (content.view.parent !== host) {
-                        (content.view.parent as? ViewGroup)?.removeView(content.view)
-                        host.removeAllViews()
-                        host.addView(content.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        } else if (selectedTab != null) {
+            // 表示領域と操作バーを重ねずに分離する。操作バーのタップは WebView へ透過しない。
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    if (selectedTab.isHome) {
+                        HomeScreen(
+                            bookmarks = state.bookmarks,
+                            onOpenBookmark = { bookmark -> viewModel.prepareNavigation(bookmark.url) },
+                            onAddBookmark = { addBookmarkDialog = true }
+                        )
+                    } else {
+                        androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
+                            AndroidView(
+                                factory = {
+                                    registry.obtain(selectedTab, state.settings, callbacksFor(
+                                        viewModel = viewModel,
+                                        registry = registry,
+                                        tabId = selectedTab.id,
+                                        onProgress = { progress = it },
+                                        onFullscreen = ::enterFullscreen,
+                                        onHideFullscreen = { finishFullscreen(false) },
+                                        onPermission = { origin, resources, reply ->
+                                            pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
+                                        },
+                                        onLongPress = { longPressedLink = it },
+                                        onNotice = { notice = it },
+                                        onRendererGone = { rendererVersion++ }
+                                    ))
+                                },
+                                update = {
+                                    registry.obtain(selectedTab, state.settings, callbacksFor(
+                                        viewModel = viewModel,
+                                        registry = registry,
+                                        tabId = selectedTab.id,
+                                        onProgress = { progress = it },
+                                        onFullscreen = ::enterFullscreen,
+                                        onHideFullscreen = { finishFullscreen(false) },
+                                        onPermission = { origin, resources, reply ->
+                                            pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
+                                        },
+                                        onLongPress = { longPressedLink = it },
+                                        onNotice = { notice = it },
+                                        onRendererGone = { rendererVersion++ }
+                                    ))
+                                },
+                                modifier = Modifier.fillMaxSize().pointerInput(state.isAddressFocused) {
+                                    detectTapGestures(onTap = { if (state.isAddressFocused) viewModel.stopAddressEditing() })
+                                }
+                            )
+                        }
+                        Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
+                            RightEdgeScrollRail { fraction -> registry.scrollToFraction(selectedTab.id, fraction) }
+                        }
                     }
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        if (!state.isFullscreen && selectedTab != null) {
-            if (!selectedTab.isHome) {
-                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp, bottom = 132.dp)) {
-                    RightEdgeScrollRail { fraction -> registry.scrollToFraction(selectedTab.id, fraction) }
                 }
-            }
-            androidx.compose.foundation.layout.Column(Modifier.align(Alignment.BottomCenter)) {
-                if (state.isAddressFocused) SuggestionPanel(state.suggestions) { suggestion -> viewModel.openSuggestion(suggestion) }
-                AddressBar(
-                    value = state.addressInput,
-                    progress = progress,
-                    isEditing = state.isAddressFocused,
-                    onValueChange = viewModel::setAddressInput,
-                    onSubmit = { viewModel.prepareNavigation() },
-                    onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
-                    onEditingStarted = viewModel::startAddressEditing
-                )
-                NavigationRow(
-                    canGoBack = selectedTab.canGoBack && !selectedTab.isHome,
-                    canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
-                    onTabs = { viewModel.stopAddressEditing(); viewModel.toggleTabSheet() },
-                    onBack = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goBack(selectedTab.id) },
-                    onSearch = viewModel::startAddressEditing,
-                    onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
-                    onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
-                    onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
-                    onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
-                    onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
-                    onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
-                )
-                TabBar(
-                    tabs = state.tabs,
-                    selectedTabId = state.selectedTabId,
-                    onSelect = viewModel::selectTab,
-                    onClose = { id -> registry.remove(id); viewModel.closeTab(id) },
-                    onAdd = { viewModel.addTab() }
-                )
+                Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+                    if (state.isAddressFocused) SuggestionPanel(state.suggestions) { suggestion -> viewModel.openSuggestion(suggestion) }
+                    AddressBar(
+                        value = state.addressInput,
+                        progress = progress,
+                        isEditing = state.isAddressFocused,
+                        onValueChange = viewModel::setAddressInput,
+                        onSubmit = { viewModel.prepareNavigation() },
+                        onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
+                        onEditingStarted = viewModel::startAddressEditing
+                    )
+                    NavigationRow(
+                        canGoBack = selectedTab.canGoBack && !selectedTab.isHome,
+                        canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
+                        onTabs = { viewModel.stopAddressEditing(); viewModel.toggleTabSheet() },
+                        onBack = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goBack(selectedTab.id) },
+                        onSearch = viewModel::startAddressEditing,
+                        onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
+                        onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
+                        onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
+                        onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
+                        onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
+                        onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
+                    )
+                    TabBar(
+                        tabs = state.tabs,
+                        selectedTabId = state.selectedTabId,
+                        onSelect = viewModel::selectTab,
+                        onClose = { id -> registry.remove(id); viewModel.closeTab(id) },
+                        onAdd = { viewModel.addTab() }
+                    )
+                }
             }
         }
 

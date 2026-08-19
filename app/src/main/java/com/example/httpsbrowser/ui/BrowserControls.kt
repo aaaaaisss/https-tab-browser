@@ -303,7 +303,7 @@ fun RightEdgeScrollRail(onScrollToFraction: (Float) -> Unit) {
 @Composable
 fun HomeScreen(bookmarks: List<Bookmark>, onOpenBookmark: (Bookmark) -> Unit, onAddBookmark: () -> Unit) {
     Box(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(start = 16.dp, top = 28.dp, bottom = 144.dp)
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(start = 16.dp, top = 28.dp, bottom = 12.dp)
     ) {
         Column(horizontalAlignment = Alignment.Start) {
             Text("HTTPS Tab Browser", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.primary)
