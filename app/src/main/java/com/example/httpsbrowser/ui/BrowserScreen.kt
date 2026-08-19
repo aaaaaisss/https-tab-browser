@@ -221,8 +221,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     }
                 }
                 Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
-                    if (state.isAddressFocused) SuggestionPanel(state.suggestions) { suggestion ->
-                        viewModel.stopAddressEditing()
+                    if (state.isSuggestionPanelVisible) SuggestionPanel(state.suggestions) { suggestion ->
                         viewModel.openSuggestion(suggestion)
                     }
                     AddressBar(
@@ -375,8 +374,8 @@ private fun callbacksFor(
     override fun onProgress(tabId: String, progress: Int) = onProgress(progress)
     override fun onScrollPosition(tabId: String, fraction: Float) = onScrollPosition(fraction)
     override fun onHttpsUpgrade(url: String) = registry.load(tabId, url)
-    override fun onBlockedNavigation(url: String) = onNotice("HTTPS 接続のみ許可されています。\n$url")
-    override fun onSslError(url: String) = onNotice("証明書エラーのため安全に接続できませんでした。\n$url")
+    override fun onBlockedNavigation(url: String) = showNotice("HTTPS 接続のみ許可されています。\n$url")
+    override fun onSslError(url: String) = showNotice("証明書エラーのため安全に接続できませんでした。\n$url")
     override fun onRendererGone(tabId: String) = onRendererGone()
     override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = onFullscreen(view, callback)
     override fun onHideFullscreen() = onHideFullscreen()
@@ -386,6 +385,7 @@ private fun callbacksFor(
     override fun onLinkLongPressed(url: String) = onLongPress(url)
     override fun onDownloadStarted(fileName: String) = showNotice("ダウンロードを開始しました: $fileName")
     override fun onExternalAppRequested(url: String) = onExternalApp(url)
+    override fun onPageInteraction() = viewModel.stopAddressEditing()
     override fun onNotice(message: String) = showNotice(message)
 }
 

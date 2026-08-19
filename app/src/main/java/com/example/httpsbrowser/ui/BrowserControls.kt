@@ -13,6 +13,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -129,10 +130,11 @@ fun AddressBar(
             OutlinedTextField(
                 value = textFieldValue,
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
-                modifier = Modifier.weight(1f).height(42.dp).focusRequester(focusRequester).onFocusChanged { focus ->
+                modifier = Modifier.weight(1f).height(48.dp).focusRequester(focusRequester).onFocusChanged { focus ->
                     if (focus.isFocused && !isEditing) onEditingStarted()
                 },
                 shape = RoundedCornerShape(50),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = Color(0xFF505050),
                     unfocusedContainerColor = Color(0xFF404040),

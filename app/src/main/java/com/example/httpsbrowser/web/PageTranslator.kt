@@ -9,7 +9,6 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import org.json.JSONArray
-import org.json.JSONObject
 import org.json.JSONTokener
 
 /**
@@ -44,6 +43,7 @@ class PageTranslator {
                     onStatus("日本語翻訳モデルを準備しています…")
                     translator.downloadModelIfNeeded(DownloadConditions.Builder().build())
                         .addOnSuccessListener {
+                            onStatus("ページを翻訳しています…")
                             translateTexts(webView, translator, texts, onStatus)
                         }
                         .addOnFailureListener {
@@ -67,7 +67,7 @@ class PageTranslator {
         texts: List<String>,
         onStatus: (String) -> Unit
     ) {
-        // 操作性を保つため、最初に画面へ現れる本文 160 ノードを対象にする。
+        // 画面内に現れる本文を優先し、翻訳待ちで画面操作が重くならない上限を設ける。
         val targetTexts = texts.take(MAX_TEXT_NODES)
         val tasks = targetTexts.map { text -> translator.translate(text.take(MAX_NODE_CHARS)) }
         Tasks.whenAllComplete(tasks)
@@ -78,12 +78,20 @@ class PageTranslator {
                 val payload = JSONArray(translated).toString()
                 webView.post {
                     webView.evaluateJavascript(
-                        "window.__httpsBrowserApplyTranslations && window.__httpsBrowserApplyTranslations(${JSONObject.quote(payload)});",
-                        null
-                    )
+                        """
+                        (function() {
+                          try {
+                            if (!window.__httpsBrowserApplyTranslations) return 'missing';
+                            return window.__httpsBrowserApplyTranslations($payload) ? 'applied' : 'empty';
+                          } catch (error) { return 'error'; }
+                        })();
+                        """.trimIndent()
+                    ) { result ->
+                        translator.close()
+                        if (result?.contains("applied") == true) onStatus("ページを日本語へ翻訳しました。")
+                        else onStatus("ページへ翻訳結果を適用できませんでした。もう一度お試しください。")
+                    }
                 }
-                translator.close()
-                onStatus("ページを日本語へ翻訳しました。")
             }
             .addOnFailureListener {
                 translator.close()
@@ -99,7 +107,7 @@ class PageTranslator {
     }.getOrDefault(emptyList())
 
     private companion object {
-        const val MAX_TEXT_NODES = 160
+        const val MAX_TEXT_NODES = 80
         const val MAX_NODE_CHARS = 750
 
         val EXTRACT_TEXT_NODES_SCRIPT = """
@@ -107,7 +115,7 @@ class PageTranslator {
               var nodes = [];
               var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
               var node;
-              while ((node = walker.nextNode()) && nodes.length < 160) {
+              while ((node = walker.nextNode()) && nodes.length < 80) {
                 var parent = node.parentElement;
                 var text = (node.nodeValue || '').trim();
                 if (!parent || text.length < 2) continue;
@@ -117,13 +125,16 @@ class PageTranslator {
                 nodes.push(node);
               }
               window.__httpsBrowserTranslateNodes = nodes;
-              window.__httpsBrowserApplyTranslations = function(serialized) {
-                try {
-                  var values = JSON.parse(serialized);
-                  for (var i = 0; i < values.length && i < nodes.length; i++) {
-                    if (typeof values[i] === 'string' && values[i].length > 0) nodes[i].nodeValue = values[i];
+              window.__httpsBrowserApplyTranslations = function(values) {
+                var applied = 0;
+                if (!Array.isArray(values)) return false;
+                for (var i = 0; i < values.length && i < nodes.length; i++) {
+                  if (typeof values[i] === 'string' && values[i].length > 0) {
+                    nodes[i].nodeValue = values[i];
+                    applied++;
                   }
-                } catch (_) {}
+                }
+                return applied > 0;
               };
               return JSON.stringify(nodes.map(function(item) { return item.nodeValue || ''; }));
             })();

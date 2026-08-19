@@ -26,6 +26,7 @@ import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.UrlRuleBlocker
 import java.io.ByteArrayInputStream
+import org.json.JSONObject
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
@@ -140,6 +141,12 @@ class BrowserWebViewRegistry(
         webViewClient = SecureClient(tabId)
         webChromeClient = SecureChromeClient(tabId)
         setDownloadListener(SecureDownloadListener(tabId))
+        setOnTouchListener { _, event ->
+            if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                entries[tabId]?.callbacks?.onPageInteraction()
+            }
+            false
+        }
         setOnLongClickListener {
             val url = when (hitTestResult.type) {
                 WebView.HitTestResult.SRC_ANCHOR_TYPE,
@@ -172,6 +179,23 @@ class BrowserWebViewRegistry(
                 WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
             )
         }
+    }
+
+    private fun applyCosmeticAdFilters(view: WebView, url: String, enabled: Boolean) {
+        val script = if (enabled) {
+            val css = blocker.cosmeticCssFor(url)
+            """
+                (function() {
+                  var id = '__https_browser_adblock_css';
+                  var style = document.getElementById(id);
+                  if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
+                  style.textContent = ${JSONObject.quote(css)};
+                })();
+            """.trimIndent()
+        } else {
+            "(function() { document.getElementById('__https_browser_adblock_css')?.remove(); })();"
+        }
+        view.evaluateJavascript(script, null)
     }
 
     private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
@@ -239,12 +263,14 @@ class BrowserWebViewRegistry(
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
             // 初回描画の時点で黒背景を注入し、読み込み完了まで白く見える時間を短くする。
+            applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
+            applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
@@ -401,6 +427,7 @@ interface BrowserWebCallbacks {
     fun onLinkLongPressed(url: String)
     fun onDownloadStarted(fileName: String)
     fun onExternalAppRequested(url: String)
+    fun onPageInteraction()
     fun onNotice(message: String)
 
     data object Empty : BrowserWebCallbacks {
@@ -422,6 +449,7 @@ interface BrowserWebCallbacks {
         override fun onLinkLongPressed(url: String) = Unit
         override fun onDownloadStarted(fileName: String) = Unit
         override fun onExternalAppRequested(url: String) = Unit
+        override fun onPageInteraction() = Unit
         override fun onNotice(message: String) = Unit
     }
 }

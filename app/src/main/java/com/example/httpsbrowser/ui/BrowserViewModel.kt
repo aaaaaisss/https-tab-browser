@@ -64,6 +64,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             selectedTabId = id,
             addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
             isAddressFocused = false,
+            isSuggestionPanelVisible = false,
             suggestions = emptyList(),
             isTabSheetVisible = false
         )
@@ -85,6 +86,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             selectedTabId = tab.id,
             addressInput = tab.displayText,
             isAddressFocused = false,
+            isSuggestionPanelVisible = false,
             suggestions = emptyList()
         )
         persistSoon()
@@ -98,7 +100,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val remaining = current.filterNot { it.id == id }
         if (remaining.isEmpty()) {
             val newTab = homeTab()
-            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "")
+            uiState = uiState.copy(
+                tabs = listOf(newTab),
+                selectedTabId = newTab.id,
+                addressInput = "",
+                isAddressFocused = false,
+                isSuggestionPanelVisible = false,
+                suggestions = emptyList()
+            )
         } else {
             val next = remaining.getOrElse((closingIndex - 1).coerceAtLeast(0)) { remaining.last() }
             uiState = uiState.copy(
@@ -106,6 +115,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 selectedTabId = next.id,
                 addressInput = if (next.isHome) "" else next.displayText.ifBlank { next.url },
                 isAddressFocused = false,
+                isSuggestionPanelVisible = false,
                 suggestions = emptyList()
             )
         }
@@ -118,31 +128,42 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         uiState = uiState.copy(
             addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
             isAddressFocused = true,
+            isSuggestionPanelVisible = false,
             suggestions = emptyList()
         )
     }
 
     fun stopAddressEditing() {
+        suggestionJob?.cancel()
         val tab = uiState.selectedTab ?: return
         uiState = uiState.copy(
             addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
             isAddressFocused = false,
+            isSuggestionPanelVisible = false,
             suggestions = emptyList()
         )
     }
 
     fun setAddressInput(value: String) {
         val query = value.trim()
-        // まず端末内の履歴・ブックマーク候補を即時表示し、通信待ちで候補欄が消えないようにする。
-        uiState = uiState.copy(addressInput = value, isAddressFocused = true, suggestions = createSuggestions(value))
+        // 候補パネルは入力中だけ専用状態で表示し、ページ遷移後に残らないようにする。
+        val localSuggestions = createSuggestions(value)
+        uiState = uiState.copy(
+            addressInput = value,
+            isAddressFocused = true,
+            // 端末内候補がゼロでも 2 文字以上なら Google 候補の到着を待って表示する。
+            isSuggestionPanelVisible = query.length >= 2 || (query.isNotBlank() && localSuggestions.isNotEmpty()),
+            suggestions = localSuggestions
+        )
         suggestionJob?.cancel()
         if (query.length < 2) return
         suggestionJob = viewModelScope.launch {
             delay(180)
             val googleQueries = withContext(Dispatchers.IO) { fetchGoogleSuggestions(query) }
             // 古い入力に対する応答や、編集終了後の応答では画面を上書きしない。
-            if (uiState.isAddressFocused && uiState.addressInput == value) {
-                uiState = uiState.copy(suggestions = createSuggestions(value, googleQueries))
+            if (uiState.isAddressFocused && uiState.isSuggestionPanelVisible && uiState.addressInput == value) {
+                val refreshed = createSuggestions(value, googleQueries)
+                uiState = uiState.copy(suggestions = refreshed, isSuggestionPanelVisible = refreshed.isNotEmpty())
             }
         }
     }
@@ -156,7 +177,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             displayMode = prepared.displayMode,
             isHome = false
         ) }
-        uiState = uiState.copy(addressInput = prepared.displayText, isAddressFocused = false, suggestions = emptyList())
+        suggestionJob?.cancel()
+        uiState = uiState.copy(
+            addressInput = prepared.displayText,
+            isAddressFocused = false,
+            isSuggestionPanelVisible = false,
+            suggestions = emptyList()
+        )
         persistSoon()
         return prepared
     }
@@ -165,7 +192,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateSelected { tab ->
             tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, canGoBack = false, canGoForward = false)
         }
-        uiState = uiState.copy(addressInput = "", isAddressFocused = false, suggestions = emptyList())
+        suggestionJob?.cancel()
+        uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
         persistSoon()
     }
 
@@ -210,7 +238,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun toggleTabSheet() { uiState = uiState.copy(isTabSheetVisible = !uiState.isTabSheetVisible) }
 
     fun openSettings(page: SettingsPage = SettingsPage.ROOT) {
-        uiState = uiState.copy(isSettingsSheetVisible = true, settingsPage = page, isAddressFocused = false, suggestions = emptyList())
+        suggestionJob?.cancel()
+        uiState = uiState.copy(isSettingsSheetVisible = true, settingsPage = page, isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
     }
 
     fun closeSettings() { uiState = uiState.copy(isSettingsSheetVisible = false, settingsPage = SettingsPage.ROOT) }
@@ -256,7 +285,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             withContext(Dispatchers.IO) { repository.clearBrowsingData(keepBookmarks = true) }
             val newTab = homeTab()
-            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "", history = emptyList(), isAddressFocused = false, suggestions = emptyList())
+            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "", history = emptyList(), isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
             onDone()
         }
     }
@@ -278,7 +307,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun createSuggestions(input: String, googleQueries: List<String> = emptyList()): List<Suggestion> {
-        val needle = input.trim().lowercase()
+        val needle = input.trim()
         if (needle.isBlank()) return emptyList()
         val results = linkedMapOf<String, Suggestion>()
         uiState.tabs.filter { !it.isHome && (it.title.contains(needle, true) || it.url.contains(needle, true)) }.forEach {
@@ -287,14 +316,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         uiState.bookmarks.filter { it.title.contains(needle, true) || it.url.contains(needle, true) }.forEach {
             results.putIfAbsent(it.url, Suggestion(it.title, it.url, it.url, SuggestionType.BOOKMARK))
         }
-        uiState.history.filter { it.title.contains(needle, true) || it.url.contains(needle, true) || it.query?.contains(needle, true) == true }.forEach {
-            results.putIfAbsent(it.url, Suggestion(it.query ?: it.title, it.url, it.url, SuggestionType.HISTORY))
+        // Google 検索として保存された履歴だけから、入力先頭が一致する最新1件を候補にする。
+        uiState.history.firstOrNull { entry -> entry.query?.startsWith(needle, ignoreCase = true) == true }?.let { entry ->
+            results.putIfAbsent(entry.url, Suggestion(entry.query.orEmpty(), "", entry.query.orEmpty(), SuggestionType.HISTORY))
         }
         googleQueries.forEach { query ->
             results.putIfAbsent("google:$query", Suggestion(query, "", query, SuggestionType.GOOGLE_SEARCH))
         }
-        results.putIfAbsent("google:$input", Suggestion(input, "", input, SuggestionType.GOOGLE_SEARCH))
-        return results.values.take(8)
+        results.putIfAbsent("google:$needle", Suggestion(needle, "", needle, SuggestionType.GOOGLE_SEARCH))
+        return results.values.take(10)
     }
 
     private fun fetchGoogleSuggestions(query: String): List<String> = runCatching {

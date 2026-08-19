@@ -41,13 +41,32 @@ class UrlRuleBlocker {
         return matchesDomainSet(host, set.blockDomains) || set.blockOther.any { it.matches(target, url) }
     }
 
+    /** 現在のページだけに適用する、リスト由来の安全な CSS 非表示規則を返す。 */
+    fun cosmeticCssFor(pageUrl: String): String {
+        val host = runCatching { URI(pageUrl).host?.lowercase().orEmpty() }.getOrDefault("")
+        val matchingSelectors = rules.get().cosmeticRules.asSequence()
+            .filter { rule -> rule.domains.isEmpty() || rule.domains.any { domain -> host == domain || host.endsWith(".$domain") } }
+            .map { it.selector }
+            .distinct()
+            .take(MAX_COSMETIC_SELECTORS_PER_PAGE)
+            .toList()
+        val declarations = "{display:none!important;visibility:hidden!important;}"
+        return FALLBACK_COSMETIC_SELECTORS.joinToString(",") + declarations +
+            matchingSelectors.joinToString(separator = "") { selector -> "$selector$declarations" }
+    }
+
     fun replaceRules(lines: Sequence<String>) {
         val allowDomains = HashSet<String>()
         val blockDomains = HashSet<String>()
         val allowOther = mutableListOf<UrlRule>()
         val blockOther = mutableListOf<UrlRule>()
+        val cosmeticRules = mutableListOf<CosmeticRule>()
         lines.forEach { raw ->
             val line = raw.trim()
+            CosmeticRule.parse(line)?.let { rule ->
+                if (cosmeticRules.size < MAX_COSMETIC_RULES) cosmeticRules += rule
+                return@forEach
+            }
             if (line.isBlank() || line.startsWith("!") || line.startsWith("[") || line.startsWith("#")) return@forEach
             val isAllow = line.startsWith("@@")
             val rule = UrlRule.parse(if (isAllow) line.removePrefix("@@") else line) ?: return@forEach
@@ -56,7 +75,7 @@ class UrlRuleBlocker {
                 else -> if (isAllow) allowOther += rule else blockOther += rule
             }
         }
-        rules.set(RuleSet(allowDomains, blockDomains, allowOther, blockOther))
+        rules.set(RuleSet(allowDomains, blockDomains, allowOther, blockOther, cosmeticRules))
     }
 
     private fun matchesDomainSet(host: String, rules: Set<String>): Boolean {
@@ -72,8 +91,35 @@ class UrlRuleBlocker {
         val allowDomains: Set<String> = emptySet(),
         val blockDomains: Set<String> = emptySet(),
         val allowOther: List<UrlRule> = emptyList(),
-        val blockOther: List<UrlRule> = emptyList()
+        val blockOther: List<UrlRule> = emptyList(),
+        val cosmeticRules: List<CosmeticRule> = emptyList()
     )
+
+    private data class CosmeticRule(val domains: List<String>, val selector: String) {
+        companion object {
+            fun parse(line: String): CosmeticRule? {
+                if (line.startsWith("!") || line.contains("#%#") || line.contains("#$#") || line.contains("#@#")) return null
+                val divider = line.indexOf("##")
+                if (divider < 0) return null
+                val selector = line.substring(divider + 2).trim()
+                if (selector.isBlank() || selector.length > 500 || selector.contains("scriptlet", true)) return null
+                val domains = line.substring(0, divider).split(',').map(String::trim)
+                    .filter { it.isNotBlank() && it.none { character -> character == '~' || character == '*' } }
+                    .map(String::lowercase)
+                return CosmeticRule(domains, selector)
+            }
+        }
+    }
+
+    private companion object {
+        const val MAX_COSMETIC_RULES = 4_000
+        const val MAX_COSMETIC_SELECTORS_PER_PAGE = 450
+        val FALLBACK_COSMETIC_SELECTORS = listOf(
+            "ins.adsbygoogle", "[data-ad-client]", "[data-ad-slot]", "[id^='google_ads']",
+            "iframe[src*='doubleclick']", "iframe[src*='googlesyndication']", "iframe[src*='adservice']",
+            "[class~='advertisement']", "[class~='advert']", "[aria-label='Advertisement']"
+        )
+    }
 }
 
 private sealed interface UrlRule {

@@ -48,6 +48,7 @@ data class BrowserUiState(
     val bookmarks: List<Bookmark> = emptyList(),
     val settings: BrowserSettings = BrowserSettings(),
     val isAddressFocused: Boolean = false,
+    val isSuggestionPanelVisible: Boolean = false,
     val isTabSheetVisible: Boolean = false,
     val isSettingsSheetVisible: Boolean = false,
     val settingsPage: SettingsPage = SettingsPage.ROOT,
