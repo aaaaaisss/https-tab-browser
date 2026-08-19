@@ -45,6 +45,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.AdBlockUpdateWorker
 import com.example.httpsbrowser.data.SettingsPage
@@ -86,6 +87,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var notice by remember { mutableStateOf<String?>(null) }
     var addBookmarkDialog by remember { mutableStateOf(false) }
     var editingHomeBookmark by remember { mutableStateOf<com.example.httpsbrowser.data.Bookmark?>(null) }
+    var homeBookmarkEditMode by remember { mutableStateOf(false) }
+    var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -125,6 +128,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     LaunchedEffect(externalUrl) {
         externalUrl?.let { viewModel.prepareNavigation(it) }
     }
+    LaunchedEffect(state.bookmarks) {
+        homeBookmarkSelection = homeBookmarkSelection.intersect(state.bookmarks.map { it.id }.toSet())
+    }
     DisposableEffect(selectedTab?.id) {
         selectedTab?.takeIf { !it.isHome }?.let { registry.resume(it.id) }
         // タブ切替だけで WebView を pause すると、ユーザーが開始した音声・動画も停止する。
@@ -141,12 +147,14 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         fullscreenContent = null
         (content.view.parent as? ViewGroup)?.removeView(content.view)
         viewModel.setFullscreen(false)
+        (activity as? MainActivity)?.setPictureInPictureEligible(false)
         if (notifyPage) content.callback.onCustomViewHidden()
         activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView).show(WindowInsetsCompat.Type.systemBars()) }
     }
 
     fun enterFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
         viewModel.setFullscreen(true)
+        (activity as? MainActivity)?.setPictureInPictureEligible(true)
         fullscreenContent = FullscreenContent(view, callback)
         activity?.let {
             WindowCompat.getInsetsController(it.window, it.window.decorView).apply {
@@ -162,6 +170,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             state.isAddressFocused -> viewModel.stopAddressEditing()
             state.isTabSheetVisible -> viewModel.toggleTabSheet()
             state.isSettingsSheetVisible -> viewModel.backFromSettingsPage()
+            homeBookmarkEditMode -> {
+                homeBookmarkEditMode = false
+                homeBookmarkSelection = emptySet()
+            }
             selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
             selectedTab?.isHome == false -> viewModel.openHome()
             else -> Unit // 履歴が尽きても戻る操作でアプリを終了しない。
@@ -190,11 +202,21 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     if (selectedTab.isHome) {
                         HomeScreen(
                             bookmarks = state.bookmarks,
+                            editMode = homeBookmarkEditMode,
+                            selectedIds = homeBookmarkSelection,
                             onOpenBookmark = { bookmark -> viewModel.prepareNavigation(bookmark.url) },
                             onAddBookmark = { addBookmarkDialog = true },
-                            onEditBookmark = { bookmark -> editingHomeBookmark = bookmark },
-                            onDeleteBookmarks = viewModel::removeBookmarks,
-                            onMoveBookmarks = viewModel::moveBookmarks
+                            onEnterEditMode = { id ->
+                                homeBookmarkEditMode = true
+                                homeBookmarkSelection = setOf(id)
+                            },
+                            onToggleSelection = { id ->
+                                homeBookmarkSelection = if (id in homeBookmarkSelection) homeBookmarkSelection - id else homeBookmarkSelection + id
+                            },
+                            onExitEditMode = {
+                                homeBookmarkEditMode = false
+                                homeBookmarkSelection = emptySet()
+                            }
                         )
                     } else {
                         androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
@@ -297,6 +319,27 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     )
                 }
             }
+        }
+
+        if (!state.isFullscreen && selectedTab?.isHome == true && homeBookmarkEditMode) {
+            BookmarkEditActionBar(
+                selectedCount = homeBookmarkSelection.size,
+                onEdit = {
+                    editingHomeBookmark = state.bookmarks.firstOrNull { it.id in homeBookmarkSelection }
+                },
+                onDelete = {
+                    viewModel.removeBookmarks(homeBookmarkSelection)
+                    homeBookmarkEditMode = false
+                    homeBookmarkSelection = emptySet()
+                },
+                onMoveToBottomRight = { viewModel.moveBookmarks(homeBookmarkSelection, false) },
+                onMoveToTopLeft = { viewModel.moveBookmarks(homeBookmarkSelection, true) },
+                onDone = {
+                    homeBookmarkEditMode = false
+                    homeBookmarkSelection = emptySet()
+                },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 138.dp)
+            )
         }
 
         if (state.isTabSheetVisible) {

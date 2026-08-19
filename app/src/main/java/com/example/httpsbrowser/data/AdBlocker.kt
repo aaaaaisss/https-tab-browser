@@ -198,6 +198,16 @@ private sealed interface UrlRule {
         override fun matches(uri: URI, rawUrl: String) = rawUrl.startsWith(prefix, ignoreCase = true)
     }
 
+    /** `||domain/path` をドメイン全体の規則に縮約せず、対象 host の指定パスだけへ適用する。 */
+    data class DomainPath(val domain: String, val pathPrefix: String) : UrlRule {
+        override fun matches(uri: URI, rawUrl: String): Boolean {
+            val host = uri.host?.lowercase() ?: return false
+            if (host != domain && !host.endsWith(".$domain")) return false
+            val pathAndQuery = uri.rawPath.orEmpty() + uri.rawQuery?.let { "?$it" }.orEmpty()
+            return pathAndQuery.startsWith(pathPrefix, ignoreCase = true)
+        }
+    }
+
     data class Contains(val needle: String) : UrlRule {
         override fun matches(uri: URI, rawUrl: String) = rawUrl.contains(needle, ignoreCase = true)
     }
@@ -206,9 +216,14 @@ private sealed interface UrlRule {
         fun parse(source: String): UrlRule? {
             val withoutOptions = source.substringBefore("$").trim()
             return when {
-                withoutOptions.startsWith("||") -> withoutOptions.removePrefix("||")
-                    .substringBefore('^').substringBefore('/').lowercase()
-                    .takeIf { it.contains('.') && !it.contains('*') }?.let(::Domain)
+                withoutOptions.startsWith("||") -> {
+                    val body = withoutOptions.removePrefix("||")
+                    val domain = body.substringBefore('^').substringBefore('/').lowercase()
+                    val suffix = body.removePrefix(domain).substringBefore('^').replace("*", "")
+                    domain.takeIf { it.contains('.') && !it.contains('*') }?.let {
+                        if (suffix.isBlank()) Domain(it) else DomainPath(it, suffix)
+                    }
+                }
                 withoutOptions.startsWith("|https://") -> Prefix(withoutOptions.removePrefix("|"))
                 withoutOptions.startsWith("http://") || withoutOptions.startsWith("https://") -> Prefix(withoutOptions)
                 withoutOptions.length >= 4 && !withoutOptions.startsWith("/") -> Contains(withoutOptions.replace("*", ""))

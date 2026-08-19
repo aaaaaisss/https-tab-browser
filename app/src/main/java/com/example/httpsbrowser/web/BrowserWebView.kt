@@ -175,8 +175,9 @@ class BrowserWebViewRegistry(
 
     private fun configure(view: WebView, settings: BrowserSettings, videoPage: Boolean) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        // Google 動画検索と YouTube は暗色化のフィルタ対象から外し、映像デコーダを標準描画する。
-        val allowDarkTransforms = settings.forceDarkPages && !videoPage
+        // プレーヤー DOM を直接書き換えず、WebView 標準の暗色化だけを許可する。
+        // 映像は GPU の別レイヤーで描画されるため、CSS 反転より再生を壊しにくい。
+        val allowDarkTransforms = settings.forceDarkPages
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowDarkTransforms)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowDarkTransforms)
@@ -196,6 +197,12 @@ class BrowserWebViewRegistry(
     }
 
     private fun applyCosmeticAdFilters(view: WebView, url: String, enabled: Boolean) {
+        // YouTube の内部要素へ汎用 AdGuard CSS を注入するとプレーヤー・レイアウトを隠すことがある。
+        // YouTube は専用の限定 selector だけを別処理で適用する。
+        if (isYoutubePlaybackResource(url)) {
+            view.evaluateJavascript("(function() { document.getElementById('__https_browser_adblock_css')?.remove(); })();", null)
+            return
+        }
         val script = if (enabled) {
             val css = blocker.cosmeticCssFor(url)
             """
@@ -212,23 +219,24 @@ class BrowserWebViewRegistry(
         view.evaluateJavascript(script, null)
     }
 
-    /** 映像そのものを反転せず、YouTube のネイティブな dark 属性を要求する。 */
-    private fun applyYoutubeDarkTheme(view: WebView, url: String, enabled: Boolean) {
+    /** プレーヤー本体に触れず、YouTube ページの広告枠・プロモーション枠だけを非表示にする。 */
+    private fun applyYoutubeAdUiFilters(view: WebView, url: String, enabled: Boolean) {
         if (!isYoutubePlaybackResource(url)) return
-        val script = if (enabled) """
+        val css = if (enabled) """
+            ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,
+            ytd-promoted-sparkles-web-renderer,ytd-companion-slot-renderer,
+            ytd-action-companion-ad-renderer,ytm-ad-slot-renderer,
+            ytm-promoted-sparkles-web-renderer,ytm-companion-ad-renderer,
+            #player-ads,.ytp-ad-overlay-container,.ytp-ad-module {
+              display:none!important;visibility:hidden!important;
+            }
+        """.trimIndent() else ""
+        val script = """
             (function() {
-              var root = document.documentElement;
-              if (!root) return;
-              root.setAttribute('dark', '');
-              root.style.colorScheme = 'dark';
-              var meta = document.querySelector('meta[name="color-scheme"]');
-              if (!meta) { meta = document.createElement('meta'); meta.name = 'color-scheme'; document.head && document.head.appendChild(meta); }
-              if (meta) meta.content = 'dark';
-            })();
-        """.trimIndent() else """
-            (function() {
-              var root = document.documentElement;
-              if (root) { root.removeAttribute('dark'); root.style.removeProperty('color-scheme'); }
+              var id = '__https_browser_youtube_ad_css';
+              var style = document.getElementById(id);
+              if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
+              style.textContent = ${JSONObject.quote(css)};
             })();
         """.trimIndent()
         view.evaluateJavascript(script, null)
@@ -278,10 +286,10 @@ class BrowserWebViewRegistry(
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
             val entry = entries[tabId] ?: return null
             val url = request.url.toString()
-            // YouTube の動画・画像ストリームだけを保護し、それ以外の YouTube ページ内広告・
-            // 追跡リソースには AdGuard URL 規則を適用する。映像ストリームは通常動画と広告動画を
-            // URL だけで安全に区別できないため、再生を壊すブロックは行わない。
-            if (entry.settings.adBlockingEnabled && !isYoutubeCoreMediaResource(url) && blocker.shouldBlock(url)) {
+            // YouTube は動画本体・内部 API を URL 規則で遮断しない。広告・計測に使われる
+            // 専用ドメインだけに URL フィルタを限定し、プレーヤーの起動と全画面表示を保護する。
+            val shouldCheck = if (isYoutubePlaybackResource(url)) isYoutubeAdOrTrackingNetwork(url) else true
+            if (entry.settings.adBlockingEnabled && shouldCheck && blocker.shouldBlock(url)) {
                 return WebResourceResponse(
                     "text/plain", "utf-8", 204, "No Content",
                     mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0))
@@ -301,7 +309,7 @@ class BrowserWebViewRegistry(
             val entry = entries[tabId]
             // 初回描画の時点で黒背景を注入し、読み込み完了まで白く見える時間を短くする。
             applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
-            applyYoutubeDarkTheme(view, url, entry?.settings?.forceDarkPages == true)
+            applyYoutubeAdUiFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             super.onPageCommitVisible(view, url)
         }
@@ -309,7 +317,7 @@ class BrowserWebViewRegistry(
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
             applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
-            applyYoutubeDarkTheme(view, url, entry?.settings?.forceDarkPages == true)
+            applyYoutubeAdUiFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             CookieManager.getInstance().flush()
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
@@ -438,11 +446,19 @@ class BrowserWebViewRegistry(
             host == "youtubei.googleapis.com"
     }
 
-    /** 動画本体・サムネイルは通常映像と広告映像を URL 規則だけで判別できないため保護する。 */
-    private fun isYoutubeCoreMediaResource(url: String): Boolean {
-        val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
-        return host == "googlevideo.com" || host.endsWith(".googlevideo.com") ||
-            host == "ytimg.com" || host.endsWith(".ytimg.com")
+    /** YouTube の再生系・内部 API を避け、広告配信・計測専用と判断できるドメインだけを遮断候補にする。 */
+    private fun isYoutubeAdOrTrackingNetwork(url: String): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase().orEmpty()
+        val path = uri.path.orEmpty()
+        return host == "ads.youtube.com" || host.endsWith(".ads.youtube.com") ||
+            host == "doubleclick.net" || host.endsWith(".doubleclick.net") ||
+            host == "googlesyndication.com" || host.endsWith(".googlesyndication.com") ||
+            host == "googleadservices.com" || host.endsWith(".googleadservices.com") ||
+            host == "googletagservices.com" || host.endsWith(".googletagservices.com") ||
+            ((host == "youtube.com" || host.endsWith(".youtube.com")) &&
+                (path.startsWith("/api/stats/ads") || path.startsWith("/_get_ads") ||
+                    path.startsWith("/pcs/activeview") || path.startsWith("/pagead")))
     }
 
     private fun upgradeToHttps(url: String): String? = runCatching {

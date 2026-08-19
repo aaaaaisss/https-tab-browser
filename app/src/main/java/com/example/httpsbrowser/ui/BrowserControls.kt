@@ -414,41 +414,26 @@ private fun loadFavicon(pageUrl: String): ImageBitmap? = runCatching {
 @Composable
 fun HomeScreen(
     bookmarks: List<Bookmark>,
+    editMode: Boolean,
+    selectedIds: Set<String>,
     onOpenBookmark: (Bookmark) -> Unit,
     onAddBookmark: () -> Unit,
-    onEditBookmark: (Bookmark) -> Unit,
-    onDeleteBookmarks: (Set<String>) -> Unit,
-    onMoveBookmarks: (Set<String>, Boolean) -> Unit
+    onEnterEditMode: (String) -> Unit,
+    onToggleSelection: (String) -> Unit,
+    onExitEditMode: () -> Unit
 ) {
-    var editMode by remember { mutableStateOf(false) }
-    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    LaunchedEffect(bookmarks) {
-        selectedIds = selectedIds.intersect(bookmarks.map { it.id }.toSet())
-    }
     val bookmarkCells: List<HomeCell> = bookmarks.take(24).map { HomeCell.BookmarkCell(it) }
     val cells: List<HomeCell> = if (editMode) bookmarkCells else bookmarkCells + HomeCell.AddCell
     val rows = cells.chunked(4)
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
+        // グリッド外の背景をタップした場合だけ編集モードを終了する。
         if (editMode) {
-            Column(
-                modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFF1E2733)).padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Text("ブックマークを選択: ${selectedIds.size} 件", color = Color.White, style = MaterialTheme.typography.labelMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
-                        enabled = selectedIds.size == 1,
-                        onClick = { bookmarks.firstOrNull { it.id in selectedIds }?.let(onEditBookmark) }
-                    ) { Text("編集") }
-                    TextButton(enabled = selectedIds.isNotEmpty(), onClick = {
-                        onDeleteBookmarks(selectedIds)
-                        selectedIds = emptySet()
-                    }) { Text("削除") }
-                    TextButton(enabled = selectedIds.isNotEmpty(), onClick = { onMoveBookmarks(selectedIds, false) }) { Text("右下へ") }
-                    TextButton(enabled = selectedIds.isNotEmpty(), onClick = { onMoveBookmarks(selectedIds, true) }) { Text("左上へ") }
-                    TextButton(onClick = { editMode = false; selectedIds = emptySet() }) { Text("完了") }
+            Box(
+                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                    detectTapGestures(onTap = { onExitEditMode() })
                 }
-            }
+            )
         }
         Column(
             modifier = Modifier.align(Alignment.BottomEnd),
@@ -467,13 +452,12 @@ fun HomeScreen(
                                         .then(if (selected) Modifier.border(2.dp, Color(0xFF7EC8FF), RoundedCornerShape(10.dp)) else Modifier)
                                         .combinedClickable(
                                             onClick = {
-                                                if (editMode) {
-                                                    selectedIds = if (selected) selectedIds - cell.bookmark.id else selectedIds + cell.bookmark.id
-                                                } else onOpenBookmark(cell.bookmark)
+                                                if (editMode) onToggleSelection(cell.bookmark.id)
+                                                else onOpenBookmark(cell.bookmark)
                                             },
                                             onLongClick = {
-                                                editMode = true
-                                                selectedIds = selectedIds + cell.bookmark.id
+                                                if (editMode) onToggleSelection(cell.bookmark.id)
+                                                else onEnterEditMode(cell.bookmark.id)
                                             }
                                         )
                                 ) {
@@ -504,6 +488,37 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun BookmarkEditActionBar(
+    selectedCount: Int,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onMoveToBottomRight: () -> Unit,
+    onMoveToTopLeft: () -> Unit,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 10.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xEE1E2733))
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+            Text("ブックマークを選択: $selectedCount 件", color = Color.White, style = MaterialTheme.typography.labelMedium)
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(enabled = selectedCount == 1, onClick = onEdit) { Text("編集") }
+                TextButton(enabled = selectedCount > 0, onClick = onDelete) { Text("削除") }
+                TextButton(enabled = selectedCount > 0, onClick = onMoveToBottomRight) { Text("右下へ") }
+                TextButton(enabled = selectedCount > 0, onClick = onMoveToTopLeft) { Text("左上へ") }
+                TextButton(onClick = onDone) { Text("完了") }
             }
         }
     }
