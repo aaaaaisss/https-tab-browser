@@ -33,15 +33,29 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build, unit test and lint
-        run: ./gradlew --no-daemon lintDebug testDebugUnitTest assembleDebug
+      - name: Restore signing key
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.HTTPS_BROWSER_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/https-browser-release.jks"
 
-      - name: Upload debug APK
+      - name: Build, unit test and lint
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/https-browser-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.HTTPS_BROWSER_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.HTTPS_BROWSER_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.HTTPS_BROWSER_KEY_PASSWORD }}
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
+        run: ./gradlew --no-daemon lintDebug testDebugUnitTest assembleRelease
+
+      - name: Upload signed release APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HTTPS-Tab-Browser-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: HTTPS-Tab-Browser-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
 
