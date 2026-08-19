@@ -401,6 +401,7 @@ interface BrowserWebCallbacks {
     fun onLinkLongPressed(url: String)
     fun onDownloadStarted(fileName: String)
     fun onExternalAppRequested(url: String)
+    fun onNotice(message: String)
 
     data object Empty : BrowserWebCallbacks {
         override fun onPageStarted(tabId: String, url: String) = Unit
@@ -421,5 +422,6 @@ interface BrowserWebCallbacks {
         override fun onLinkLongPressed(url: String) = Unit
         override fun onDownloadStarted(fileName: String) = Unit
         override fun onExternalAppRequested(url: String) = Unit
+        override fun onNotice(message: String) = Unit
     }
 }

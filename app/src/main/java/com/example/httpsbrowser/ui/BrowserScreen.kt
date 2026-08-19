@@ -184,7 +184,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                             pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
                                         },
                                         onLongPress = { longPressedLink = it },
-                                        onNotice = { notice = it },
+                                        showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
                                         onRendererGone = { rendererVersion++ }
                                     ))
@@ -202,7 +202,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                             pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
                                         },
                                         onLongPress = { longPressedLink = it },
-                                        onNotice = { notice = it },
+                                        showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
                                         onRendererGone = { rendererVersion++ }
                                     ))
@@ -364,7 +364,7 @@ private fun callbacksFor(
     onHideFullscreen: () -> Unit,
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
     onLongPress: (String) -> Unit,
-    onNotice: (String) -> Unit,
+    showNotice: (String) -> Unit,
     onExternalApp: (String) -> Unit,
     onRendererGone: () -> Unit
 ) = object : BrowserWebCallbacks {
@@ -384,8 +384,9 @@ private fun callbacksFor(
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab().id
     override fun onLinkLongPressed(url: String) = onLongPress(url)
-    override fun onDownloadStarted(fileName: String) = onNotice("ダウンロードを開始しました: $fileName")
+    override fun onDownloadStarted(fileName: String) = showNotice("ダウンロードを開始しました: $fileName")
     override fun onExternalAppRequested(url: String) = onExternalApp(url)
+    override fun onNotice(message: String) = showNotice(message)
 }
 
 private fun requiredAndroidPermissions(resources: Set<String>): Array<String> = buildSet {
