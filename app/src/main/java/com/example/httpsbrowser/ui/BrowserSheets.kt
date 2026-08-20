@@ -42,7 +42,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import com.example.httpsbrowser.CrashDiagnostics
 import androidx.compose.ui.unit.dp
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.BlockListSource
@@ -127,6 +129,7 @@ object BrowserSheets {
         onDeleteHistory: (String) -> Unit,
         onClear: () -> Unit,
         onDownloads: () -> Unit,
+        onShareDiagnostics: () -> Unit,
         onNotice: (String) -> Unit
     ) {
         ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
@@ -136,6 +139,7 @@ object BrowserSheets {
                 SettingsPage.HISTORY -> HistoryPage(state.history, onOpenUrl, onDeleteHistory, onBack)
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
                 SettingsPage.DATA -> DataPage(onClear, onBack)
+                SettingsPage.DIAGNOSTICS -> DiagnosticsPage(onBack, onShareDiagnostics)
             }
         }
     }
@@ -159,6 +163,7 @@ object BrowserSheets {
             item { NavigationItem("閲覧履歴", Icons.Default.History) { onOpenPage(SettingsPage.HISTORY) } }
             item { NavigationItem("ダウンロード", Icons.Default.Download, onDownloads) }
             item { NavigationItem("広告ブロック", Icons.Default.Security) { onOpenPage(SettingsPage.AD_BLOCK) } }
+            item { NavigationItem("クラッシュ診断", Icons.Default.Security) { onOpenPage(SettingsPage.DIAGNOSTICS) } }
             item { NavigationItem("閲覧データの消去", Icons.Default.Delete) { onOpenPage(SettingsPage.DATA) } }
             item { TextButton(onClick = onDismiss, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { Text("閉じる") } }
         }
@@ -310,6 +315,22 @@ object BrowserSheets {
                         sources = listRepository.loadAndCompile(); status = listRepository.blockStatus(); editing = null; onNotice("リストを更新しました: ${updated.name}")
                     }.onFailure { onNotice(it.message ?: "リストを更新できませんでした。") }
                 }
+            }
+        }
+    }
+
+    @Composable
+    private fun DiagnosticsPage(onBack: () -> Unit, onShare: () -> Unit) {
+        val context = LocalContext.current
+        var details by remember { mutableStateOf(CrashDiagnostics.read(context)) }
+        PageHeader("クラッシュ診断", onBack, actionLabel = "更新") { details = CrashDiagnostics.read(context) }
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text("アプリの終了後に再度起動すると、Android 11以降ではOSが記録した終了理由を表示します。自動送信は行いません。")
+            TextButton(onClick = onShare, modifier = Modifier.padding(top = 8.dp)) { Text("診断情報を共有") }
+            if (details.isBlank()) {
+                Text("まだ診断情報はありません。クラッシュ後にアプリを再度開き、この画面で更新してください。", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text(details, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
         }
     }

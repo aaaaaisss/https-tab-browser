@@ -22,6 +22,7 @@ import android.webkit.URLUtil
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import android.content.Intent
+import com.example.httpsbrowser.CrashDiagnostics
 import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BraveAdBlockEngine
@@ -47,6 +48,7 @@ class BrowserWebViewRegistry(
         configure(entry.webView, settings)
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
+            CrashDiagnostics.recordWebViewNavigation(tab.lastRequestedUrl)
             entry.webView.loadUrl(tab.lastRequestedUrl)
         }
         return entry.webView
@@ -56,6 +58,7 @@ class BrowserWebViewRegistry(
         entries[tabId]?.let { entry ->
             if (isHttps(url)) {
                 entry.loadedUrl = url
+                CrashDiagnostics.recordWebViewNavigation(url)
                 entry.webView.loadUrl(url)
             } else entry.callbacks.onBlockedNavigation(url)
         }
@@ -306,6 +309,7 @@ class BrowserWebViewRegistry(
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+            CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
             entry?.cosmeticAppliedUrl = null
             view.setBackgroundColor(android.graphics.Color.BLACK)
@@ -334,9 +338,11 @@ class BrowserWebViewRegistry(
 
         override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
             // 同じURLを即時に再生成すると、壊れたページ・メモリ不足でレンダラーが再度落ちる無限ループになる。
-            // まず破棄して画面側へ復帰を委ね、ユーザーが安全に別ページを開ける状態へ戻す。
-            val callbacks = entries[tabId]?.callbacks ?: BrowserWebCallbacks.Empty
-            remove(tabId)
+            // 既に描画プロセスを失ったWebViewには loadUrl/clearHistory/stopLoading を実行せず、destroyだけを行う。
+            val entry = entries.remove(tabId)
+            val callbacks = entry?.callbacks ?: BrowserWebCallbacks.Empty
+            CrashDiagnostics.recordWebViewRendererGone(detail.didCrash(), detail.rendererPriorityAtExit())
+            runCatching { view.destroy() }
             callbacks.onRendererGone(tabId)
             return true
         }

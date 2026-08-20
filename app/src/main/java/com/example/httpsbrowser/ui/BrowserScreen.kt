@@ -379,6 +379,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onDeleteHistory = viewModel::removeHistory,
                 onClear = { viewModel.clearBrowsingData { registry.clearAllBrowsingData() }; viewModel.closeSettings() },
                 onDownloads = { runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
+                onShareDiagnostics = { runCatching { com.example.httpsbrowser.CrashDiagnostics.share(context) }.onFailure { notice = "診断情報を共有できませんでした。" } },
                 onNotice = { notice = it }
             )
         }

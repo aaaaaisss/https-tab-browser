@@ -2,6 +2,7 @@ package com.example.httpsbrowser.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.example.httpsbrowser.CrashDiagnostics
 import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
@@ -21,6 +22,7 @@ class BraveAdBlockEngine(context: Context) {
 
     @Volatile private var networkRuleCount = 0
     @Volatile private var cosmeticRuleCount = 0
+    @Volatile private var compiledFileSignature: String? = null
 
     /**
      * ルール本文をKotlin/JNIの巨大なStringとして二重・三重に複製しない。
@@ -28,20 +30,51 @@ class BraveAdBlockEngine(context: Context) {
      */
     fun replaceRuleFiles(files: List<File>) {
         val existingFiles = files.filter { it.isFile && it.length() > 0L }
-        if (existingFiles.isEmpty() || statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) return
+        if (existingFiles.isEmpty()) {
+            CrashDiagnostics.record("adblock_compile_skipped", "reason=no_filter_files")
+            return
+        }
+        val signature = existingFiles.joinToString(separator = "|") { file ->
+            "${file.absolutePath}:${file.length()}:${file.lastModified()}"
+        }
+        if (activeHandle.get() != 0L && compiledFileSignature == signature) {
+            // 設定画面の再表示などで同じ4リストを再コンパイルしない。
+            return
+        }
+        if (statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) {
+            CrashDiagnostics.record("adblock_compile_skipped", "reason=previous_compile_did_not_finish\nfiles=${existingFiles.size}")
+            return
+        }
         synchronized(COMPILATION_LOCK) {
             if (statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) return
             // commit() で先に確定する。ネイティブコンパイル中にOSがプロセスを終了しても、
             // 次回起動で同じ重い処理を繰り返さず、ブラウザ本体を確実に起動できる。
             statistics.edit().putBoolean(COMPILATION_IN_PROGRESS_KEY, true).commit()
+            val totalBytes = existingFiles.sumOf(File::length)
+            CrashDiagnostics.record("adblock_compile_started", "files=${existingFiles.size}\nbytes=$totalBytes")
             try {
-                val newHandle = NativeAdBlockEngine.createFromFiles(existingFiles.map(File::getAbsolutePath))
-                if (newHandle == 0L) return
-                val previous = activeHandle.getAndSet(newHandle)
+                // 更新時に旧Engineと新Engineを同時保持すると、最大メモリ使用量がほぼ二倍になる。
+                // 先に旧Engineを解放し、短時間の遮断停止よりプロセス生存を優先する。
+                val previous = activeHandle.getAndSet(0L)
                 if (previous != 0L) NativeAdBlockEngine.destroy(previous)
+                compiledFileSignature = null
+                val newHandle = NativeAdBlockEngine.createFromFiles(existingFiles.map(File::getAbsolutePath))
+                if (newHandle == 0L) {
+                    CrashDiagnostics.record("adblock_compile_failed", "native_handle=0\nfiles=${existingFiles.size}")
+                    return
+                }
+                activeHandle.set(newHandle)
+                compiledFileSignature = signature
                 val counts = countRules(existingFiles)
                 networkRuleCount = counts.first
                 cosmeticRuleCount = counts.second
+                CrashDiagnostics.record(
+                    "adblock_compile_finished",
+                    "networkRules=$networkRuleCount\ncosmeticRules=$cosmeticRuleCount\nfiles=${existingFiles.size}"
+                )
+            } catch (throwable: Throwable) {
+                // Java側の例外はページ表示へ波及させず、次回の診断画面から原因を取得できるようにする。
+                CrashDiagnostics.record("adblock_compile_exception", "${throwable.javaClass.name}: ${throwable.message.orEmpty()}")
             } finally {
                 // 通常の失敗では安全モードを残さず、ネイティブ異常終了だけを次回起動で検知する。
                 statistics.edit().remove(COMPILATION_IN_PROGRESS_KEY).commit()
@@ -96,6 +129,7 @@ class BraveAdBlockEngine(context: Context) {
 
     fun close() {
         val handle = activeHandle.getAndSet(0L)
+        compiledFileSignature = null
         if (handle != 0L) NativeAdBlockEngine.destroy(handle)
     }
 
