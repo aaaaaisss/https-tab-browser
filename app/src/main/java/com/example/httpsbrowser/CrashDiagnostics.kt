@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Debug
+import androidx.annotation.RequiresApi
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -106,6 +107,7 @@ object CrashDiagnostics {
         }.onFailure { record("exit_reason_read_failure", "${it.javaClass.name}: ${it.message.orEmpty()}") }
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun exitDetail(info: ApplicationExitInfo): String = buildString {
         append("reason=").append(reasonName(info.reason))
         append(" (").append(info.reason).append(')')
@@ -119,6 +121,7 @@ object CrashDiagnostics {
         append("\nrecordedAt=").append(timestampFormat.format(Date(info.timestamp)))
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun reasonName(reason: Int): String = when (reason) {
         ApplicationExitInfo.REASON_CRASH -> "CRASH_JAVA"
         ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
