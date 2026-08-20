@@ -29,7 +29,7 @@ object CrashDiagnostics {
     fun install(application: Application) {
         applicationContext = application.applicationContext
         recordSystemExitReasons(application)
-        record("process_start", memorySummary(application))
+        record("process_start", memorySummary())
         if (previousHandler == null) {
             previousHandler = Thread.getDefaultUncaughtExceptionHandler()
             Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
