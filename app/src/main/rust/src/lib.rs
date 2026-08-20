@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn serialized_engine_preserves_network_blocking() {
         let mut filters = FilterSet::new(false);
-        filters.add_filter_list("||ads.example.test^", ParseOptions::default());
+        filters.add_filter_list("||ads.example.test^".to_string(), ParseOptions::default());
         let engine = Engine::new_with_filter_set(filters);
         let serialized = engine.serialize();
         assert!(!serialized.is_empty());
