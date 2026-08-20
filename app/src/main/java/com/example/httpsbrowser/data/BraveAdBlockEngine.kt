@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.AtomicFile
 import com.example.httpsbrowser.CrashDiagnostics
+import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 import java.time.LocalDate
