@@ -45,12 +45,17 @@ class AdBlockListRepository(
     private val directory = File(context.filesDir, "adblock").apply { mkdirs() }
     private val metadata = File(directory, "lists.json")
 
-    suspend fun loadAndCompile(): List<BlockListSource> = withContext(Dispatchers.IO) {
+    /**
+     * 規則本文をKotlinヒープへ全展開せず、アプリ内のリストファイルをネイティブ側で順に処理する。
+     * コンパイルはCPU負荷が高いため、UI初期表示を阻害しない既定ディスパッチャで実行する。
+     */
+    suspend fun loadAndCompile(): List<BlockListSource> = withContext(Dispatchers.Default) {
         val sources = listSourcesInternal()
-        val allLines = sources.asSequence().filter { it.enabled }.flatMap { source ->
-            File(directory, "${source.id}.txt").takeIf(File::exists)?.useLines { it.toList().asSequence() } ?: emptySequence()
-        }
-        blocker.replaceRules(allLines)
+        val files = sources.asSequence().filter { it.enabled }
+            .map { File(directory, "${it.id}.txt") }
+            .filter(File::isFile)
+            .toList()
+        blocker.replaceRuleFiles(files)
         sources
     }
 
@@ -67,8 +72,8 @@ class AdBlockListRepository(
             }
         }
         saveSources(sources)
-        loadAndCompile()
-    }
+        sources
+        }
 
     /** 7 日以上更新されていない標準リストだけを更新する。失敗時は直前の正常ファイルを維持する。 */
     suspend fun updateDueStandardLists(): Result<Int> = withContext(Dispatchers.IO) {
@@ -84,7 +89,6 @@ class AdBlockListRepository(
                 updatedCount++
             }
             saveSources(sources)
-            loadAndCompile()
             updatedCount
         }
     }

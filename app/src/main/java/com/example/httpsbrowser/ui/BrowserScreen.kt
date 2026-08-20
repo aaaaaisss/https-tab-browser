@@ -236,7 +236,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         onLongPress = { longPressedLink = it },
                                         showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = { rendererVersion++ },
+                                        onRendererGone = {
+                                            // 同じクラッシュURLを自動再読込せず、操作可能なホームへ復帰する。
+                                            viewModel.openHome()
+                                            notice = "このページの描画プロセスが停止しました。ホームへ戻りました。"
+                                        },
                                         onPageArchiveReady = { sourcePath, fileName ->
                                             pendingPageArchive = File(sourcePath)
                                             pageArchiveLauncher.launch(fileName)
@@ -258,7 +262,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         onLongPress = { longPressedLink = it },
                                         showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = { rendererVersion++ },
+                                        onRendererGone = {
+                                            // 同じクラッシュURLを自動再読込せず、操作可能なホームへ復帰する。
+                                            viewModel.openHome()
+                                            notice = "このページの描画プロセスが停止しました。ホームへ戻りました。"
+                                        },
                                         onPageArchiveReady = { sourcePath, fileName ->
                                             pendingPageArchive = File(sourcePath)
                                             pageArchiveLauncher.launch(fileName)

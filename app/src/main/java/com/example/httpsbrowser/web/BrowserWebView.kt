@@ -198,13 +198,18 @@ class BrowserWebViewRegistry(
      * 対応する generic selector だけを注入する。例外規則は native engine が評価する。
      */
     private fun applyBraveCosmeticFilters(view: WebView, url: String, enabled: Boolean) {
+        val entry = entries.entries.firstOrNull { it.value.webView === view }?.value ?: return
         if (!enabled) {
+            entry.cosmeticAppliedUrl = null
             view.evaluateJavascript(
                 "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();})();",
                 null
             )
             return
         }
+        // onPageCommitVisibleとonPageFinishedの両方から呼ばれても、同一ナビゲーションへ二重注入しない。
+        if (entry.cosmeticAppliedUrl == url) return
+        entry.cosmeticAppliedUrl = url
         val resources = runCatching { JSONObject(blocker.cosmeticResources(url)) }.getOrDefault(JSONObject())
         val selectors = resources.optJSONArray("hide_selectors").toStringList()
         val staticCss = selectors.take(MAX_STATIC_COSMETIC_SELECTORS)
@@ -298,6 +303,7 @@ class BrowserWebViewRegistry(
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             val entry = entries[tabId]
+            entry?.cosmeticAppliedUrl = null
             view.setBackgroundColor(android.graphics.Color.BLACK)
             entry?.let { configure(view, it.settings) }
             entry?.callbacks?.onPageStarted(tabId, url)
@@ -323,10 +329,11 @@ class BrowserWebViewRegistry(
         }
 
         override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
-            // OS が WebView レンダラを終了した場合のみ、同じタブの URL を静かに再生成する。
-            // 通知ダイアログやタブ削除は行わない。
-            entries[tabId]?.callbacks?.onRendererGone(tabId)
+            // 同じURLを即時に再生成すると、壊れたページ・メモリ不足でレンダラーが再度落ちる無限ループになる。
+            // まず破棄して画面側へ復帰を委ね、ユーザーが安全に別ページを開ける状態へ戻す。
+            val callbacks = entries[tabId]?.callbacks ?: BrowserWebCallbacks.Empty
             remove(tabId)
+            callbacks.onRendererGone(tabId)
             return true
         }
     }
@@ -410,6 +417,7 @@ class BrowserWebViewRegistry(
     private data class Entry(
         val webView: WebView,
         var loadedUrl: String? = null,
+        var cosmeticAppliedUrl: String? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings()
     )

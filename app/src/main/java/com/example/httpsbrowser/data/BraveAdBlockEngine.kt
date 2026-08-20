@@ -2,6 +2,7 @@ package com.example.httpsbrowser.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.concurrent.atomic.AtomicInteger
@@ -21,23 +22,45 @@ class BraveAdBlockEngine(context: Context) {
     @Volatile private var networkRuleCount = 0
     @Volatile private var cosmeticRuleCount = 0
 
-    fun replaceRules(lines: Sequence<String>) {
-        val joinedRules = StringBuilder()
+    /**
+     * ルール本文をKotlin/JNIの巨大なStringとして二重・三重に複製しない。
+     * アプリ内ファイルをRust側で順に読み込み、全体コンパイル中は1インスタンスだけに制限する。
+     */
+    fun replaceRuleFiles(files: List<File>) {
+        val existingFiles = files.filter { it.isFile && it.length() > 0L }
+        if (existingFiles.isEmpty() || statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) return
+        synchronized(COMPILATION_LOCK) {
+            if (statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) return
+            // commit() で先に確定する。ネイティブコンパイル中にOSがプロセスを終了しても、
+            // 次回起動で同じ重い処理を繰り返さず、ブラウザ本体を確実に起動できる。
+            statistics.edit().putBoolean(COMPILATION_IN_PROGRESS_KEY, true).commit()
+            try {
+                val newHandle = NativeAdBlockEngine.createFromFiles(existingFiles.map(File::getAbsolutePath))
+                if (newHandle == 0L) return
+                val previous = activeHandle.getAndSet(newHandle)
+                if (previous != 0L) NativeAdBlockEngine.destroy(previous)
+                val counts = countRules(existingFiles)
+                networkRuleCount = counts.first
+                cosmeticRuleCount = counts.second
+            } finally {
+                // 通常の失敗では安全モードを残さず、ネイティブ異常終了だけを次回起動で検知する。
+                statistics.edit().remove(COMPILATION_IN_PROGRESS_KEY).commit()
+            }
+        }
+    }
+
+    private fun countRules(files: List<File>): Pair<Int, Int> {
         var networkCount = 0
         var cosmeticCount = 0
-        lines.forEach { raw ->
-            val line = raw.trim()
-            if (line.isBlank() || line.startsWith("!") || line.startsWith("[")) return@forEach
-            joinedRules.append(line).append('\n')
-            if (line.contains("##") || line.contains("#@#") || line.contains("#%#") || line.contains("#$#")) cosmeticCount++
-            else networkCount++
+        files.forEach { file ->
+            file.useLines { lines -> lines.forEach { raw ->
+                val line = raw.trim()
+                if (line.isBlank() || line.startsWith("!") || line.startsWith("[")) return@forEach
+                if (line.contains("##") || line.contains("#@#") || line.contains("#%#") || line.contains("#$#")) cosmeticCount++
+                else networkCount++
+            } }
         }
-        val newHandle = NativeAdBlockEngine.create(joinedRules.toString())
-        if (newHandle == 0L) return
-        val previous = activeHandle.getAndSet(newHandle)
-        if (previous != 0L) NativeAdBlockEngine.destroy(previous)
-        networkRuleCount = networkCount
-        cosmeticRuleCount = cosmeticCount
+        return networkCount to cosmeticCount
     }
 
     fun shouldBlock(url: String, documentUrl: String, resourceType: String): Boolean {
@@ -104,7 +127,10 @@ class BraveAdBlockEngine(context: Context) {
     private fun localDayKey(): String = LocalDate.now(ZoneId.systemDefault()).toString()
 
     private companion object {
+        /** WorkManagerと画面起動が重なっても、巨大なエンジンを複数同時に生成しない。 */
+        val COMPILATION_LOCK = Any()
         const val STATISTICS_FILE = "adblock_statistics"
+        const val COMPILATION_IN_PROGRESS_KEY = "compilation_in_progress"
         const val STATISTICS_DAY_KEY = "day"
         const val STATISTICS_COUNT_KEY = "blocked_count"
     }
@@ -114,15 +140,17 @@ class BraveAdBlockEngine(context: Context) {
 object NativeAdBlockEngine {
     val available: Boolean = runCatching { System.loadLibrary("https_browser_adblock") }.isSuccess
 
-    fun create(rules: String): Long = if (available) nativeCreate(rules) else 0L
-    fun destroy(handle: Long) { if (available) nativeDestroy(handle) }
+    fun createFromFiles(paths: List<String>): Long =
+        if (available && paths.isNotEmpty()) runCatching { nativeCreateFromFiles(paths.toTypedArray()) }.getOrDefault(0L) else 0L
+    fun destroy(handle: Long) { if (available) runCatching { nativeDestroy(handle) } }
     fun shouldBlock(handle: Long, url: String, documentUrl: String, resourceType: String): Boolean =
-        available && nativeShouldBlock(handle, url, documentUrl, resourceType)
-    fun cosmeticJson(handle: Long, url: String): String = if (available) nativeCosmeticJson(handle, url) else "{}"
+        available && runCatching { nativeShouldBlock(handle, url, documentUrl, resourceType) }.getOrDefault(false)
+    fun cosmeticJson(handle: Long, url: String): String =
+        if (available) runCatching { nativeCosmeticJson(handle, url) }.getOrDefault("{}") else "{}"
     fun genericCss(handle: Long, classesJson: String, idsJson: String, exceptionsJson: String): String =
-        if (available) nativeGenericCss(handle, classesJson, idsJson, exceptionsJson) else ""
+        if (available) runCatching { nativeGenericCss(handle, classesJson, idsJson, exceptionsJson) }.getOrDefault("") else ""
 
-    @JvmStatic private external fun nativeCreate(rules: String): Long
+    @JvmStatic private external fun nativeCreateFromFiles(paths: Array<String>): Long
     @JvmStatic private external fun nativeDestroy(handle: Long)
     @JvmStatic private external fun nativeShouldBlock(handle: Long, url: String, documentUrl: String, resourceType: String): Boolean
     @JvmStatic private external fun nativeCosmeticJson(handle: Long, url: String): String
