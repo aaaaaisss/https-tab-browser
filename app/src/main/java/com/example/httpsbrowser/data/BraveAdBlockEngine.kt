@@ -18,6 +18,7 @@ class BraveAdBlockEngine(context: Context) {
         .getSharedPreferences(STATISTICS_FILE, Context.MODE_PRIVATE)
     private val blockedToday = AtomicInteger(readStoredBlockedCount())
     private val statisticsLock = Any()
+    @Volatile private var statisticsDay = localDayKey()
     private val activeHandle = AtomicLong(0L)
 
     @Volatile private var networkRuleCount = 0
@@ -128,6 +129,8 @@ class BraveAdBlockEngine(context: Context) {
     }
 
     fun close() {
+        // ページの各リソース遮断ごとではなく、終了時にも統計を確実に保存する。
+        persistBlockedCount(blockedToday.get())
         val handle = activeHandle.getAndSet(0L)
         compiledFileSignature = null
         if (handle != 0L) NativeAdBlockEngine.destroy(handle)
@@ -142,22 +145,31 @@ class BraveAdBlockEngine(context: Context) {
 
     private fun recordBlockedRequest() {
         synchronized(statisticsLock) {
-            resetCounterIfNewDay()
+            resetCounterIfNewDayLocked()
             val count = blockedToday.incrementAndGet()
-            statistics.edit().putString(STATISTICS_DAY_KEY, localDayKey()).putInt(STATISTICS_COUNT_KEY, count).apply()
+            // shouldInterceptRequest はページ内の多数リソースから呼ばれる。遮断のたびに
+            // SharedPreferencesへ書き込むと、YouTube等でI/OとGCを不必要に増やす。
+            // 表示用のカウンタは即時に更新し、永続化は一定件数ごとと終了時だけにする。
+            if (count % BLOCKED_COUNT_PERSIST_INTERVAL == 0) persistBlockedCount(count)
         }
     }
 
     private fun resetCounterIfNewDay() {
         val today = localDayKey()
-        if (statistics.getString(STATISTICS_DAY_KEY, "") != today) {
-            synchronized(statisticsLock) {
-                if (statistics.getString(STATISTICS_DAY_KEY, "") != today) {
-                    blockedToday.set(0)
-                    statistics.edit().putString(STATISTICS_DAY_KEY, today).putInt(STATISTICS_COUNT_KEY, 0).apply()
-                }
-            }
+        if (statisticsDay != today) synchronized(statisticsLock) { resetCounterIfNewDayLocked() }
+    }
+
+    private fun resetCounterIfNewDayLocked() {
+        val today = localDayKey()
+        if (statisticsDay != today) {
+            statisticsDay = today
+            blockedToday.set(0)
+            persistBlockedCount(0)
         }
+    }
+
+    private fun persistBlockedCount(count: Int) {
+        statistics.edit().putString(STATISTICS_DAY_KEY, statisticsDay).putInt(STATISTICS_COUNT_KEY, count).apply()
     }
 
     private fun localDayKey(): String = LocalDate.now(ZoneId.systemDefault()).toString()
@@ -169,6 +181,7 @@ class BraveAdBlockEngine(context: Context) {
         const val COMPILATION_IN_PROGRESS_KEY = "compilation_in_progress"
         const val STATISTICS_DAY_KEY = "day"
         const val STATISTICS_COUNT_KEY = "blocked_count"
+        const val BLOCKED_COUNT_PERSIST_INTERVAL = 25
     }
 }
 

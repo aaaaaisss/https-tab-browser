@@ -45,9 +45,11 @@ class BrowserWebViewRegistry(
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
         entry.settings = settings
+        entry.adBlockingEnabled = settings.adBlockingEnabled
         configure(entry.webView, settings)
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
+            entry.activeDocumentUrl = tab.lastRequestedUrl
             CrashDiagnostics.recordWebViewNavigation(tab.lastRequestedUrl)
             entry.webView.loadUrl(tab.lastRequestedUrl)
         }
@@ -58,6 +60,9 @@ class BrowserWebViewRegistry(
         entries[tabId]?.let { entry ->
             if (isHttps(url)) {
                 entry.loadedUrl = url
+                // shouldInterceptRequest はUIスレッド外から呼ばれ得るため、
+                // コールバック内で WebView.url を読む代わりに遷移前に親URLを保持する。
+                entry.activeDocumentUrl = url
                 CrashDiagnostics.recordWebViewNavigation(url)
                 entry.webView.loadUrl(url)
             } else entry.callbacks.onBlockedNavigation(url)
@@ -200,13 +205,12 @@ class BrowserWebViewRegistry(
      * Brave エンジンが返す hostname-specific selector と、実際に DOM に存在する class/id に
      * 対応する generic selector だけを注入する。例外規則は native engine が評価する。
      */
-    private fun applyBraveCosmeticFilters(view: WebView, url: String, enabled: Boolean) {
+    private fun applyBraveCosmeticFilters(view: WebView, url: String, enabled: Boolean, includeGeneric: Boolean) {
         val entry = entries.entries.firstOrNull { it.value.webView === view }?.value ?: return
         if (!enabled || !blocker.isReady()) {
-            // 緊急安定化版ではエンジン未準備時にDOM走査・CSS注入を行わない。
-            // 旧セッションのstyleがあった時だけ、一度だけ除去する。
-            if (entry.cosmeticAppliedUrl != null) {
+            if (entry.cosmeticAppliedUrl != null || entry.genericCosmeticAppliedUrl != null) {
                 entry.cosmeticAppliedUrl = null
+                entry.genericCosmeticAppliedUrl = null
                 view.evaluateJavascript(
                     "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();})();",
                     null
@@ -214,29 +218,39 @@ class BrowserWebViewRegistry(
             }
             return
         }
-        // onPageCommitVisibleとonPageFinishedの両方から呼ばれても、同一ナビゲーションへ二重注入しない。
-        if (entry.cosmeticAppliedUrl == url) return
-        entry.cosmeticAppliedUrl = url
         val resources = runCatching { JSONObject(blocker.cosmeticResources(url)) }.getOrDefault(JSONObject())
-        val selectors = resources.optJSONArray("hide_selectors").toStringList()
-        val staticCss = selectors.take(MAX_STATIC_COSMETIC_SELECTORS)
-            .joinToString(",")
-            .takeIf { it.isNotBlank() }
-            ?.plus("{display:none!important;visibility:hidden!important;}")
-            .orEmpty()
-        val exceptions = resources.optJSONArray("exceptions")?.toString() ?: "[]"
-        view.evaluateJavascript(
-            """
-            (function(){
-              var id='__https_browser_adblock_static';
-              var style=document.getElementById(id);
-              if(!style){style=document.createElement('style');style.id=id;document.documentElement.appendChild(style);}
-              style.textContent=${JSONObject.quote(staticCss)};
-            })();
-            """.trimIndent(),
-            null
-        )
-        applyGenericCosmeticFilters(view, exceptions)
+        // サイト専用CSSは初期描画から一度だけ有効にする。
+        if (entry.cosmeticAppliedUrl != url) {
+            entry.cosmeticAppliedUrl = url
+            val selectors = resources.optJSONArray("hide_selectors").toStringList()
+            val staticCss = selectors.take(MAX_STATIC_COSMETIC_SELECTORS)
+                .joinToString(",")
+                .takeIf { it.isNotBlank() }
+                ?.plus("{display:none!important;visibility:hidden!important;}")
+                .orEmpty()
+            view.evaluateJavascript(
+                """
+                (function(){
+                  var id='__https_browser_adblock_static';
+                  var style=document.getElementById(id);
+                  if(!style){style=document.createElement('style');style.id=id;document.documentElement.appendChild(style);}
+                  style.textContent=${JSONObject.quote(staticCss)};
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
+        // generic selector抽出は初期描画と競合させない。ページ完了後に一度だけ遅延し、
+        // 同じURLのWebViewがすでに別ページへ移った場合は実行しない。
+        if (includeGeneric && entry.genericCosmeticAppliedUrl != url) {
+            entry.genericCosmeticAppliedUrl = url
+            val exceptions = resources.optJSONArray("exceptions")?.toString() ?: "[]"
+            view.postDelayed({
+                if (entry.genericCosmeticAppliedUrl == url && entry.cosmeticAppliedUrl == url && !view.isDestroyed) {
+                    applyGenericCosmeticFilters(view, exceptions)
+                }
+            }, GENERIC_COSMETIC_DELAY_MS)
+        }
     }
 
     private fun applyGenericCosmeticFilters(view: WebView, exceptionsJson: String) {
@@ -294,9 +308,12 @@ class BrowserWebViewRegistry(
             val url = request.url.toString()
             // Brave エンジンが ABP/AdGuard の例外、第三者判定、resource type を評価する。
             // 独自の YouTube 除外や簡易 URL 判定は行わず、正規のフィルタ規則をそのまま尊重する。
-            if (entry.settings.adBlockingEnabled && blocker.shouldBlock(
+            // shouldInterceptRequest はUIスレッド外から呼ばれ得る。ここで WebView.url など
+            // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
+            val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
+            if (entry.adBlockingEnabled && blocker.shouldBlock(
                     url = url,
-                    documentUrl = view.url.orEmpty().ifBlank { url },
+                    documentUrl = documentUrl,
                     resourceType = resourceTypeFor(request)
                 )
             ) {
@@ -312,6 +329,8 @@ class BrowserWebViewRegistry(
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
             entry?.cosmeticAppliedUrl = null
+            entry?.genericCosmeticAppliedUrl = null
+            entry?.activeDocumentUrl = url
             view.setBackgroundColor(android.graphics.Color.BLACK)
             entry?.let { configure(view, it.settings) }
             entry?.callbacks?.onPageStarted(tabId, url)
@@ -319,13 +338,13 @@ class BrowserWebViewRegistry(
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyBraveCosmeticFilters(view, url, entry?.settings?.adBlockingEnabled == true)
+            applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyBraveCosmeticFilters(view, url, entry?.settings?.adBlockingEnabled == true)
+            applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             CookieManager.getInstance().flush()
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
@@ -428,8 +447,11 @@ class BrowserWebViewRegistry(
         val webView: WebView,
         var loadedUrl: String? = null,
         var cosmeticAppliedUrl: String? = null,
+        var genericCosmeticAppliedUrl: String? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
-        var settings: BrowserSettings = BrowserSettings()
+        var settings: BrowserSettings = BrowserSettings(),
+        @Volatile var activeDocumentUrl: String? = null,
+        @Volatile var adBlockingEnabled: Boolean = true
     )
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
@@ -454,8 +476,8 @@ class BrowserWebViewRegistry(
             else -> when {
                 request.url.path?.endsWith(".js", true) == true -> "script"
                 request.url.path?.endsWith(".css", true) == true -> "stylesheet"
-                request.url.path?.matches(Regex(".*\\.(png|jpe?g|gif|webp|svg|avif)$", RegexOption.IGNORE_CASE)) == true -> "image"
-                request.url.path?.matches(Regex(".*\\.(mp4|webm|m3u8|mpd|mp3|m4a)$", RegexOption.IGNORE_CASE)) == true -> "media"
+                request.url.path?.matches(IMAGE_EXTENSION_REGEX) == true -> "image"
+                request.url.path?.matches(MEDIA_EXTENSION_REGEX) == true -> "media"
                 else -> "other"
             }
         }
@@ -463,13 +485,21 @@ class BrowserWebViewRegistry(
 
     private companion object {
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
+        const val GENERIC_COSMETIC_DELAY_MS = 350L
+        // 各リソース要求ごとに Regex を生成しない。ページの大量リソース読み込み時の
+        // Kotlinヒープ確保を抑え、ネイティブフィルタ評価だけに処理を限定する。
+        val IMAGE_EXTENSION_REGEX = Regex(".*\\.(png|jpe?g|gif|webp|svg|avif)$", RegexOption.IGNORE_CASE)
+        val MEDIA_EXTENSION_REGEX = Regex(".*\\.(mp4|webm|m3u8|mpd|mp3|m4a)$", RegexOption.IGNORE_CASE)
         val COLLECT_COSMETIC_KEYS_SCRIPT = """
             (function(){
               var classes=[],ids=[],seenClasses=new Set(),seenIds=new Set();
-              document.querySelectorAll('[class],[id]').forEach(function(element){
+              var elements=document.querySelectorAll('[class],[id]');
+              for(var i=0;i<elements.length;i++){
+                if(ids.length>=800 && classes.length>=1200) break;
+                var element=elements[i];
                 if(element.id && !seenIds.has(element.id) && ids.length<800){seenIds.add(element.id);ids.push(element.id);}
                 if(element.classList){element.classList.forEach(function(name){if(!seenClasses.has(name) && classes.length<1200){seenClasses.add(name);classes.push(name);}});}
-              });
+              }
               return JSON.stringify({classes:classes,ids:ids});
             })();
         """.trimIndent()
