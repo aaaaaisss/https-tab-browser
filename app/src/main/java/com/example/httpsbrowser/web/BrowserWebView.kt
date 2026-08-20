@@ -46,9 +46,14 @@ class BrowserWebViewRegistry(
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
+        val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
+        entry.appliedForceDark = settings.forceDarkPages
         configure(entry.webView, settings)
+        // 最後に動作した構成と同様、暗色化設定の切替時だけ現在文書を一度読み直す。
+        // 戻る・進む・タブ選択ではここに入らず、WebView履歴を維持する。
+        if (darkModeChanged && entry.loadedUrl != null) entry.webView.reload()
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
             entry.activeDocumentUrl = tab.lastRequestedUrl
@@ -236,14 +241,16 @@ class BrowserWebViewRegistry(
         runCatching { entry.documentStartScriptHandler?.remove() }
         entry.documentStartScriptHandler = null
         entry.documentStartScriptUrl = null
-        if (!entry.adBlockingEnabled || !isYoutubeDocumentUrl(url) || !blocker.isReady()) return
+        // 親ページがGoogleでもYouTube iframeは同一WebView内で作られる。
+        // origin ruleでYouTubeだけに限定するため、親URLがYouTubeでなくても事前登録する。
+        if (!entry.adBlockingEnabled || !blocker.isReady()) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             CrashDiagnostics.record("adblock_youtube_scriptlet_unsupported", "reason=document_start_api_unavailable")
             return
         }
-        val script = blocker.documentStartScript(url)
+        val script = blocker.documentStartScript(YOUTUBE_SCRIPTLET_DOCUMENT_URL)
         if (script.isBlank()) {
-            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=false\nhost=${youtubeHost(url).orEmpty()}")
+            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=false\nparentHost=${youtubeHost(url).orEmpty()}")
             return
         }
         val host = youtubeHost(url) ?: return
@@ -256,7 +263,7 @@ class BrowserWebViewRegistry(
         }.onSuccess { handler ->
             entry.documentStartScriptHandler = handler
             entry.documentStartScriptUrl = url
-            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=true\nhost=$host\nchars=${script.length}")
+            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=true\nparentHost=$host\nchars=${script.length}")
         }.onFailure { throwable ->
             CrashDiagnostics.record("adblock_youtube_scriptlet_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
         }
@@ -329,7 +336,18 @@ class BrowserWebViewRegistry(
         // 同一ドキュメントで通常サイトからYouTubeへSPA遷移した場合にも、汎用CSSを残さない。
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
-        val css = if (enabled) YOUTUBE_AD_CSS else ""
+        val safeListCss = if (enabled && blocker.isReady()) {
+            val selectors = runCatching { JSONObject(blocker.cosmeticResources(url)) }
+                .getOrDefault(JSONObject())
+                .optJSONArray("hide_selectors")
+                .toStringList()
+                .filter(::isSafeYoutubeAdSelector)
+                .take(MAX_YOUTUBE_AD_SELECTORS)
+            selectors.joinToString(",").takeIf { it.isNotBlank() }
+                ?.plus("{display:none!important;visibility:hidden!important;}")
+                .orEmpty()
+        } else ""
+        val css = if (enabled) listOf(YOUTUBE_AD_CSS, safeListCss).filter(String::isNotBlank).joinToString("\n") else ""
         view.evaluateJavascript(
             """
             (function(){
@@ -403,9 +421,10 @@ class BrowserWebViewRegistry(
             // shouldInterceptRequest はUIスレッド外から呼ばれ得る。ここで WebView.url など
             // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
             val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
-            // 映像chunk・画像・通常のplayer/browse/next応答は再生本体なので保護する。
-            // `ad_break`等の明示的広告エンドポイントは保護せず、指定リストの規則を評価する。
-            if (entry.adBlockingEnabled && !isYoutubePlaybackResource(url) && blocker.shouldBlock(
+            // YouTube/Googlevideo/ytimgのiframe bootstrap、player JS、映像chunk、内部APIは
+            // 再生必須として保護する。明示的な広告・計測専用ホスト/パスだけは規則評価を継続する。
+            val shouldCheck = !isYoutubePlaybackResource(url) || isYoutubeAdOrTrackingNetwork(url)
+            if (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
                     url = url,
                     documentUrl = documentUrl,
                     resourceType = resourceTypeFor(request)
@@ -439,6 +458,7 @@ class BrowserWebViewRegistry(
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
+            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             if (isYoutubeDocumentUrl(url)) recordYoutubeViewportMetrics(view, url)
             CookieManager.getInstance().flush()
@@ -550,6 +570,7 @@ class BrowserWebViewRegistry(
         var documentStartScriptUrl: String? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
+        var appliedForceDark: Boolean? = null,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true
@@ -570,16 +591,63 @@ class BrowserWebViewRegistry(
             host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")
     }
 
-    /** 映像そのものを広告規則の誤判定から守る。広告専用URLはここで除外しない。 */
+    /** YouTubeのiframe bootstrap・player JS・映像chunk・内部APIを広告規則の誤判定から守る。 */
     private fun isYoutubePlaybackResource(url: String): Boolean {
+        val host = youtubeHost(url) ?: return false
+        return host == "youtube.com" || host.endsWith(".youtube.com") ||
+            host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com") ||
+            host == "googlevideo.com" || host.endsWith(".googlevideo.com") ||
+            host == "ytimg.com" || host.endsWith(".ytimg.com") ||
+            host == "youtubei.googleapis.com"
+    }
+
+    /** 再生保護の例外として、広告・計測専用と明示できる宛先だけ規則評価を継続する。 */
+    private fun isYoutubeAdOrTrackingNetwork(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         val host = uri.host?.lowercase().orEmpty()
         val path = uri.path?.lowercase().orEmpty()
-        if ("ad_break" in path || "/pagead/" in path || "/get_midroll_" in path) return false
-        return host.endsWith(".googlevideo.com") || host == "googlevideo.com" ||
-            host.endsWith(".ytimg.com") || host == "ytimg.com" ||
+        return host == "ads.youtube.com" || host.endsWith(".ads.youtube.com") ||
+            host == "doubleclick.net" || host.endsWith(".doubleclick.net") ||
+            host == "googlesyndication.com" || host.endsWith(".googlesyndication.com") ||
+            host == "googleadservices.com" || host.endsWith(".googleadservices.com") ||
+            host == "googletagservices.com" || host.endsWith(".googletagservices.com") ||
             ((host == "youtube.com" || host.endsWith(".youtube.com")) &&
-                (path.contains("/youtubei/v1/player") || path.contains("/youtubei/v1/next") || path.contains("/youtubei/v1/browse")))
+                (path.startsWith("/api/stats/ads") || path.startsWith("/_get_ads") ||
+                    path.startsWith("/pcs/activeview") || path.startsWith("/pagead") ||
+                    path.contains("/youtubei/v1/player/ad_break") || path.startsWith("/get_midroll_")))
+    }
+
+    /** 最後に実機で動作した版と同じ、動画ページだけを除くDeep Dark CSSを復元する。 */
+    private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
+        val script = if (enabled) """
+            (function() {
+              var id = '__https_browser_deep_dark';
+              var style = document.getElementById(id);
+              if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
+              style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
+                'body{background:#fff!important;filter:invert(1) hue-rotate(180deg)!important}' +
+                'img,video,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
+                'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
+            })();
+        """.trimIndent() else """
+            (function() { document.getElementById('__https_browser_deep_dark')?.remove(); })();
+        """.trimIndent()
+        view.evaluateJavascript(script, null)
+    }
+
+    private fun isVideoSensitivePage(url: String): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase().orEmpty()
+        return isYoutubePlaybackResource(url) ||
+            (host.endsWith("google.com") && uri.path == "/search" &&
+                (uri.query?.contains("tbm=vid") == true || uri.query?.contains("udm=7") == true))
+    }
+
+    private fun isSafeYoutubeAdSelector(selector: String): Boolean {
+        val normalized = selector.lowercase()
+        if (normalized.contains("#player,") || normalized.endsWith("#player") || normalized.contains("video") || normalized.contains("ytm-player")) return false
+        return normalized.contains("ad") || normalized.contains("promoted") ||
+            normalized.contains("masthead") || normalized.contains("companion")
     }
 
     private fun recordYoutubeViewportMetrics(view: WebView, url: String) {
@@ -619,7 +687,9 @@ class BrowserWebViewRegistry(
 
     private companion object {
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
+        const val MAX_YOUTUBE_AD_SELECTORS = 120
         const val GENERIC_COSMETIC_DELAY_MS = 350L
+        const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
         // #player、video、ytm-player、レイアウトコンテナは意図的に含めない。
         val YOUTUBE_AD_CSS = """
             ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,

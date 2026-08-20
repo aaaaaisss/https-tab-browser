@@ -101,6 +101,12 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         pendingPermission = null
     }
 
+    /** 新規URL入力だけをWebViewへ命令し、戻る・進む・ページ内遷移ではWebView履歴を再読込しない。 */
+    fun navigate(input: String = state.addressInput) {
+        val prepared = viewModel.prepareNavigation(input) ?: return
+        selectedTab?.let { tab -> registry.load(tab.id, prepared.url) }
+    }
+
     val pageArchiveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { destination ->
@@ -127,7 +133,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         AdBlockUpdateWorker.schedule(context.applicationContext)
     }
     LaunchedEffect(externalUrl) {
-        externalUrl?.let { viewModel.prepareNavigation(it) }
+        externalUrl?.let(::navigate)
     }
     LaunchedEffect(state.bookmarks) {
         homeBookmarkSelection = homeBookmarkSelection.intersect(state.bookmarks.map { it.id }.toSet())
@@ -139,9 +145,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         onDispose { }
     }
     DisposableEffect(Unit) { onDispose { registry.close() } }
-    LaunchedEffect(selectedTab?.id, selectedTab?.lastRequestedUrl, selectedTab?.isHome) {
-        selectedTab?.takeIf { !it.isHome && it.lastRequestedUrl.isNotBlank() }?.let { registry.load(it.id, it.lastRequestedUrl) }
-    }
 
     fun finishFullscreen(notifyPage: Boolean) {
         val content = fullscreenContent ?: return
@@ -187,8 +190,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 homeBookmarkSelection = emptySet()
             }
             selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
-            selectedTab?.isHome == false -> viewModel.openHome()
-            else -> Unit // 履歴が尽きても戻る操作でアプリを終了しない。
+            // WebViewの履歴が尽きた時は、ホームへ強制遷移せず通常のAndroid戻るとして終了する。
+            else -> activity?.finish()
         }
     }
 
@@ -216,7 +219,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             bookmarks = state.bookmarks,
                             editMode = homeBookmarkEditMode,
                             selectedIds = homeBookmarkSelection,
-                            onOpenBookmark = { bookmark -> viewModel.prepareNavigation(bookmark.url) },
+                            onOpenBookmark = { bookmark -> navigate(bookmark.url) },
                             onAddBookmark = { addBookmarkDialog = true },
                             onEnterEditMode = { id ->
                                 homeBookmarkEditMode = true
@@ -300,15 +303,15 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 }
                 Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
                     if (state.isSuggestionPanelVisible) SuggestionPanel(state.suggestions) { suggestion ->
-                        viewModel.openSuggestion(suggestion)
+                        navigate(suggestion.url)
                     }
                     AddressBar(
                         value = state.addressInput,
                         progress = progress,
                         isEditing = state.isAddressFocused,
                         onValueChange = viewModel::setAddressInput,
-                        // prepareNavigation が入力内容を確定してから候補・キーボードを閉じる。
-                        onSubmit = { viewModel.prepareNavigation() },
+                        // 新規入力時だけURLを読み込む。WebViewの戻る・進むではloadUrlを呼ばない。
+                        onSubmit = { navigate() },
                         onTranslate = { if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
                         onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
                         onEditingStarted = viewModel::startAddressEditing
@@ -381,7 +384,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 listRepository = listRepository,
                 onSettings = viewModel::updateSettings,
                 onOpenUrl = { url ->
-                    viewModel.prepareNavigation(url)
+                    navigate(url)
                     viewModel.closeSettings()
                 },
                 onOpenPage = viewModel::showSettingsPage,
