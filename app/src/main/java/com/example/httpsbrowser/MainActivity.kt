@@ -51,15 +51,22 @@ class MainActivity : ComponentActivity() {
         super.onUserLeaveHint()
         val videoView = fullscreenVideoView
         if (videoView == null || !supportsPictureInPicture() || isInPictureInPictureMode) return
-        // 自動PiPを使わず、先に保持状態を記録してから移行する。これによりWebViewの
-        // onHideCustomViewが先に来てもComposeがvideo custom viewを破棄しない。
+        // Android 12以降はauto-enterがジェスチャー遷移を担当する。ここではWebViewが
+        // onHideCustomViewを先に送った場合にcustom viewを保持する印だけを残す。
         pictureInPictureTransitionRequested = true
-        CrashDiagnostics.record("pip_enter_requested", "fullscreenView=true\napi=${Build.VERSION.SDK_INT}")
+        CrashDiagnostics.record("pip_leave_hint", "fullscreenView=true\napi=${Build.VERSION.SDK_INT}\nauto=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.S}")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
         val entered = runCatching { enterPictureInPictureMode(buildPictureInPictureParams(videoView)) }.getOrDefault(false)
         if (!entered) {
             pictureInPictureTransitionRequested = false
             CrashDiagnostics.record("pip_enter_failed", "enterPictureInPictureMode=false")
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // PiPへ入らずにアプリへ戻った場合だけ、遷移中マーカーを解除する。
+        if (!isInPictureInPictureMode) pictureInPictureTransitionRequested = false
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
@@ -102,8 +109,9 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // auto-enterはonHideCustomViewとの順序が端末ごとに異なるため使わない。
-            builder.setAutoEnterEnabled(false)
+            // Android 12以降はauto-enterがスワイプ/ホームのPiP遷移を開始する。
+            // fullscreen custom viewが存在する時だけ有効化し、通常ページではPiPにしない。
+            builder.setAutoEnterEnabled(videoView != null)
             if (videoView != null) builder.setSeamlessResizeEnabled(true)
         }
         return builder.build()

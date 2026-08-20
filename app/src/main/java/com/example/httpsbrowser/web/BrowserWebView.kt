@@ -50,6 +50,7 @@ class BrowserWebViewRegistry(
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
         entry.appliedForceDark = settings.forceDarkPages
+        prepareDarkDocumentStartStyle(entry)
         configure(entry.webView, settings)
         // 最後に動作した構成と同様、暗色化設定の切替時だけ現在文書を一度読み直す。
         // 戻る・進む・タブ選択ではここに入らず、WebView履歴を維持する。
@@ -112,7 +113,9 @@ class BrowserWebViewRegistry(
         entries.remove(tabId)?.let { entry ->
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
+            runCatching { entry.darkDocumentStartHandler?.remove() }
             entry.documentStartScriptHandler = null
+            entry.darkDocumentStartHandler = null
             entry.webView.apply {
                 stopLoading()
                 loadUrl("about:blank")
@@ -157,9 +160,9 @@ class BrowserWebViewRegistry(
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            // 独自UA・wide viewportを使わず、Android WebView標準のモバイル表示へ戻す。
-            // YouTubeの左余白・縮小表示を、サイト判定の変更ではなく実際のviewport基準で解消する。
-            useWideViewPort = false
+            // WebViewではwide viewportが既定で無効なため、サイト側のmeta viewportを尊重する。
+            // YouTube/Google埋め込みのモバイル幅・初期倍率はページ側に委ねる。
+            useWideViewPort = true
             loadWithOverviewMode = false
             builtInZoomControls = true
             displayZoomControls = false
@@ -172,8 +175,6 @@ class BrowserWebViewRegistry(
             mediaPlaybackRequiresUserGesture = false
             safeBrowsingEnabled = true
         }
-        // WebView本体の倍率を既定値へ戻し、以前のページ倍率を新規ドキュメントへ持ち越さない。
-        setInitialScale(0)
         // ログイン状態と埋め込みプレーヤーの認証をアプリ内で維持する。
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
@@ -204,8 +205,8 @@ class BrowserWebViewRegistry(
     }
 
     /**
-     * CSS反転を使わず、以前の動作候補であるWebView標準Force Darkを明示的に優先する。
-     * API 33以降でもAlgorithmic Darkeningの有無だけでForce DarkをOFFにしない。
+     * 公式の単一路径にする。Algorithmic Darkening対応WebViewでは旧Force Darkを併用せず、
+     * 未対応の古いWebViewだけでForce Darkをfallbackにする。画像・動画をCSS反転しない。
      */
     @Suppress("DEPRECATION")
     private fun configureDarkMode(view: WebView, enabled: Boolean) {
@@ -213,24 +214,49 @@ class BrowserWebViewRegistry(
         val hasAlgorithmicDarkening = WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)
         val hasForceDark = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)
         val hasForceDarkStrategy = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)
-        if (hasAlgorithmicDarkening) WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, enabled)
-        if (hasForceDark) {
+        if (hasAlgorithmicDarkening) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, enabled)
+            if (hasForceDark) WebSettingsCompat.setForceDark(webSettings, WebSettingsCompat.FORCE_DARK_OFF)
+        } else if (hasForceDark) {
             WebSettingsCompat.setForceDark(
                 webSettings,
                 if (enabled) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
+            if (hasForceDarkStrategy) {
+                WebSettingsCompat.setForceDarkStrategy(
+                    webSettings,
+                    WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
+                )
+            }
         }
-        if (hasForceDarkStrategy) {
-            WebSettingsCompat.setForceDarkStrategy(
-                webSettings,
-                WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
-            )
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(enabled)
+        // Algorithmic Darkening利用時はapp-level Force Darkを重ねない。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(!hasAlgorithmicDarkening && enabled)
         CrashDiagnostics.record(
             "dark_mode_configured",
-            "enabled=$enabled\napi=${Build.VERSION.SDK_INT}\nalgorithmic=$hasAlgorithmicDarkening\nforceDark=$hasForceDark\nforceDarkStrategy=$hasForceDarkStrategy\nstrategy=user_agent_darkening_only"
+            "enabled=$enabled\napi=${Build.VERSION.SDK_INT}\nalgorithmic=$hasAlgorithmicDarkening\nforceDark=$hasForceDark\nforceDarkStrategy=$hasForceDarkStrategy\nmode=${if (hasAlgorithmicDarkening) "algorithmic" else "force_dark_fallback"}"
         )
+    }
+
+    /** 初期白フラッシュを防ぐため、HTTPS文書の開始時から背景・color-schemeだけを暗色にする。 */
+    private fun prepareDarkDocumentStartStyle(entry: Entry) {
+        val enabled = entry.settings.forceDarkPages
+        if (entry.darkDocumentStartEnabled == enabled) return
+        runCatching { entry.darkDocumentStartHandler?.remove() }
+        entry.darkDocumentStartHandler = null
+        entry.darkDocumentStartEnabled = enabled
+        if (!enabled || !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(entry.webView, DARK_BASE_STYLE_SCRIPT, setOf("https://*"))
+        }.onSuccess { handler ->
+            entry.darkDocumentStartHandler = handler
+        }.onFailure { throwable ->
+            CrashDiagnostics.record("dark_document_start_unavailable", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+        }
+    }
+
+    /** Document Start非対応時にも安全に背景を補正する。反転・画像/動画へのfilterは一切使わない。 */
+    private fun applyDarkBaseStyle(view: WebView, enabled: Boolean) {
+        view.evaluateJavascript(if (enabled) DARK_BASE_STYLE_SCRIPT else REMOVE_DARK_BASE_STYLE_SCRIPT, null)
     }
 
     /**
@@ -336,18 +362,9 @@ class BrowserWebViewRegistry(
         // 同一ドキュメントで通常サイトからYouTubeへSPA遷移した場合にも、汎用CSSを残さない。
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
-        val safeListCss = if (enabled && blocker.isReady()) {
-            val selectors = runCatching { JSONObject(blocker.cosmeticResources(url)) }
-                .getOrDefault(JSONObject())
-                .optJSONArray("hide_selectors")
-                .toStringList()
-                .filter(::isSafeYoutubeAdSelector)
-                .take(MAX_YOUTUBE_AD_SELECTORS)
-            selectors.joinToString(",").takeIf { it.isNotBlank() }
-                ?.plus("{display:none!important;visibility:hidden!important;}")
-                .orEmpty()
-        } else ""
-        val css = if (enabled) listOf(YOUTUBE_AD_CSS, safeListCss).filter(String::isNotBlank).joinToString("\n") else ""
+        // YouTubeの動的selectorはWeb Componentsのレイアウトへ波及し得るため使わない。
+        // 明示的な広告slotだけを対象にし、プレーヤー・幅計算・gridには一切触れない。
+        val css = if (enabled) YOUTUBE_AD_CSS else ""
         view.evaluateJavascript(
             """
             (function(){
@@ -452,13 +469,14 @@ class BrowserWebViewRegistry(
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
+            applyDarkBaseStyle(view, entry?.settings?.forceDarkPages == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoSensitivePage(url))
+            applyDarkBaseStyle(view, entry?.settings?.forceDarkPages == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             if (isYoutubeDocumentUrl(url)) recordYoutubeViewportMetrics(view, url)
             CookieManager.getInstance().flush()
@@ -568,6 +586,8 @@ class BrowserWebViewRegistry(
         var youtubeCosmeticAppliedUrl: String? = null,
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
+        var darkDocumentStartHandler: ScriptHandler? = null,
+        var darkDocumentStartEnabled: Boolean = false,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
         var appliedForceDark: Boolean? = null,
@@ -617,39 +637,6 @@ class BrowserWebViewRegistry(
                     path.contains("/youtubei/v1/player/ad_break") || path.startsWith("/get_midroll_")))
     }
 
-    /** 最後に実機で動作した版と同じ、動画ページだけを除くDeep Dark CSSを復元する。 */
-    private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
-        val script = if (enabled) """
-            (function() {
-              var id = '__https_browser_deep_dark';
-              var style = document.getElementById(id);
-              if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
-              style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
-                'body{background:#fff!important;filter:invert(1) hue-rotate(180deg)!important}' +
-                'img,video,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
-                'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
-            })();
-        """.trimIndent() else """
-            (function() { document.getElementById('__https_browser_deep_dark')?.remove(); })();
-        """.trimIndent()
-        view.evaluateJavascript(script, null)
-    }
-
-    private fun isVideoSensitivePage(url: String): Boolean {
-        val uri = runCatching { URI(url) }.getOrNull() ?: return false
-        val host = uri.host?.lowercase().orEmpty()
-        return isYoutubePlaybackResource(url) ||
-            (host.endsWith("google.com") && uri.path == "/search" &&
-                (uri.query?.contains("tbm=vid") == true || uri.query?.contains("udm=7") == true))
-    }
-
-    private fun isSafeYoutubeAdSelector(selector: String): Boolean {
-        val normalized = selector.lowercase()
-        if (normalized.contains("#player,") || normalized.endsWith("#player") || normalized.contains("video") || normalized.contains("ytm-player")) return false
-        return normalized.contains("ad") || normalized.contains("promoted") ||
-            normalized.contains("masthead") || normalized.contains("companion")
-    }
-
     private fun recordYoutubeViewportMetrics(view: WebView, url: String) {
         view.evaluateJavascript(YOUTUBE_VIEWPORT_METRICS_SCRIPT) { raw ->
             val metrics = runCatching { JSONTokener(raw ?: "\"\"").nextValue() as? String }.getOrNull().orEmpty()
@@ -687,9 +674,19 @@ class BrowserWebViewRegistry(
 
     private companion object {
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
-        const val MAX_YOUTUBE_AD_SELECTORS = 120
         const val GENERIC_COSMETIC_DELAY_MS = 350L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
+        val DARK_BASE_STYLE_SCRIPT = """
+            (function(){
+              var id='__https_browser_dark_base';
+              var style=document.getElementById(id);
+              if(!style){style=document.createElement('style');style.id=id;(document.head||document.documentElement).appendChild(style);}
+              style.textContent=':root{color-scheme:dark!important;background-color:#000!important}html,body{background-color:#000!important;}';
+            })();
+        """.trimIndent()
+        val REMOVE_DARK_BASE_STYLE_SCRIPT = """
+            (function(){document.getElementById('__https_browser_dark_base')?.remove();document.getElementById('__https_browser_deep_dark')?.remove();})();
+        """.trimIndent()
         // #player、video、ytm-player、レイアウトコンテナは意図的に含めない。
         val YOUTUBE_AD_CSS = """
             ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,

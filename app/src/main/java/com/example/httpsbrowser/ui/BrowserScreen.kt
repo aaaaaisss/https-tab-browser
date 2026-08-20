@@ -196,24 +196,12 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
 
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (state.isFullscreen) {
-            fullscreenContent?.let { content ->
-                AndroidView(
-                    factory = { FrameLayout(it).apply { setBackgroundColor(android.graphics.Color.BLACK) } },
-                    update = { host ->
-                        if (content.view.parent !== host) {
-                            (content.view.parent as? ViewGroup)?.removeView(content.view)
-                            host.removeAllViews()
-                            host.addView(content.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-        } else if (selectedTab != null) {
+        // Chromium WebViewのfullscreenは元のWebViewを残したままcustom viewを上に重ねる。
+        // 通常Viewを外すとAwContentsの描画先が切り替わり、再生停止や黒画面の原因になる。
+        if (selectedTab != null) {
             // 表示領域と操作バーを重ねずに分離する。操作バーのタップは WebView へ透過しない。
             Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f).fillMaxWidth()) {
+                Box(if (state.isFullscreen) Modifier.fillMaxSize() else Modifier.weight(1f).fillMaxWidth()) {
                     if (selectedTab.isHome) {
                         HomeScreen(
                             bookmarks = state.bookmarks,
@@ -293,15 +281,18 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                 }
                             )
                         }
-                        Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
-                            RightEdgeScrollRail(
-                                currentFraction = scrollFraction,
-                                onScrollToFraction = { fraction -> registry.scrollToFraction(selectedTab.id, fraction) }
-                            )
+                        if (!state.isFullscreen) {
+                            Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
+                                RightEdgeScrollRail(
+                                    currentFraction = scrollFraction,
+                                    onScrollToFraction = { fraction -> registry.scrollToFraction(selectedTab.id, fraction) }
+                                )
+                            }
                         }
                     }
                 }
-                Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+                if (!state.isFullscreen) {
+                    Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
                     if (state.isSuggestionPanelVisible) SuggestionPanel(state.suggestions) { suggestion ->
                         navigate(suggestion.url)
                     }
@@ -333,14 +324,32 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
                         onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
                     )
-                    TabBar(
-                        tabs = state.tabs,
-                        selectedTabId = state.selectedTabId,
-                        onSelect = { id -> viewModel.stopAddressEditing(); viewModel.selectTab(id) },
-                        onClose = { id -> viewModel.stopAddressEditing(); registry.remove(id); viewModel.closeTab(id) },
-                        onAdd = { viewModel.stopAddressEditing(); viewModel.addTab() }
-                    )
+                        TabBar(
+                            tabs = state.tabs,
+                            selectedTabId = state.selectedTabId,
+                            onSelect = { id -> viewModel.stopAddressEditing(); viewModel.selectTab(id) },
+                            onClose = { id -> viewModel.stopAddressEditing(); registry.remove(id); viewModel.closeTab(id) },
+                            onAdd = { viewModel.stopAddressEditing(); viewModel.addTab() }
+                        )
+                    }
                 }
+            }
+        }
+
+        // normal WebViewの上にのみfullscreen custom viewを置く。PiP中も同じ描画階層を維持する。
+        if (state.isFullscreen) {
+            fullscreenContent?.let { content ->
+                AndroidView(
+                    factory = { FrameLayout(it).apply { setBackgroundColor(android.graphics.Color.BLACK) } },
+                    update = { host ->
+                        if (content.view.parent !== host) {
+                            (content.view.parent as? ViewGroup)?.removeView(content.view)
+                            host.removeAllViews()
+                            host.addView(content.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
 
