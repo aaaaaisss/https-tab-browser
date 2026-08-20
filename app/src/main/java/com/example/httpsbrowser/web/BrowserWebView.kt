@@ -199,12 +199,16 @@ class BrowserWebViewRegistry(
      */
     private fun applyBraveCosmeticFilters(view: WebView, url: String, enabled: Boolean) {
         val entry = entries.entries.firstOrNull { it.value.webView === view }?.value ?: return
-        if (!enabled) {
-            entry.cosmeticAppliedUrl = null
-            view.evaluateJavascript(
-                "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();})();",
-                null
-            )
+        if (!enabled || !blocker.isReady()) {
+            // 緊急安定化版ではエンジン未準備時にDOM走査・CSS注入を行わない。
+            // 旧セッションのstyleがあった時だけ、一度だけ除去する。
+            if (entry.cosmeticAppliedUrl != null) {
+                entry.cosmeticAppliedUrl = null
+                view.evaluateJavascript(
+                    "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();})();",
+                    null
+                )
+            }
             return
         }
         // onPageCommitVisibleとonPageFinishedの両方から呼ばれても、同一ナビゲーションへ二重注入しない。

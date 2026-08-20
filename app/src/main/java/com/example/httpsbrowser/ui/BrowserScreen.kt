@@ -121,8 +121,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
 
     LaunchedEffect(Unit) {
+        // 緊急安定化版: ルールは保持・更新するが、YouTubeを含むWebViewの実クラッシュ調査中は
+        // ネイティブ規則コンパイルを開始しない。
         listRepository.ensureStandardLists()
-        listRepository.loadAndCompile()
         AdBlockUpdateWorker.schedule(context.applicationContext)
     }
     LaunchedEffect(externalUrl) {

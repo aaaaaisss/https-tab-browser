@@ -32,7 +32,9 @@ data class AdBlockStatus(
     val blockedToday: Int,
     val networkRuleCount: Int,
     val cosmeticRuleCount: Int,
-    val engineReady: Boolean = false
+    val engineReady: Boolean = false,
+    /** ネイティブエンジンがクラッシュの原因候補である間だけ、一時的に停止する。 */
+    val temporarilyDisabled: Boolean = false
 )
 
 /**
@@ -46,20 +48,21 @@ class AdBlockListRepository(
     private val metadata = File(directory, "lists.json")
 
     /**
-     * 規則本文をKotlinヒープへ全展開せず、アプリ内のリストファイルをネイティブ側で順に処理する。
-     * コンパイルはCPU負荷が高いため、UI初期表示を阻害しない既定ディスパッチャで実行する。
+     * 緊急安定化版ではネイティブ規則コンパイルを実行しない。
+     * YouTubeを含むWebViewの実クラッシュを隔離するため、リストの管理・更新だけを維持する。
      */
-    suspend fun loadAndCompile(): List<BlockListSource> = withContext(Dispatchers.Default) {
-        val sources = listSourcesInternal()
-        val files = sources.asSequence().filter { it.enabled }
-            .map { File(directory, "${it.id}.txt") }
-            .filter(File::isFile)
-            .toList()
-        blocker.replaceRuleFiles(files)
-        sources
+    suspend fun loadAndCompile(): List<BlockListSource> = withContext(Dispatchers.IO) {
+        listSourcesInternal()
     }
 
-    fun blockStatus(): AdBlockStatus = blocker.status()
+    // blocker.status() はJNIライブラリを読み込むため、緊急安定化版では呼び出さない。
+    fun blockStatus(): AdBlockStatus = AdBlockStatus(
+        blockedToday = 0,
+        networkRuleCount = 0,
+        cosmeticRuleCount = 0,
+        engineReady = false,
+        temporarilyDisabled = true
+    )
 
     /** 初回導入時に公式・HTTPS の標準リストだけを登録する。ユーザー追加リストは変更しない。 */
     suspend fun ensureStandardLists(): List<BlockListSource> = withContext(Dispatchers.IO) {

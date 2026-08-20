@@ -63,6 +63,8 @@ class BraveAdBlockEngine(context: Context) {
         return networkCount to cosmeticCount
     }
 
+    fun isReady(): Boolean = activeHandle.get() != 0L
+
     fun shouldBlock(url: String, documentUrl: String, resourceType: String): Boolean {
         val handle = activeHandle.get()
         if (handle == 0L || !NativeAdBlockEngine.shouldBlock(handle, url, documentUrl, resourceType)) return false
