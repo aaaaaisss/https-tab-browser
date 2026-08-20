@@ -24,16 +24,18 @@ import androidx.webkit.WebViewFeature
 import android.content.Intent
 import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
-import com.example.httpsbrowser.data.UrlRuleBlocker
+import com.example.httpsbrowser.data.BraveAdBlockEngine
 import java.io.ByteArrayInputStream
 import java.io.File
+import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
 class BrowserWebViewRegistry(
     private val context: Context,
-    private val blocker: UrlRuleBlocker
+    private val blocker: BraveAdBlockEngine
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
     private val pageTranslator = PageTranslator()
@@ -100,7 +102,13 @@ class BrowserWebViewRegistry(
 
     fun destroyAll() {
         entries.keys.toList().forEach(::remove)
+    }
+
+    /** 画面そのものが閉じる時だけ、翻訳モデルとネイティブフィルタを解放する。 */
+    fun close() {
+        destroyAll()
         pageTranslator.close()
+        blocker.close()
     }
 
     fun clearAllBrowsingData() {
@@ -185,51 +193,65 @@ class BrowserWebViewRegistry(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(enabled)
     }
 
-    private fun applyCosmeticAdFilters(view: WebView, url: String, enabled: Boolean) {
-        // YouTube の内部要素へ汎用 AdGuard CSS を注入するとプレーヤー・レイアウトを隠すことがある。
-        // YouTube は専用の限定 selector だけを別処理で適用する。
-        if (isYoutubePlaybackResource(url)) {
-            view.evaluateJavascript("(function() { document.getElementById('__https_browser_adblock_css')?.remove(); })();", null)
+    /**
+     * Brave エンジンが返す hostname-specific selector と、実際に DOM に存在する class/id に
+     * 対応する generic selector だけを注入する。例外規則は native engine が評価する。
+     */
+    private fun applyBraveCosmeticFilters(view: WebView, url: String, enabled: Boolean) {
+        if (!enabled) {
+            view.evaluateJavascript(
+                "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();})();",
+                null
+            )
             return
         }
-        val script = if (enabled) {
-            val css = blocker.cosmeticCssFor()
+        val resources = runCatching { JSONObject(blocker.cosmeticResources(url)) }.getOrDefault(JSONObject())
+        val selectors = resources.optJSONArray("hide_selectors").toStringList()
+        val staticCss = selectors.take(MAX_STATIC_COSMETIC_SELECTORS)
+            .joinToString(",")
+            .takeIf { it.isNotBlank() }
+            ?.plus("{display:none!important;visibility:hidden!important;}")
+            .orEmpty()
+        val exceptions = resources.optJSONArray("exceptions")?.toString() ?: "[]"
+        view.evaluateJavascript(
             """
-                (function() {
-                  var id = '__https_browser_adblock_css';
-                  var style = document.getElementById(id);
-                  if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
-                  style.textContent = ${JSONObject.quote(css)};
-                })();
-            """.trimIndent()
-        } else {
-            "(function() { document.getElementById('__https_browser_adblock_css')?.remove(); })();"
-        }
-        view.evaluateJavascript(script, null)
+            (function(){
+              var id='__https_browser_adblock_static';
+              var style=document.getElementById(id);
+              if(!style){style=document.createElement('style');style.id=id;document.documentElement.appendChild(style);}
+              style.textContent=${JSONObject.quote(staticCss)};
+            })();
+            """.trimIndent(),
+            null
+        )
+        applyGenericCosmeticFilters(view, exceptions)
     }
 
-    /** プレーヤー本体に触れず、YouTube ページの広告枠・プロモーション枠だけを非表示にする。 */
-    private fun applyYoutubeAdUiFilters(view: WebView, url: String, enabled: Boolean) {
-        if (!isYoutubePlaybackResource(url)) return
-        val css = if (enabled) """
-            ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,
-            ytd-promoted-sparkles-web-renderer,ytd-companion-slot-renderer,
-            ytd-action-companion-ad-renderer,ytm-ad-slot-renderer,
-            ytm-promoted-sparkles-web-renderer,ytm-companion-ad-renderer,
-            #player-ads,.ytp-ad-overlay-container,.ytp-ad-module {
-              display:none!important;visibility:hidden!important;
-            }
-        """.trimIndent() else ""
-        val script = """
-            (function() {
-              var id = '__https_browser_youtube_ad_css';
-              var style = document.getElementById(id);
-              if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
-              style.textContent = ${JSONObject.quote(css)};
-            })();
-        """.trimIndent()
-        view.evaluateJavascript(script, null)
+    private fun applyGenericCosmeticFilters(view: WebView, exceptionsJson: String) {
+        view.evaluateJavascript(COLLECT_COSMETIC_KEYS_SCRIPT) { raw ->
+            val serialized = runCatching { JSONTokener(raw ?: "\"\"").nextValue() as? String }.getOrNull() ?: return@evaluateJavascript
+            val keys = runCatching { JSONObject(serialized) }.getOrNull() ?: return@evaluateJavascript
+            val css = blocker.genericCosmeticCss(
+                classesJson = keys.optJSONArray("classes")?.toString() ?: "[]",
+                idsJson = keys.optJSONArray("ids")?.toString() ?: "[]",
+                exceptionsJson = exceptionsJson
+            )
+            view.evaluateJavascript(
+                """
+                (function(){
+                  var id='__https_browser_adblock_generic';
+                  var style=document.getElementById(id);
+                  if(!style){style=document.createElement('style');style.id=id;document.documentElement.appendChild(style);}
+                  style.textContent=${JSONObject.quote(css)};
+                })();
+                """.trimIndent(),
+                null
+            )
+        }
     }
+
+    private fun JSONArray?.toStringList(): List<String> =
+        this?.let { array -> List(array.length()) { index -> array.optString(index) }.filter(String::isNotBlank) }.orEmpty()
 
     private inner class SecureClient(private val tabId: String) : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -258,10 +280,14 @@ class BrowserWebViewRegistry(
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
             val entry = entries[tabId] ?: return null
             val url = request.url.toString()
-            // YouTube は動画本体・内部 API を URL 規則で遮断しない。広告・計測に使われる
-            // 専用ドメインだけに URL フィルタを限定し、プレーヤーの起動と全画面表示を保護する。
-            val shouldCheck = if (isYoutubePlaybackResource(url)) isYoutubeAdOrTrackingNetwork(url) else true
-            if (entry.settings.adBlockingEnabled && shouldCheck && blocker.shouldBlock(url)) {
+            // Brave エンジンが ABP/AdGuard の例外、第三者判定、resource type を評価する。
+            // 独自の YouTube 除外や簡易 URL 判定は行わず、正規のフィルタ規則をそのまま尊重する。
+            if (entry.settings.adBlockingEnabled && blocker.shouldBlock(
+                    url = url,
+                    documentUrl = view.url.orEmpty().ifBlank { url },
+                    resourceType = resourceTypeFor(request)
+                )
+            ) {
                 return WebResourceResponse(
                     "text/plain", "utf-8", 204, "No Content",
                     mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0))
@@ -279,16 +305,13 @@ class BrowserWebViewRegistry(
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
-            // 初回描画の時点で黒背景を注入し、読み込み完了まで白く見える時間を短くする。
-            applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
-            applyYoutubeAdUiFilters(view, url, entry?.settings?.adBlockingEnabled == true)
+            applyBraveCosmeticFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyCosmeticAdFilters(view, url, entry?.settings?.adBlockingEnabled == true)
-            applyYoutubeAdUiFilters(view, url, entry?.settings?.adBlockingEnabled == true)
+            applyBraveCosmeticFilters(view, url, entry?.settings?.adBlockingEnabled == true)
             CookieManager.getInstance().flush()
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
@@ -398,27 +421,40 @@ class BrowserWebViewRegistry(
         intent.getStringExtra("browser_fallback_url")?.let(::upgradeToHttps)
     }.getOrNull()
 
-    private fun isYoutubePlaybackResource(url: String): Boolean {
-        val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
-        return host == "youtube.com" || host.endsWith(".youtube.com") ||
-            host == "googlevideo.com" || host.endsWith(".googlevideo.com") ||
-            host == "ytimg.com" || host.endsWith(".ytimg.com") ||
-            host == "youtubei.googleapis.com"
+    private fun resourceTypeFor(request: WebResourceRequest): String {
+        if (request.isForMainFrame) return "document"
+        val headers = request.requestHeaders
+        val destination = headers.entries.firstOrNull { it.key.equals("Sec-Fetch-Dest", ignoreCase = true) }?.value?.lowercase()
+        return when (destination) {
+            "script" -> "script"
+            "style" -> "stylesheet"
+            "image" -> "image"
+            "font" -> "font"
+            "audio", "video", "track" -> "media"
+            "iframe", "frame" -> "subdocument"
+            "empty" -> "xmlhttprequest"
+            else -> when {
+                request.url.path?.endsWith(".js", true) == true -> "script"
+                request.url.path?.endsWith(".css", true) == true -> "stylesheet"
+                request.url.path?.matches(Regex(".*\\.(png|jpe?g|gif|webp|svg|avif)$", RegexOption.IGNORE_CASE)) == true -> "image"
+                request.url.path?.matches(Regex(".*\\.(mp4|webm|m3u8|mpd|mp3|m4a)$", RegexOption.IGNORE_CASE)) == true -> "media"
+                else -> "other"
+            }
+        }
     }
 
-    /** YouTube の再生系・内部 API を避け、広告配信・計測専用と判断できるドメインだけを遮断候補にする。 */
-    private fun isYoutubeAdOrTrackingNetwork(url: String): Boolean {
-        val uri = runCatching { URI(url) }.getOrNull() ?: return false
-        val host = uri.host?.lowercase().orEmpty()
-        val path = uri.path.orEmpty()
-        return host == "ads.youtube.com" || host.endsWith(".ads.youtube.com") ||
-            host == "doubleclick.net" || host.endsWith(".doubleclick.net") ||
-            host == "googlesyndication.com" || host.endsWith(".googlesyndication.com") ||
-            host == "googleadservices.com" || host.endsWith(".googleadservices.com") ||
-            host == "googletagservices.com" || host.endsWith(".googletagservices.com") ||
-            ((host == "youtube.com" || host.endsWith(".youtube.com")) &&
-                (path.startsWith("/api/stats/ads") || path.startsWith("/_get_ads") ||
-                    path.startsWith("/pcs/activeview") || path.startsWith("/pagead")))
+    private companion object {
+        const val MAX_STATIC_COSMETIC_SELECTORS = 500
+        val COLLECT_COSMETIC_KEYS_SCRIPT = """
+            (function(){
+              var classes=[],ids=[],seenClasses=new Set(),seenIds=new Set();
+              document.querySelectorAll('[class],[id]').forEach(function(element){
+                if(element.id && !seenIds.has(element.id) && ids.length<800){seenIds.add(element.id);ids.push(element.id);}
+                if(element.classList){element.classList.forEach(function(name){if(!seenClasses.has(name) && classes.length<1200){seenClasses.add(name);classes.push(name);}});}
+              });
+              return JSON.stringify({classes:classes,ids:ids});
+            })();
+        """.trimIndent()
     }
 
     private fun upgradeToHttps(url: String): String? = runCatching {

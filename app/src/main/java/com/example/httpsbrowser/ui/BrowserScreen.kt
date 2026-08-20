@@ -72,7 +72,7 @@ private data class FullscreenContent(
 fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val blocker = remember { com.example.httpsbrowser.data.UrlRuleBlocker(context.applicationContext) }
+    val blocker = remember { com.example.httpsbrowser.data.BraveAdBlockEngine(context.applicationContext) }
     val registry = remember { BrowserWebViewRegistry(context.applicationContext, blocker) }
     val listRepository = remember { AdBlockListRepository(context.applicationContext, blocker) }
     val state = viewModel.uiState
@@ -137,7 +137,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         // レンダラはアプリ終了時またはタブを閉じた時に確実に破棄する。
         onDispose { }
     }
-    DisposableEffect(Unit) { onDispose { registry.destroyAll() } }
+    DisposableEffect(Unit) { onDispose { registry.close() } }
     LaunchedEffect(selectedTab?.id, selectedTab?.lastRequestedUrl, selectedTab?.isHome) {
         selectedTab?.takeIf { !it.isHome && it.lastRequestedUrl.isNotBlank() }?.let { registry.load(it.id, it.lastRequestedUrl) }
     }

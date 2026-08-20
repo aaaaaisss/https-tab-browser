@@ -259,10 +259,14 @@ object BrowserSheets {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
                     Text("今日の遮断件数: ${status.blockedToday} 件", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "安全に対応する URL 規則: ${status.networkRuleCount} 件 / 汎用 CSS 非表示規則: ${status.cosmeticRuleCount} 件",
+                        "高互換フィルタエンジン: ${if (status.engineReady) "準備済み" else "準備中または利用不可"}",
                         style = MaterialTheme.typography.bodySmall
                     )
-                    Text("HTTPS URL のリストだけを登録できます。高度なフィルタ構文は誤遮断を避けるため対象外です。", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "読み込んだ URL 規則: ${status.networkRuleCount} 件 / cosmetic 規則: ${status.cosmeticRuleCount} 件",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text("HTTPS URL のリストだけを登録できます。例外・オプション・resource type はフィルタエンジンが評価します。", style = MaterialTheme.typography.bodySmall)
                 }
             }
             if (sources.isEmpty()) item { EmptyRow("広告ブロックリストはまだありません。") }

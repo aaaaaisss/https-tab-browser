@@ -20,3 +20,6 @@ local.properties
 
 # OS files
 .DS_Store
+
+# CI-generated Rust/JNI libraries
+app/src/main/jniLibs/
