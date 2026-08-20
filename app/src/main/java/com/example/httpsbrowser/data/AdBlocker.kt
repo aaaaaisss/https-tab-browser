@@ -47,15 +47,19 @@ class AdBlockListRepository(
 
     /**
      * ルール本文をKotlin/JNIの巨大Stringとして複製せず、アプリ内ファイルをRust側で読み込む。
-     * これにより標準4リストを維持したまま、初期コンパイル時のKotlinヒープ消費を抑える。
+     * これにより指定2標準リストと任意追加リストを維持したまま、初期コンパイル時のKotlinヒープ消費を抑える。
      */
     suspend fun loadAndCompile(): List<BlockListSource> = withContext(Dispatchers.Default) {
         val sources = listSourcesInternal()
-        val files = sources.asSequence().filter { it.enabled }
-            .map { File(directory, "${it.id}.txt") }
-            .filter(File::isFile)
+        val sourceFiles = sources.asSequence().filter { it.enabled }
+            .map { source -> source to File(directory, "${source.id}.txt") }
+            .filter { (_, file) -> file.isFile && file.length() > 0L }
             .toList()
-        blocker.replaceRuleFiles(files)
+        val trustedStandardFiles = sourceFiles.asSequence()
+            .filter { (source, _) -> source.builtIn && source.sourceUrl in STANDARD_LIST_URLS }
+            .map { (_, file) -> file }
+            .toSet()
+        blocker.replaceRuleFiles(sourceFiles.map { (_, file) -> file }, trustedStandardFiles)
         sources
     }
 
@@ -64,9 +68,13 @@ class AdBlockListRepository(
     /** 初回導入時に公式・HTTPS の標準リストだけを登録する。ユーザー追加リストは変更しない。 */
     suspend fun ensureStandardLists(): List<BlockListSource> = withContext(Dispatchers.IO) {
         var sources = listSourcesInternal()
+        // 旧4標準リストだけを削除し、ユーザーが追加した任意リストはそのまま維持する。
+        val retiredBuiltIns = sources.filter { it.builtIn && it.sourceUrl !in STANDARD_LIST_URLS }
+        retiredBuiltIns.forEach { source -> File(directory, "${source.id}.txt").delete() }
+        sources = sources.filterNot { it in retiredBuiltIns }
         STANDARD_LISTS.forEach { standard ->
             if (sources.none { it.sourceUrl == standard.sourceUrl }) {
-                // 同梱 snapshot により、オフラインの初回起動でも直ちにフィルタを利用できる。
+                // 同梱snapshotにより、オフラインの初回起動でも直ちに指定2リストを利用できる。
                 if (!copyBundledSnapshot(standard.id)) fetchToFile(standard, standard.id)
                 sources = sources + standard.copy(updatedAt = System.currentTimeMillis())
             }
@@ -204,11 +212,20 @@ class AdBlockListRepository(
         private const val MAX_LIST_BYTES = 12 * 1024 * 1024
 
         val STANDARD_LISTS = listOf(
-            BlockListSource("adguard_base", "AdGuard ベースフィルタ", "https://filters.adtidy.org/extension/chromium/filters/2.txt", builtIn = true),
-            BlockListSource("adguard_tracking", "AdGuard 追跡防止フィルタ", "https://filters.adtidy.org/extension/chromium/filters/3.txt", builtIn = true),
-            BlockListSource("adguard_mobile", "AdGuard モバイル広告フィルタ", "https://filters.adtidy.org/extension/chromium/filters/11.txt", builtIn = true),
-            BlockListSource("adguard_japanese", "AdGuard 日本語フィルタ", "https://filters.adtidy.org/extension/chromium/filters/7.txt", builtIn = true)
+            BlockListSource(
+                "adguard_android_101_optimized",
+                "EasyList（AdGuard Android 最適化版）",
+                "https://filters.adtidy.org/android/filters/101_optimized.txt",
+                builtIn = true
+            ),
+            BlockListSource(
+                "adguard_android_7_optimized",
+                "AdGuard 日本語フィルタ（Android 最適化版）",
+                "https://filters.adtidy.org/android/filters/7_optimized.txt",
+                builtIn = true
+            )
         )
+        val STANDARD_LIST_URLS = STANDARD_LISTS.map(BlockListSource::sourceUrl).toSet()
     }
 }
 

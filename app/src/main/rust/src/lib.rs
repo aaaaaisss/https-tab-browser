@@ -2,6 +2,7 @@ use adblock::{
     Engine,
     lists::{FilterSet, ParseOptions},
     request::Request,
+    resources::{PermissionMask, Resource},
 };
 use jni::{
     JNIEnv,
@@ -17,6 +18,9 @@ use std::{
 
 static ENGINES: LazyLock<Mutex<HashMap<i64, Arc<Engine>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_ENGINE_ID: AtomicI64 = AtomicI64::new(1);
+
+/// Android標準リストだけに与えるscriptlet実行権限。任意URLから追加されたリストは0のままにする。
+const STANDARD_SCRIPTLET_PERMISSION: PermissionMask = PermissionMask::from_bits(0b0000_0001);
 
 fn java_string(env: &mut JNIEnv, value: JString) -> Option<String> {
     env.get_string(&value).ok().map(Into::into)
@@ -52,34 +56,71 @@ fn java_string_array(env: &mut JNIEnv, values: JObjectArray) -> Option<Vec<Strin
 }
 
 /**
- * Android 側の巨大な全規則StringをJNI越しに複製しない。各ファイルを順に読み、
- * FilterSetへ追加したら直ちに次へ進むことで、初期コンパイル時のピークメモリを抑える。
+ * Brave公式resources.jsonを読み込む。標準リストだけにscriptlet実行を許可するため、
+ * scriptletとして注入可能な全resourceへ権限ビットを付ける。
+ *
+ * そのため、標準2リストはParseOptionsの同じビットを持つ一方、ユーザー追加リストは
+ * network/cosmetic規則だけを使い、任意JavaScriptをページへ注入できない。
  */
-fn create_engine_from_files(paths: Vec<String>) -> jlong {
+fn load_scriptlet_resources(path: &str) -> Vec<Resource> {
+    if path.trim().is_empty() {
+        return Vec::new();
+    }
+    let Ok(json) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(mut resources) = serde_json::from_str::<Vec<Resource>>(&json) else {
+        return Vec::new();
+    };
+    for resource in &mut resources {
+        if resource.kind.supports_scriptlet_injection() {
+            resource.permission = STANDARD_SCRIPTLET_PERMISSION;
+        }
+    }
+    resources
+}
+
+fn build_engine(paths: Vec<String>, trusted_paths: HashSet<String>, scriptlet_resource_path: String) -> jlong {
     catch_unwind(AssertUnwindSafe(|| {
         let mut filter_set = FilterSet::new(false);
         let mut added = false;
         for path in paths {
-            let Ok(rules) = std::fs::read_to_string(path) else { continue };
+            let Ok(rules) = std::fs::read_to_string(&path) else { continue };
             if rules.trim().is_empty() { continue; }
-            filter_set.add_filter_list(rules, ParseOptions::default());
+            let options = if trusted_paths.contains(&path) {
+                ParseOptions {
+                    permissions: STANDARD_SCRIPTLET_PERMISSION,
+                    ..ParseOptions::default()
+                }
+            } else {
+                ParseOptions::default()
+            };
+            filter_set.add_filter_list(rules, options);
             added = true;
         }
         if !added { return 0; }
-        register_engine(Engine::new_with_filter_set(filter_set))
+        let mut engine = Engine::new_with_filter_set(filter_set);
+        engine.use_resources(load_scriptlet_resources(&scriptlet_resource_path));
+        register_engine(engine)
     })).unwrap_or(0)
 }
 
+/** Android側の巨大StringをJNI越しに複製せず、各フィルタファイルを順に読み込む。 */
+fn create_engine_from_files(paths: Vec<String>, trusted_paths: Vec<String>, scriptlet_resource_path: String) -> jlong {
+    build_engine(paths, trusted_paths.into_iter().collect(), scriptlet_resource_path)
+}
+
 /**
- * adblock-rustのキャッシュは同じcrate minor version内だけで使う最適化データである。
- * 復元失敗を呼び出し側へ例外として渡さず、0を返して通常コンパイルへ安全に戻す。
+ * Engineの直列化データにはResourceStorageが含まれないため、復元後にも同じ公式resources.jsonを
+ * 再接続する。これによりキャッシュ起動でもscriptlet注入が失われない。
  */
-fn create_engine_from_serialized_file(path: String) -> jlong {
+fn create_engine_from_serialized_file(path: String, scriptlet_resource_path: String) -> jlong {
     catch_unwind(AssertUnwindSafe(|| {
         let Ok(serialized) = std::fs::read(path) else { return 0 };
         if serialized.is_empty() { return 0; }
         let mut engine = Engine::default();
         if engine.deserialize(&serialized).is_err() { return 0; }
+        engine.use_resources(load_scriptlet_resources(&scriptlet_resource_path));
         register_engine(engine)
     })).unwrap_or(0)
 }
@@ -97,9 +138,15 @@ pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_na
     mut env: JNIEnv,
     _class: JClass,
     paths: JObjectArray,
+    trusted_paths: JObjectArray,
+    scriptlet_resource_path: JString,
 ) -> jlong {
-    let Some(paths) = java_string_array(&mut env, paths) else { return 0 };
-    create_engine_from_files(paths)
+    let (Some(paths), Some(trusted_paths), Some(scriptlet_resource_path)) = (
+        java_string_array(&mut env, paths),
+        java_string_array(&mut env, trusted_paths),
+        java_string(&mut env, scriptlet_resource_path),
+    ) else { return 0 };
+    create_engine_from_files(paths, trusted_paths, scriptlet_resource_path)
 }
 
 #[unsafe(no_mangle)]
@@ -107,9 +154,13 @@ pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_na
     mut env: JNIEnv,
     _class: JClass,
     path: JString,
+    scriptlet_resource_path: JString,
 ) -> jlong {
-    let Some(path) = java_string(&mut env, path) else { return 0 };
-    create_engine_from_serialized_file(path)
+    let (Some(path), Some(scriptlet_resource_path)) = (
+        java_string(&mut env, path),
+        java_string(&mut env, scriptlet_resource_path),
+    ) else { return 0 };
+    create_engine_from_serialized_file(path, scriptlet_resource_path)
 }
 
 #[unsafe(no_mangle)]
@@ -189,7 +240,6 @@ pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_na
         get_engine(handle)
             .map(|engine| engine.hidden_class_id_selectors(&classes, &ids, &exceptions))
             .filter(|selectors| !selectors.is_empty())
-            // DOMに偶然一致する大量のgeneric selectorを一括注入してWebView rendererを圧迫しない。
             .map(|selectors| selectors.into_iter().take(500).collect::<Vec<_>>())
             .map(|selectors| format!("{}{{display:none!important;visibility:hidden!important;}}", selectors.join(",")))
             .unwrap_or_default()
@@ -218,5 +268,10 @@ mod tests {
             "get",
         ).expect("valid request");
         assert!(restored.check_network_request(&request).should_block());
+    }
+
+    #[test]
+    fn standard_permission_mask_is_nonzero() {
+        assert_eq!(STANDARD_SCRIPTLET_PERMISSION.to_bits(), 1);
     }
 }

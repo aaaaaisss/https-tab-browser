@@ -154,6 +154,16 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView).show(WindowInsetsCompat.Type.systemBars()) }
     }
 
+    fun handleWebViewHideFullscreen() {
+        if ((activity as? MainActivity)?.shouldRetainFullscreenCustomView() == true) {
+            // PiP遷移ではWebViewがonHideCustomViewを先に通知することがある。
+            // この時点でcustom viewを外すと通常の下部バーがPiPに入り、再生も止まる。
+            com.example.httpsbrowser.CrashDiagnostics.record("pip_custom_view_retained", "reason=webview_hide_during_pip")
+            return
+        }
+        finishFullscreen(false)
+    }
+
     fun enterFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
         viewModel.setFullscreen(true)
         fullscreenContent = FullscreenContent(view, callback)
@@ -231,7 +241,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         onProgress = { progress = it },
                                         onScrollPosition = { scrollFraction = it },
                                         onFullscreen = ::enterFullscreen,
-                                        onHideFullscreen = { finishFullscreen(false) },
+                                        onHideFullscreen = ::handleWebViewHideFullscreen,
                                         onPermission = { origin, resources, reply ->
                                             pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
                                         },
@@ -257,7 +267,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         onProgress = { progress = it },
                                         onScrollPosition = { scrollFraction = it },
                                         onFullscreen = ::enterFullscreen,
-                                        onHideFullscreen = { finishFullscreen(false) },
+                                        onHideFullscreen = ::handleWebViewHideFullscreen,
                                         onPermission = { origin, resources, reply ->
                                             pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
                                         },
@@ -462,7 +472,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         AlertDialog(
             onDismissRequest = { notice = null },
             confirmButton = { TextButton(onClick = { notice = null }) { Text("閉じる") } },
-            title = { Text("HTTPS Tab Browser") },
+            title = { Text("ねこぶらうざ") },
             text = { Text(message) }
         )
     }

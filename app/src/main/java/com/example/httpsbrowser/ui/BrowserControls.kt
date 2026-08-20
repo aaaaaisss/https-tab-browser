@@ -190,7 +190,8 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         LazyColumn(
-            modifier = Modifier.height((suggestions.size * 48).coerceAtMost(216).dp),
+            // ViewModelは合計6件までに制限する。優先候補が下端で隠れないよう6行分を確保する。
+            modifier = Modifier.height((suggestions.size * 48).coerceAtMost(288).dp),
             reverseLayout = true
         ) {
             items(suggestions, key = { "${it.type}:${it.url}" }) { suggestion ->

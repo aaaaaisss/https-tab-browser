@@ -19,7 +19,9 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.URLUtil
+import androidx.webkit.ScriptHandler
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import android.content.Intent
 import com.example.httpsbrowser.CrashDiagnostics
@@ -51,6 +53,7 @@ class BrowserWebViewRegistry(
             entry.loadedUrl = tab.lastRequestedUrl
             entry.activeDocumentUrl = tab.lastRequestedUrl
             CrashDiagnostics.recordWebViewNavigation(tab.lastRequestedUrl)
+            prepareYoutubeDocumentStartScript(entry, tab.lastRequestedUrl)
             entry.webView.loadUrl(tab.lastRequestedUrl)
         }
         return entry.webView
@@ -64,6 +67,7 @@ class BrowserWebViewRegistry(
                 // コールバック内で WebView.url を読む代わりに遷移前に親URLを保持する。
                 entry.activeDocumentUrl = url
                 CrashDiagnostics.recordWebViewNavigation(url)
+                prepareYoutubeDocumentStartScript(entry, url)
                 entry.webView.loadUrl(url)
             } else entry.callbacks.onBlockedNavigation(url)
         }
@@ -102,6 +106,8 @@ class BrowserWebViewRegistry(
     fun remove(tabId: String) {
         entries.remove(tabId)?.let { entry ->
             entry.isActive = false
+            runCatching { entry.documentStartScriptHandler?.remove() }
+            entry.documentStartScriptHandler = null
             entry.webView.apply {
                 stopLoading()
                 loadUrl("about:blank")
@@ -146,10 +152,9 @@ class BrowserWebViewRegistry(
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            // 一部の Google/YouTube 埋め込みが WebView 専用表示で白画面になるのを避ける。
-            userAgentString = userAgentString.replace("; wv", "")
-            // モバイルサイトの viewport meta を尊重し、YouTube/Shorts を端末幅の縦長レイアウトで描画する。
-            useWideViewPort = true
+            // 独自UA・wide viewportを使わず、Android WebView標準のモバイル表示へ戻す。
+            // YouTubeの左余白・縮小表示を、サイト判定の変更ではなく実際のviewport基準で解消する。
+            useWideViewPort = false
             loadWithOverviewMode = false
             builtInZoomControls = true
             displayZoomControls = false
@@ -162,6 +167,8 @@ class BrowserWebViewRegistry(
             mediaPlaybackRequiresUserGesture = false
             safeBrowsingEnabled = true
         }
+        // WebView本体の倍率を既定値へ戻し、以前のページ倍率を新規ドキュメントへ持ち越さない。
+        setInitialScale(0)
         // ログイン状態と埋め込みプレーヤーの認証をアプリ内で維持する。
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
@@ -192,26 +199,67 @@ class BrowserWebViewRegistry(
     }
 
     /**
-     * CSS反転は使わず、WebViewの標準暗色化APIだけを一系統で設定する。
-     * Algorithmic Darkening対応WebViewでは同APIだけを使い、未対応時だけ旧Force Darkを
-     * fallbackにする。両方式を同時に有効化して競合させない。
+     * CSS反転を使わず、以前の動作候補であるWebView標準Force Darkを明示的に優先する。
+     * API 33以降でもAlgorithmic Darkeningの有無だけでForce DarkをOFFにしない。
      */
     @Suppress("DEPRECATION")
     private fun configureDarkMode(view: WebView, enabled: Boolean) {
         val webSettings = view.settings
         val hasAlgorithmicDarkening = WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)
-        if (hasAlgorithmicDarkening) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, enabled)
-        }
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+        val hasForceDark = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)
+        val hasForceDarkStrategy = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)
+        if (hasAlgorithmicDarkening) WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, enabled)
+        if (hasForceDark) {
             WebSettingsCompat.setForceDark(
                 webSettings,
-                if (!hasAlgorithmicDarkening && enabled) WebSettingsCompat.FORCE_DARK_ON
-                else WebSettingsCompat.FORCE_DARK_OFF
+                if (enabled) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
         }
-        // Android 10〜12では親Viewの許可値も必要になる。OFF時は明示的に解除する。
+        if (hasForceDarkStrategy) {
+            WebSettingsCompat.setForceDarkStrategy(
+                webSettings,
+                WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
+            )
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(enabled)
+        CrashDiagnostics.record(
+            "dark_mode_configured",
+            "enabled=$enabled\napi=${Build.VERSION.SDK_INT}\nalgorithmic=$hasAlgorithmicDarkening\nforceDark=$hasForceDark\nforceDarkStrategy=$hasForceDarkStrategy\nstrategy=user_agent_darkening_only"
+        )
+    }
+
+    /**
+     * 指定標準リストからBraveが解決したYouTube scriptletだけを、ページのJSより先に注入する。
+     * 任意追加リストのscriptletにはRust側で権限を与えていないため、ここで返らない。
+     */
+    private fun prepareYoutubeDocumentStartScript(entry: Entry, url: String) {
+        runCatching { entry.documentStartScriptHandler?.remove() }
+        entry.documentStartScriptHandler = null
+        entry.documentStartScriptUrl = null
+        if (!entry.adBlockingEnabled || !isYoutubeDocumentUrl(url) || !blocker.isReady()) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            CrashDiagnostics.record("adblock_youtube_scriptlet_unsupported", "reason=document_start_api_unavailable")
+            return
+        }
+        val script = blocker.documentStartScript(url)
+        if (script.isBlank()) {
+            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=false\nhost=${youtubeHost(url).orEmpty()}")
+            return
+        }
+        val host = youtubeHost(url) ?: return
+        val originRules = setOf(
+            "https://youtube.com", "https://*.youtube.com",
+            "https://youtube-nocookie.com", "https://*.youtube-nocookie.com"
+        )
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(entry.webView, script, originRules)
+        }.onSuccess { handler ->
+            entry.documentStartScriptHandler = handler
+            entry.documentStartScriptUrl = url
+            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=true\nhost=$host\nchars=${script.length}")
+        }.onFailure { throwable ->
+            CrashDiagnostics.record("adblock_youtube_scriptlet_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+        }
     }
 
     /**
@@ -355,7 +403,9 @@ class BrowserWebViewRegistry(
             // shouldInterceptRequest はUIスレッド外から呼ばれ得る。ここで WebView.url など
             // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
             val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
-            if (entry.adBlockingEnabled && blocker.shouldBlock(
+            // 映像chunk・画像・通常のplayer/browse/next応答は再生本体なので保護する。
+            // `ad_break`等の明示的広告エンドポイントは保護せず、指定リストの規則を評価する。
+            if (entry.adBlockingEnabled && !isYoutubePlaybackResource(url) && blocker.shouldBlock(
                     url = url,
                     documentUrl = documentUrl,
                     resourceType = resourceTypeFor(request)
@@ -390,6 +440,7 @@ class BrowserWebViewRegistry(
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
+            if (isYoutubeDocumentUrl(url)) recordYoutubeViewportMetrics(view, url)
             CookieManager.getInstance().flush()
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
@@ -478,7 +529,7 @@ class BrowserWebViewRegistry(
             val request = DownloadManager.Request(Uri.parse(url)).apply {
                 setMimeType(mimeType)
                 setTitle(fileName)
-                setDescription("HTTPS Tab Browser からのダウンロード")
+                setDescription("ねこぶらうざからのダウンロード")
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
                 addRequestHeader("User-Agent", userAgent)
@@ -495,6 +546,8 @@ class BrowserWebViewRegistry(
         var cosmeticAppliedUrl: String? = null,
         var genericCosmeticAppliedUrl: String? = null,
         var youtubeCosmeticAppliedUrl: String? = null,
+        var documentStartScriptHandler: ScriptHandler? = null,
+        var documentStartScriptUrl: String? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
         @Volatile var activeDocumentUrl: String? = null,
@@ -509,16 +562,38 @@ class BrowserWebViewRegistry(
         intent.getStringExtra("browser_fallback_url")?.let(::upgradeToHttps)
     }.getOrNull()
 
+    private fun youtubeHost(url: String): String? = runCatching { URI(url).host?.lowercase() }.getOrNull()
+
     private fun isYoutubeDocumentUrl(url: String): Boolean {
-        val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
+        val host = youtubeHost(url) ?: return false
         return host == "youtube.com" || host.endsWith(".youtube.com") ||
             host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")
+    }
+
+    /** 映像そのものを広告規則の誤判定から守る。広告専用URLはここで除外しない。 */
+    private fun isYoutubePlaybackResource(url: String): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase().orEmpty()
+        val path = uri.path?.lowercase().orEmpty()
+        if ("ad_break" in path || "/pagead/" in path || "/get_midroll_" in path) return false
+        return host.endsWith(".googlevideo.com") || host == "googlevideo.com" ||
+            host.endsWith(".ytimg.com") || host == "ytimg.com" ||
+            ((host == "youtube.com" || host.endsWith(".youtube.com")) &&
+                (path.contains("/youtubei/v1/player") || path.contains("/youtubei/v1/next") || path.contains("/youtubei/v1/browse")))
+    }
+
+    private fun recordYoutubeViewportMetrics(view: WebView, url: String) {
+        view.evaluateJavascript(YOUTUBE_VIEWPORT_METRICS_SCRIPT) { raw ->
+            val metrics = runCatching { JSONTokener(raw ?: "\"\"").nextValue() as? String }.getOrNull().orEmpty()
+            if (metrics.isNotBlank()) CrashDiagnostics.record("youtube_viewport_metrics", "url=$url\n$metrics")
+        }
     }
 
     private fun resourceTypeFor(request: WebResourceRequest): String {
         if (request.isForMainFrame) return "document"
         val headers = request.requestHeaders
         val destination = headers.entries.firstOrNull { it.key.equals("Sec-Fetch-Dest", ignoreCase = true) }?.value?.lowercase()
+        val accept = headers.entries.firstOrNull { it.key.equals("Accept", ignoreCase = true) }?.value?.lowercase().orEmpty()
         return when (destination) {
             "script" -> "script"
             "style" -> "stylesheet"
@@ -528,6 +603,11 @@ class BrowserWebViewRegistry(
             "iframe", "frame" -> "subdocument"
             "empty" -> "xmlhttprequest"
             else -> when {
+                "text/css" in accept -> "stylesheet"
+                "javascript" in accept || "ecmascript" in accept -> "script"
+                "image/" in accept -> "image"
+                "video/" in accept || "audio/" in accept -> "media"
+                "application/json" in accept || "text/event-stream" in accept -> "xmlhttprequest"
                 request.url.path?.endsWith(".js", true) == true -> "script"
                 request.url.path?.endsWith(".css", true) == true -> "stylesheet"
                 request.url.path?.matches(IMAGE_EXTENSION_REGEX) == true -> "image"
@@ -549,6 +629,25 @@ class BrowserWebViewRegistry(
             #player-ads,.ytp-ad-overlay-container,.ytp-ad-module {
               display:none!important;visibility:hidden!important;
             }
+        """.trimIndent()
+        // 左余白がCompose/WebView/YouTube文書のどこで発生しているかを実寸で診断する。
+        val YOUTUBE_VIEWPORT_METRICS_SCRIPT = """
+            (function(){
+              function rect(selector){
+                var e=document.querySelector(selector),r=e&&e.getBoundingClientRect();
+                return r?{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}:null;
+              }
+              return JSON.stringify({
+                innerWidth:window.innerWidth,
+                clientWidth:document.documentElement.clientWidth,
+                scrollWidth:document.documentElement.scrollWidth,
+                visualWidth:window.visualViewport?Math.round(window.visualViewport.width):null,
+                visualOffsetLeft:window.visualViewport?Math.round(window.visualViewport.offsetLeft):null,
+                body:rect('body'),
+                player:rect('#player,ytm-player'),
+                video:rect('video')
+              });
+            })();
         """.trimIndent()
         // 各リソース要求ごとに Regex を生成しない。ページの大量リソース読み込み時の
         // Kotlinヒープ確保を抑え、ネイティブフィルタ評価だけに処理を限定する。

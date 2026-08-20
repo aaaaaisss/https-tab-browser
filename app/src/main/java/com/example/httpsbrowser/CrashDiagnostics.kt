@@ -78,10 +78,10 @@ object CrashDiagnostics {
     }.getOrDefault("")
 
     fun share(context: Context) {
-        val text = read(context).ifBlank { "HTTPS Tab Browser のクラッシュ診断情報はまだありません。" }
+        val text = read(context).ifBlank { "ねこぶらうざのクラッシュ診断情報はまだありません。" }
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "HTTPS Tab Browser crash diagnostics")
+            putExtra(Intent.EXTRA_SUBJECT, "ねこぶらうざ crash diagnostics")
             putExtra(Intent.EXTRA_TEXT, text)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }

@@ -364,7 +364,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         // 自分が入力した語だけで検索する候補は、補完候補より低優先として最上部に置く。
         results.putIfAbsent("google:$needle", Suggestion(needle, "", needle, SuggestionType.GOOGLE_SEARCH))
-        return results.values.take(10)
+        // reverseLayoutでは先頭が最下部の優先位置になる。表示上限は履歴を含めて合計6件。
+        return results.values.take(MAX_SUGGESTIONS)
     }
 
     private fun fetchGoogleSuggestions(query: String): List<String> = runCatching {
@@ -381,7 +382,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             List(suggestions.length()) { index -> suggestions.optString(index).trim() }
                 .filter(String::isNotBlank)
                 .distinct()
-                .take(6)
+                .take(MAX_REMOTE_SUGGESTIONS)
         }
     }.getOrDefault(emptyList())
 
@@ -422,5 +423,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private companion object {
         const val GOOGLE_HOME = "https://www.google.com/"
+        const val MAX_SUGGESTIONS = 6
+        // 入力語自身と最新履歴候補の余地を残し、Google取得分は最大5件にする。
+        const val MAX_REMOTE_SUGGESTIONS = 5
     }
 }

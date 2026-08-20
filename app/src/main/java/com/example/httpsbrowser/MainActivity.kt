@@ -21,6 +21,8 @@ import com.example.httpsbrowser.ui.HttpsBrowserTheme
 class MainActivity : ComponentActivity() {
     private var incomingUrl by mutableStateOf<String?>(null)
     @Volatile private var fullscreenVideoView: View? = null
+    private var pictureInPictureActive by mutableStateOf(false)
+    @Volatile private var pictureInPictureTransitionRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -33,22 +35,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** WebChromeClientの全画面custom viewが存在する間だけPiPの自動移行を許可する。 */
+    /** WebChromeClientの全画面custom viewが存在する間だけPiPへの手動遷移を許可する。 */
     fun setFullscreenVideoForPictureInPicture(view: View?) {
         fullscreenVideoView = view
+        if (view == null) pictureInPictureTransitionRequested = false
         updatePictureInPictureParams(view)
     }
+
+    /** WebViewがPiPへの遷移でonHideCustomViewを送っても、動画Viewを外さないための判定。 */
+    fun shouldRetainFullscreenCustomView(): Boolean =
+        pictureInPictureActive || pictureInPictureTransitionRequested
 
     @Suppress("DEPRECATION")
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // API 26〜30ではauto-enterがないため、全画面動画中だけ明示的にPiPへ入る。
-        if (Build.VERSION.SDK_INT in Build.VERSION_CODES.O until Build.VERSION_CODES.S &&
-            fullscreenVideoView != null &&
-            supportsPictureInPicture() &&
-            !isInPictureInPictureMode
-        ) {
-            runCatching { enterPictureInPictureMode(buildPictureInPictureParams(fullscreenVideoView)) }
+        val videoView = fullscreenVideoView
+        if (videoView == null || !supportsPictureInPicture() || isInPictureInPictureMode) return
+        // 自動PiPを使わず、先に保持状態を記録してから移行する。これによりWebViewの
+        // onHideCustomViewが先に来てもComposeがvideo custom viewを破棄しない。
+        pictureInPictureTransitionRequested = true
+        CrashDiagnostics.record("pip_enter_requested", "fullscreenView=true\napi=${Build.VERSION.SDK_INT}")
+        val entered = runCatching { enterPictureInPictureMode(buildPictureInPictureParams(videoView)) }.getOrDefault(false)
+        if (!entered) {
+            pictureInPictureTransitionRequested = false
+            CrashDiagnostics.record("pip_enter_failed", "enterPictureInPictureMode=false")
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode)
+        pictureInPictureActive = isInPictureInPictureMode
+        if (isInPictureInPictureMode) {
+            pictureInPictureTransitionRequested = false
+            CrashDiagnostics.record("pip_entered", "fullscreenView=${fullscreenVideoView != null}")
+        } else {
+            pictureInPictureTransitionRequested = false
+            CrashDiagnostics.record("pip_exited", "fullscreenView=${fullscreenVideoView != null}")
         }
     }
 
@@ -73,7 +95,6 @@ class MainActivity : ComponentActivity() {
             val bounds = Rect()
             if (view.getGlobalVisibleRect(bounds) && bounds.width() > 0 && bounds.height() > 0) {
                 builder.setSourceRectHint(bounds)
-                // Shortsを含め、AndroidのPiP対応範囲内の動画縦横比だけを渡す。
                 val ratio = bounds.width().toFloat() / bounds.height().toFloat()
                 if (ratio in MIN_PIP_ASPECT_RATIO..MAX_PIP_ASPECT_RATIO) {
                     builder.setAspectRatio(Rational(bounds.width(), bounds.height()))
@@ -81,8 +102,8 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // 全画面custom viewがある間だけホームジェスチャー／ホームボタンでPiPへ移行する。
-            builder.setAutoEnterEnabled(videoView != null)
+            // auto-enterはonHideCustomViewとの順序が端末ごとに異なるため使わない。
+            builder.setAutoEnterEnabled(false)
             if (videoView != null) builder.setSeamlessResizeEnabled(true)
         }
         return builder.build()
