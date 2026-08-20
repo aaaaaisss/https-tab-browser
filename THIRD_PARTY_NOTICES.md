@@ -36,3 +36,12 @@ The application bundles a fixed, local copy of the Dark Reader JavaScript API so
 - License: **MIT**
 
 YouTube, YouTube embedded frames, Google video-search pages, and sign-in/payment pages are excluded from this dynamic theme injection.
+
+## Design references (no source code copied or bundled)
+
+The following open-source projects are consulted for architecture and compatibility decisions only. No source files, assets, or binary code from this section are copied into the application.
+
+- **Fulguris**: <https://github.com/Slion/Fulguris> — consulted for its public WebView rendering-mode and official AndroidX dark-mode integration approach. In particular, the application follows the design principle of leaving normal WebView composition available when no temporary rendering effect is required, instead of permanently forcing an off-screen hardware layer. Fulguris is licensed under **MPL-2.0**.
+- **AndroidX WebKit**: <https://github.com/androidx/androidx/tree/androidx-main/webkit> — used through the declared `androidx.webkit` dependency for feature-gated document-start scripts and dark-mode APIs. It is licensed under **Apache-2.0**.
+
+The Google video-search repair deliberately does not add an external player, proxy, downloader, or remote script. It preserves the platform WebView's native media pipeline, removes app-injected visual filtering from the sensitive video-search document, and retains only the existing Brave/AdGuard network filtering path.

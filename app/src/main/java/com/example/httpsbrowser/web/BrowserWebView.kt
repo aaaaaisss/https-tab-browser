@@ -159,7 +159,10 @@ class BrowserWebViewRegistry(
         }
     }.apply {
         setBackgroundColor(android.graphics.Color.BLACK)
-        setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        // WebViewへ恒久的なオフスクリーンGPUレイヤーを強制しない。
+        // HTML5動画はChromiumが専用の合成面を管理するため、通常のLAYER_TYPE_NONEに委ねる。
+        // これによりGoogle動画プレビューの映像面と親WebViewの黒白レイヤーの競合を避ける。
+        setLayerType(View.LAYER_TYPE_NONE, null)
         // 独自の右端レールを使うため、横方向のedge effect/scrollbarが動画の左端に
         // 白いレイヤーとして露出しないよう、WebView標準のスクロール装飾を無効化する。
         overScrollMode = View.OVER_SCROLL_NEVER
@@ -283,8 +286,11 @@ class BrowserWebViewRegistry(
     }
 
     /** Document Start非対応時にも安全に背景を補正する。反転・画像/動画へのfilterは一切使わない。 */
-    private fun applyDarkBaseStyle(view: WebView, enabled: Boolean) {
-        view.evaluateJavascript(if (enabled) DARK_BASE_STYLE_SCRIPT else REMOVE_DARK_BASE_STYLE_SCRIPT, null)
+    private fun applyDarkBaseStyle(view: WebView, url: String, enabled: Boolean) {
+        // 再生ページでは背景用CSSさえ映像面・プレーヤーの初期合成と競合し得るため、完全に外す。
+        // それ以外のページは従来どおり初期白フラッシュを抑える。
+        val shouldApply = enabled && !isVideoPlaybackDocumentUrl(url)
+        view.evaluateJavascript(if (shouldApply) DARK_BASE_STYLE_SCRIPT else REMOVE_DARK_BASE_STYLE_SCRIPT, null)
     }
 
     /** 固定同梱資産を読み込む。取得失敗時はWebView標準暗色化だけに安全にfallbackする。 */
@@ -357,6 +363,13 @@ class BrowserWebViewRegistry(
             applyYoutubeCosmeticFilters(view, entry, url, enabled)
             return
         }
+        // Google検索は動画タブへの遷移やプレビュー展開を同一文書内で行うことがある。
+        // 汎用cosmetic規則がplayer/overlay由来のclass・idを隠すと、音声だけ残して黒白の
+        // プレビュー層が見えることがあるため、Google検索にはネットワーク規則だけを適用する。
+        if (isGoogleSearchDocumentUrl(url)) {
+            clearCosmeticFilters(view, entry)
+            return
+        }
         if (!enabled || !blocker.isReady()) {
             if (entry.cosmeticAppliedUrl != null || entry.genericCosmeticAppliedUrl != null || entry.youtubeCosmeticAppliedUrl != null) {
                 entry.cosmeticAppliedUrl = null
@@ -402,6 +415,17 @@ class BrowserWebViewRegistry(
                 }
             }, GENERIC_COSMETIC_DELAY_MS)
         }
+    }
+
+    /** 一般ページ用のcosmetic CSSを確実に取り除く。ネットワーク規則は停止しない。 */
+    private fun clearCosmeticFilters(view: WebView, entry: Entry) {
+        entry.cosmeticAppliedUrl = null
+        entry.genericCosmeticAppliedUrl = null
+        entry.youtubeCosmeticAppliedUrl = null
+        view.evaluateJavascript(
+            "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();document.getElementById('__https_browser_youtube_ad_css')?.remove();})();",
+            null
+        )
     }
 
     /** YouTubeのプレーヤー本体・サイズ計算へ触れず、明示的な広告枠だけを非表示にする。 */
@@ -487,13 +511,17 @@ class BrowserWebViewRegistry(
             // shouldInterceptRequest はUIスレッド外から呼ばれ得る。ここで WebView.url など
             // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
             val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
+            val resourceType = resourceTypeFor(request)
             // YouTube/Googlevideo/ytimgのiframe bootstrap、player JS、映像chunk、内部APIは
-            // 再生必須として保護する。明示的な広告・計測専用ホスト/パスだけは規則評価を継続する。
-            val shouldCheck = !isYoutubePlaybackResource(url) || isYoutubeAdOrTrackingNetwork(url)
+            // 再生必須として保護する。Google検索動画タブで起動したiframeと映像も同様に保護する。
+            // 明示的なYouTube広告・計測専用ホスト/パスだけは規則評価を継続する。
+            val protectedPlaybackResource = isYoutubePlaybackResource(url) ||
+                isGoogleVideoPreviewResource(documentUrl, resourceType)
+            val shouldCheck = !protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url)
             if (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
                     url = url,
                     documentUrl = documentUrl,
-                    resourceType = resourceTypeFor(request)
+                    resourceType = resourceType
                 )
             ) {
                 return WebResourceResponse(
@@ -512,22 +540,24 @@ class BrowserWebViewRegistry(
             entry?.youtubeCosmeticAppliedUrl = null
             entry?.activeDocumentUrl = url
             view.setBackgroundColor(android.graphics.Color.BLACK)
+            // Google通常検索から動画タブへ移った場合にも、前文書の背景CSSを映像面へ持ち越さない。
+            applyDarkBaseStyle(view, url, entry?.settings?.forceDarkPages == true)
             entry?.let { configure(view, it.settings, it.darkReaderDocumentStartHandler != null) }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyDarkBaseStyle(view, entry?.settings?.forceDarkPages == true)
+            applyDarkBaseStyle(view, url, entry?.settings?.forceDarkPages == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyDarkBaseStyle(view, entry?.settings?.forceDarkPages == true)
+            applyDarkBaseStyle(view, url, entry?.settings?.forceDarkPages == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
-            if (isYoutubeDocumentUrl(url)) recordYoutubeViewportMetrics(view, url)
+            if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             CookieManager.getInstance().flush()
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
@@ -661,6 +691,28 @@ class BrowserWebViewRegistry(
             host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")
     }
 
+    /** Google検索は動画タブとプレビュー展開を同じ検索文書上で行うため、広いcosmetic適用を避ける。 */
+    private fun isGoogleSearchDocumentUrl(url: String): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase().orEmpty()
+        return (host == "google.com" || host.endsWith(".google.com")) && uri.path == "/search"
+    }
+
+    private fun isGoogleVideoSearchDocumentUrl(url: String): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        if (!isGoogleSearchDocumentUrl(url)) return false
+        val query = uri.rawQuery.orEmpty()
+        return GOOGLE_VIDEO_SEARCH_QUERY_REGEX.containsMatchIn(query)
+    }
+
+    /** ダークCSSと動画映像面の競合を避ける必要がある文書。 */
+    private fun isVideoPlaybackDocumentUrl(url: String): Boolean =
+        isYoutubeDocumentUrl(url) || isGoogleVideoSearchDocumentUrl(url)
+
+    /** Google動画タブが生成するiframeと映像要求は、広告規則の誤遮断から守る。 */
+    private fun isGoogleVideoPreviewResource(documentUrl: String, resourceType: String): Boolean =
+        isGoogleVideoSearchDocumentUrl(documentUrl) && (resourceType == "media" || resourceType == "subdocument")
+
     /** YouTubeのiframe bootstrap・player JS・映像chunk・内部APIを広告規則の誤判定から守る。 */
     private fun isYoutubePlaybackResource(url: String): Boolean {
         val host = youtubeHost(url) ?: return false
@@ -687,8 +739,8 @@ class BrowserWebViewRegistry(
                     path.contains("/youtubei/v1/player/ad_break") || path.startsWith("/get_midroll_")))
     }
 
-    private fun recordYoutubeViewportMetrics(view: WebView, url: String) {
-        view.evaluateJavascript(YOUTUBE_VIEWPORT_METRICS_SCRIPT) { raw ->
+    private fun recordVideoViewportMetrics(view: WebView, url: String) {
+        view.evaluateJavascript(VIDEO_VIEWPORT_METRICS_SCRIPT) { raw ->
             val metrics = runCatching { JSONTokener(raw ?: "\"\"").nextValue() as? String }.getOrNull().orEmpty()
             if (metrics.isNotBlank()) {
                 CrashDiagnostics.record(
@@ -737,6 +789,11 @@ class BrowserWebViewRegistry(
         const val DARK_READER_SHA256 = "52cdb6603e5eb6bb9b53ebd59efdec0d36f71bd2196d695eb466ad7adfb97b83"
         val DARK_BASE_STYLE_SCRIPT = """
             (function(){
+              if(window.top!==window) return;
+              var host=location.hostname.toLowerCase(),search=location.search;
+              var youtube=host==='youtube.com'||host.endsWith('.youtube.com')||host==='youtube-nocookie.com'||host.endsWith('.youtube-nocookie.com');
+              var googleVideo=(host==='google.com'||host.endsWith('.google.com'))&&location.pathname==='/search'&&/(?:^|[?&])(?:tbm=vid|udm=7)(?:&|$)/.test(search);
+              if(youtube||googleVideo) return;
               var id='__https_browser_dark_base';
               var style=document.getElementById(id);
               if(!style){style=document.createElement('style');style.id=id;(document.head||document.documentElement).appendChild(style);}
@@ -769,8 +826,8 @@ class BrowserWebViewRegistry(
               display:none!important;visibility:hidden!important;
             }
         """.trimIndent()
-        // 左余白がCompose/WebView/YouTube文書のどこで発生しているかを実寸で診断する。
-        val YOUTUBE_VIEWPORT_METRICS_SCRIPT = """
+        // Google動画タブを含む動画文書で、映像面と重なり要素を実寸診断する。
+        val VIDEO_VIEWPORT_METRICS_SCRIPT = """
             (function(){
               function rect(selector){
                 var e=document.querySelector(selector),r=e&&e.getBoundingClientRect();
@@ -796,6 +853,7 @@ class BrowserWebViewRegistry(
         // Kotlinヒープ確保を抑え、ネイティブフィルタ評価だけに処理を限定する。
         val IMAGE_EXTENSION_REGEX = Regex(".*\\.(png|jpe?g|gif|webp|svg|avif)$", RegexOption.IGNORE_CASE)
         val MEDIA_EXTENSION_REGEX = Regex(".*\\.(mp4|webm|m3u8|mpd|mp3|m4a)$", RegexOption.IGNORE_CASE)
+        val GOOGLE_VIDEO_SEARCH_QUERY_REGEX = Regex("(?:^|&)(?:tbm=vid|udm=7)(?:&|$)")
         val COLLECT_COSMETIC_KEYS_SCRIPT = """
             (function(){
               var classes=[],ids=[],seenClasses=new Set(),seenIds=new Set();
