@@ -24,3 +24,15 @@ The application bundles Brave's official scriptlet resource manifest solely to r
 - License: **Mozilla Public License 2.0**
 
 User-added remote filter lists do not receive scriptlet execution permission.
+
+## Dark Reader dynamic theme library
+
+The application bundles a fixed, local copy of the Dark Reader JavaScript API solely to generate a dynamic dark theme for non-video HTTPS pages. It never fetches or executes remote code at runtime.
+
+- Source repository: <https://github.com/darkreader/darkreader>
+- Fixed release: `4.9.128`
+- Bundled file: `app/src/main/assets/darkreader/darkreader-4.9.128.js`
+- SHA-256: `52cdb6603e5eb6bb9b53ebd59efdec0d36f71bd2196d695eb466ad7adfb97b83` (the upstream CRLF line endings are normalized to LF; JavaScript tokens are unchanged)
+- License: **MIT**
+
+YouTube, YouTube embedded frames, Google video-search pages, and sign-in/payment pages are excluded from this dynamic theme injection.

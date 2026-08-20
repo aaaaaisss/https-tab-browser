@@ -42,6 +42,7 @@ class BrowserWebViewRegistry(
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
     private val pageTranslator = PageTranslator()
+    private val darkReaderScript: String? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { loadDarkReaderDocumentStartScript() }
 
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
@@ -50,8 +51,8 @@ class BrowserWebViewRegistry(
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
         entry.appliedForceDark = settings.forceDarkPages
-        prepareDarkDocumentStartStyle(entry)
-        configure(entry.webView, settings)
+        prepareDarkDocumentStartStyles(entry)
+        configure(entry.webView, settings, entry.darkReaderDocumentStartHandler != null)
         // 最後に動作した構成と同様、暗色化設定の切替時だけ現在文書を一度読み直す。
         // 戻る・進む・タブ選択ではここに入らず、WebView履歴を維持する。
         if (darkModeChanged && entry.loadedUrl != null) entry.webView.reload()
@@ -114,8 +115,10 @@ class BrowserWebViewRegistry(
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
             runCatching { entry.darkDocumentStartHandler?.remove() }
+            runCatching { entry.darkReaderDocumentStartHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.darkDocumentStartHandler = null
+            entry.darkReaderDocumentStartHandler = null
             entry.webView.apply {
                 stopLoading()
                 loadUrl("about:blank")
@@ -157,9 +160,17 @@ class BrowserWebViewRegistry(
     }.apply {
         setBackgroundColor(android.graphics.Color.BLACK)
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        // 独自の右端レールを使うため、横方向のedge effect/scrollbarが動画の左端に
+        // 白いレイヤーとして露出しないよう、WebView標準のスクロール装飾を無効化する。
+        overScrollMode = View.OVER_SCROLL_NEVER
+        isHorizontalScrollBarEnabled = false
+        isVerticalScrollBarEnabled = false
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            // WebView専用UA分岐を避け、通常のモバイルChrome相当のページを要求する。
+            // Version/端末情報は残し、WebView識別子だけを取り除く。
+            userAgentString = userAgentString.replace("; wv", "")
             // WebViewではwide viewportが既定で無効なため、サイト側のmeta viewportを尊重する。
             // YouTube/Google埋め込みのモバイル幅・初期倍率はページ側に委ねる。
             useWideViewPort = true
@@ -199,9 +210,9 @@ class BrowserWebViewRegistry(
         }
     }
 
-    private fun configure(view: WebView, settings: BrowserSettings) {
+    private fun configure(view: WebView, settings: BrowserSettings, usesDarkReader: Boolean = false) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        configureDarkMode(view, settings.forceDarkPages)
+        configureDarkMode(view, settings.forceDarkPages, usesDarkReader)
     }
 
     /**
@@ -209,18 +220,19 @@ class BrowserWebViewRegistry(
      * 未対応の古いWebViewだけでForce Darkをfallbackにする。画像・動画をCSS反転しない。
      */
     @Suppress("DEPRECATION")
-    private fun configureDarkMode(view: WebView, enabled: Boolean) {
+    private fun configureDarkMode(view: WebView, enabled: Boolean, usesDarkReader: Boolean) {
         val webSettings = view.settings
         val hasAlgorithmicDarkening = WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)
         val hasForceDark = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)
         val hasForceDarkStrategy = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)
+        val useWebViewDarkening = enabled && !usesDarkReader
         if (hasAlgorithmicDarkening) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, enabled)
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, useWebViewDarkening)
             if (hasForceDark) WebSettingsCompat.setForceDark(webSettings, WebSettingsCompat.FORCE_DARK_OFF)
         } else if (hasForceDark) {
             WebSettingsCompat.setForceDark(
                 webSettings,
-                if (enabled) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+                if (useWebViewDarkening) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
             if (hasForceDarkStrategy) {
                 WebSettingsCompat.setForceDarkStrategy(
@@ -230,19 +242,25 @@ class BrowserWebViewRegistry(
             }
         }
         // Algorithmic Darkening利用時はapp-level Force Darkを重ねない。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(!hasAlgorithmicDarkening && enabled)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(!hasAlgorithmicDarkening && useWebViewDarkening)
         CrashDiagnostics.record(
             "dark_mode_configured",
-            "enabled=$enabled\napi=${Build.VERSION.SDK_INT}\nalgorithmic=$hasAlgorithmicDarkening\nforceDark=$hasForceDark\nforceDarkStrategy=$hasForceDarkStrategy\nmode=${if (hasAlgorithmicDarkening) "algorithmic" else "force_dark_fallback"}"
+            "enabled=$enabled\napi=${Build.VERSION.SDK_INT}\nalgorithmic=$hasAlgorithmicDarkening\nforceDark=$hasForceDark\nforceDarkStrategy=$hasForceDarkStrategy\ndarkReader=$usesDarkReader\nmode=${if (usesDarkReader) "dark_reader_dynamic" else if (hasAlgorithmicDarkening) "algorithmic" else "force_dark_fallback"}"
         )
     }
 
-    /** 初期白フラッシュを防ぐため、HTTPS文書の開始時から背景・color-schemeだけを暗色にする。 */
-    private fun prepareDarkDocumentStartStyle(entry: Entry) {
-        val enabled = entry.settings.forceDarkPages
+    /**
+     * 初期白フラッシュを防ぐ最小CSSと、固定同梱したDark ReaderをDocument Startで登録する。
+     * Dark ReaderはYouTube・YouTube iframe・Google動画タブを自ら除外する。外部コードは読み込まない。
+     */
+    private fun prepareDarkDocumentStartStyles(entry: Entry) {
+        // Dark Readerは文書内JavaScriptとして動くため、JavaScript無効時は標準WebView暗色化へfallbackする。
+        val enabled = entry.settings.forceDarkPages && entry.settings.javascriptEnabled
         if (entry.darkDocumentStartEnabled == enabled) return
         runCatching { entry.darkDocumentStartHandler?.remove() }
+        runCatching { entry.darkReaderDocumentStartHandler?.remove() }
         entry.darkDocumentStartHandler = null
+        entry.darkReaderDocumentStartHandler = null
         entry.darkDocumentStartEnabled = enabled
         if (!enabled || !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         runCatching {
@@ -252,12 +270,43 @@ class BrowserWebViewRegistry(
         }.onFailure { throwable ->
             CrashDiagnostics.record("dark_document_start_unavailable", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
         }
+        val dynamicScript = darkReaderScript
+        if (dynamicScript == null) return
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(entry.webView, dynamicScript, setOf("https://*"))
+        }.onSuccess { handler ->
+            entry.darkReaderDocumentStartHandler = handler
+            CrashDiagnostics.record("dark_reader_ready", "version=$DARK_READER_VERSION\nsha256=$DARK_READER_SHA256")
+        }.onFailure { throwable ->
+            CrashDiagnostics.record("dark_reader_unavailable", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+        }
     }
 
     /** Document Start非対応時にも安全に背景を補正する。反転・画像/動画へのfilterは一切使わない。 */
     private fun applyDarkBaseStyle(view: WebView, enabled: Boolean) {
         view.evaluateJavascript(if (enabled) DARK_BASE_STYLE_SCRIPT else REMOVE_DARK_BASE_STYLE_SCRIPT, null)
     }
+
+    /** 固定同梱資産を読み込む。取得失敗時はWebView標準暗色化だけに安全にfallbackする。 */
+    private fun loadDarkReaderDocumentStartScript(): String? = runCatching {
+        val library = context.assets.open(DARK_READER_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        check(library.isNotBlank()) { "Dark Reader asset is empty" }
+        """
+            if (window.top === window) {
+              $library
+              (function(){
+                var host=location.hostname.toLowerCase();
+                var search=location.search;
+                var videoHost=host==='youtube.com'||host.endsWith('.youtube.com')||host==='youtube-nocookie.com'||host.endsWith('.youtube-nocookie.com');
+                var googleVideo=(host==='google.com'||host.endsWith('.google.com'))&&location.pathname==='/search'&&(/(?:^|[?&])(?:tbm=vid|udm=7)(?:&|$)/.test(search));
+                if(videoHost||googleVideo||host==='accounts.google.com'||host==='pay.google.com') return;
+                try { DarkReader.enable({brightness:100,contrast:90,sepia:0}); } catch (_) {}
+              })();
+            }
+        """.trimIndent()
+    }.onFailure { throwable ->
+        CrashDiagnostics.record("dark_reader_asset_unavailable", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+    }.getOrNull()
 
     /**
      * 指定標準リストからBraveが解決したYouTube scriptletだけを、ページのJSより先に注入する。
@@ -279,7 +328,7 @@ class BrowserWebViewRegistry(
             CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=false\nparentHost=${youtubeHost(url).orEmpty()}")
             return
         }
-        val host = youtubeHost(url) ?: return
+        val parentHost = youtubeHost(url).orEmpty()
         val originRules = setOf(
             "https://youtube.com", "https://*.youtube.com",
             "https://youtube-nocookie.com", "https://*.youtube-nocookie.com"
@@ -289,7 +338,7 @@ class BrowserWebViewRegistry(
         }.onSuccess { handler ->
             entry.documentStartScriptHandler = handler
             entry.documentStartScriptUrl = url
-            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=true\nparentHost=$host\nchars=${script.length}")
+            CrashDiagnostics.record("adblock_youtube_scriptlet_prepared", "scriptlet=true\nparentHost=$parentHost\nchars=${script.length}")
         }.onFailure { throwable ->
             CrashDiagnostics.record("adblock_youtube_scriptlet_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
         }
@@ -463,7 +512,7 @@ class BrowserWebViewRegistry(
             entry?.youtubeCosmeticAppliedUrl = null
             entry?.activeDocumentUrl = url
             view.setBackgroundColor(android.graphics.Color.BLACK)
-            entry?.let { configure(view, it.settings) }
+            entry?.let { configure(view, it.settings, it.darkReaderDocumentStartHandler != null) }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
@@ -587,6 +636,7 @@ class BrowserWebViewRegistry(
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
         var darkDocumentStartHandler: ScriptHandler? = null,
+        var darkReaderDocumentStartHandler: ScriptHandler? = null,
         var darkDocumentStartEnabled: Boolean = false,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
@@ -640,7 +690,12 @@ class BrowserWebViewRegistry(
     private fun recordYoutubeViewportMetrics(view: WebView, url: String) {
         view.evaluateJavascript(YOUTUBE_VIEWPORT_METRICS_SCRIPT) { raw ->
             val metrics = runCatching { JSONTokener(raw ?: "\"\"").nextValue() as? String }.getOrNull().orEmpty()
-            if (metrics.isNotBlank()) CrashDiagnostics.record("youtube_viewport_metrics", "url=$url\n$metrics")
+            if (metrics.isNotBlank()) {
+                CrashDiagnostics.record(
+                    "youtube_viewport_metrics",
+                    "url=$url\nwebViewWidth=${view.width}\nwebViewHeight=${view.height}\nscrollX=${view.scrollX}\nscrollY=${view.scrollY}\nscale=${view.scale}\n$metrics"
+                )
+            }
         }
     }
 
@@ -676,6 +731,10 @@ class BrowserWebViewRegistry(
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val GENERIC_COSMETIC_DELAY_MS = 350L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
+        const val DARK_READER_ASSET = "darkreader/darkreader-4.9.128.js"
+        const val DARK_READER_VERSION = "4.9.128"
+        // 配布元CRLFをLFへ正規化した同梱ファイルのSHA-256。JavaScriptトークンは不変。
+        const val DARK_READER_SHA256 = "52cdb6603e5eb6bb9b53ebd59efdec0d36f71bd2196d695eb466ad7adfb97b83"
         val DARK_BASE_STYLE_SCRIPT = """
             (function(){
               var id='__https_browser_dark_base';
@@ -685,15 +744,28 @@ class BrowserWebViewRegistry(
             })();
         """.trimIndent()
         val REMOVE_DARK_BASE_STYLE_SCRIPT = """
-            (function(){document.getElementById('__https_browser_dark_base')?.remove();document.getElementById('__https_browser_deep_dark')?.remove();})();
+            (function(){document.getElementById('__https_browser_dark_base')?.remove();})();
         """.trimIndent()
-        // #player、video、ytm-player、レイアウトコンテナは意図的に含めない。
+        // 指定101リストのyoutube.com/m.youtube.com専用cosmetic規則だけを固定適用する。
+        // #player、video、ytm-player、grid/layoutコンテナは意図的に含めない。
         val YOUTUBE_AD_CSS = """
+            #player-ads,.ytp-ad-overlay-container,.ytp-ad-module,
             ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,
             ytd-promoted-sparkles-web-renderer,ytd-companion-slot-renderer,
             ytd-action-companion-ad-renderer,ytm-ad-slot-renderer,
             ytm-promoted-sparkles-web-renderer,ytm-companion-ad-renderer,
-            #player-ads,.ytp-ad-overlay-container,.ytp-ad-module {
+            ytd-rich-item-renderer:has(> ytd-ad-slot-renderer),
+            ytd-shorts:has(> .ytd-reel-video-renderer > ytd-ad-slot-renderer),
+            ytd-search-pyv-renderer.ytd-item-section-renderer,
+            ytd-watch-next-secondary-results-renderer > ytd-ad-slot-renderer,
+            ytd-rich-item-renderer > ytd-ad-slot-renderer,
+            ytd-item-section-renderer > ytd-ad-slot-renderer,
+            ytm-rich-item-renderer > ad-slot-renderer,
+            lazy-list > ad-slot-renderer,
+            ytm-companion-slot[data-content-type] > ytm-companion-ad-renderer,
+            #masthead-ad.ytd-rich-grid-renderer,
+            .ytp-suggested-action > .ytp-suggested-action-badge,
+            yt-overlay-product-sticker {
               display:none!important;visibility:hidden!important;
             }
         """.trimIndent()
@@ -710,6 +782,10 @@ class BrowserWebViewRegistry(
                 scrollWidth:document.documentElement.scrollWidth,
                 visualWidth:window.visualViewport?Math.round(window.visualViewport.width):null,
                 visualOffsetLeft:window.visualViewport?Math.round(window.visualViewport.offsetLeft):null,
+                scrollX:window.scrollX,
+                documentOverflowX:getComputedStyle(document.documentElement).overflowX,
+                bodyOverflowX:document.body?getComputedStyle(document.body).overflowX:null,
+                leftStack:(document.elementsFromPoint?document.elementsFromPoint(1,Math.max(1,Math.min(window.innerHeight-1,160))):[]).slice(0,5).map(function(e){var s=getComputedStyle(e);return {tag:e.tagName,id:e.id,cls:(e.className&&String(e.className).slice(0,120))||'',position:s.position,z:s.zIndex,bg:s.backgroundColor};}),
                 body:rect('body'),
                 player:rect('#player,ytm-player'),
                 video:rect('video')
