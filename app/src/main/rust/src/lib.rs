@@ -26,6 +26,17 @@ fn get_engine(handle: jlong) -> Option<Arc<Engine>> {
     ENGINES.lock().ok()?.get(&handle).cloned()
 }
 
+fn register_engine(engine: Engine) -> jlong {
+    let handle = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
+    match ENGINES.lock() {
+        Ok(mut engines) => {
+            engines.insert(handle, Arc::new(engine));
+            handle
+        }
+        Err(_) => 0,
+    }
+}
+
 fn parse_string_array(text: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(text).unwrap_or_default()
 }
@@ -55,16 +66,30 @@ fn create_engine_from_files(paths: Vec<String>) -> jlong {
             added = true;
         }
         if !added { return 0; }
-        let engine = Arc::new(Engine::new_with_filter_set(filter_set));
-        let handle = NEXT_ENGINE_ID.fetch_add(1, Ordering::Relaxed);
-        match ENGINES.lock() {
-            Ok(mut engines) => {
-                engines.insert(handle, engine);
-                handle
-            }
-            Err(_) => 0,
-        }
+        register_engine(Engine::new_with_filter_set(filter_set))
     })).unwrap_or(0)
+}
+
+/**
+ * adblock-rustのキャッシュは同じcrate minor version内だけで使う最適化データである。
+ * 復元失敗を呼び出し側へ例外として渡さず、0を返して通常コンパイルへ安全に戻す。
+ */
+fn create_engine_from_serialized_file(path: String) -> jlong {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok(serialized) = std::fs::read(path) else { return 0 };
+        if serialized.is_empty() { return 0; }
+        let mut engine = Engine::default();
+        if engine.deserialize(&serialized).is_err() { return 0; }
+        register_engine(engine)
+    })).unwrap_or(0)
+}
+
+fn serialize_engine_to_file(handle: jlong, path: String) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(engine) = get_engine(handle) else { return false };
+        let serialized = engine.serialize();
+        !serialized.is_empty() && std::fs::write(path, serialized).is_ok()
+    })).unwrap_or(false)
 }
 
 #[unsafe(no_mangle)]
@@ -75,6 +100,27 @@ pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_na
 ) -> jlong {
     let Some(paths) = java_string_array(&mut env, paths) else { return 0 };
     create_engine_from_files(paths)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_nativeCreateFromSerializedFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    path: JString,
+) -> jlong {
+    let Some(path) = java_string(&mut env, path) else { return 0 };
+    create_engine_from_serialized_file(path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_nativeSerializeToFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    path: JString,
+) -> jboolean {
+    let Some(path) = java_string(&mut env, path) else { return JNI_FALSE };
+    if serialize_engine_to_file(handle, path) { JNI_TRUE } else { JNI_FALSE }
 }
 
 #[unsafe(no_mangle)]
@@ -149,4 +195,28 @@ pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_na
             .unwrap_or_default()
     })).unwrap_or_default();
     env.new_string(css).map_or(std::ptr::null_mut(), |value| value.into_raw())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialized_engine_preserves_network_blocking() {
+        let mut filters = FilterSet::new(false);
+        filters.add_filter_list("||ads.example.test^", ParseOptions::default());
+        let engine = Engine::new_with_filter_set(filters);
+        let serialized = engine.serialize();
+        assert!(!serialized.is_empty());
+
+        let mut restored = Engine::default();
+        restored.deserialize(&serialized).expect("serialized engine must restore");
+        let request = Request::new(
+            "https://ads.example.test/banner.js",
+            "https://site.example.test/",
+            "script",
+            "get",
+        ).expect("valid request");
+        assert!(restored.check_network_request(&request).should_block());
+    }
 }

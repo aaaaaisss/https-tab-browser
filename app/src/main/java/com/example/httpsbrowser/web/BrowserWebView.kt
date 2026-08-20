@@ -192,39 +192,26 @@ class BrowserWebViewRegistry(
     }
 
     /**
-     * Android 13以上はAlgorithmic Darkeningが主方式だが、一部の更新途中WebViewでは
-     * Force Dark featureも同時に公開される。従来のようにAlgorithmic対応時に
-     * FORCE_DARK_OFFを明示すると、そのWebViewでは暗転経路を自ら無効化してしまう。
-     *
-     * CSS反転やページ本文の書換えは使わないため、動画・画像・iframeの色を直接壊さない。
+     * CSS反転は使わず、WebViewの標準暗色化APIだけを一系統で設定する。
+     * Algorithmic Darkening対応WebViewでは同APIだけを使い、未対応時だけ旧Force Darkを
+     * fallbackにする。両方式を同時に有効化して競合させない。
      */
     @Suppress("DEPRECATION")
     private fun configureDarkMode(view: WebView, enabled: Boolean) {
         val webSettings = view.settings
         val hasAlgorithmicDarkening = WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)
         if (hasAlgorithmicDarkening) {
-            // targetSdk 33+での標準経路。WebViewが対応可能なページだけを安全に暗転する。
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, enabled)
         }
-
         if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-            // API 32以下および更新途中のWebView向けfallback。Algorithmic Darkeningを
-            // 利用できる場合でもOFFを強制しない。
             WebSettingsCompat.setForceDark(
                 webSettings,
-                if (enabled) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+                if (!hasAlgorithmicDarkening && enabled) WebSettingsCompat.FORCE_DARK_ON
+                else WebSettingsCompat.FORCE_DARK_OFF
             )
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-                WebSettingsCompat.setForceDarkStrategy(
-                    webSettings,
-                    WebSettingsCompat.DARK_STRATEGY_PREFER_WEB_THEME_OVER_USER_AGENT_DARKENING
-                )
-            }
         }
-
-        // Android 10〜12のapp-level Force Dark fallbackを許可する。Android 13+では
-        // 上記Algorithmic Darkeningが処理を担うため、ここは互換性設定としてのみ機能する。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(true)
+        // Android 10〜12では親Viewの許可値も必要になる。OFF時は明示的に解除する。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(enabled)
     }
 
     /**
@@ -233,12 +220,20 @@ class BrowserWebViewRegistry(
      */
     private fun applyBraveCosmeticFilters(view: WebView, url: String, enabled: Boolean, includeGeneric: Boolean) {
         val entry = entries.entries.firstOrNull { it.value.webView === view }?.value ?: return
+        // YouTubeはWeb ComponentsとSPA遷移でDOM構造が頻繁に変わる。BraveのURL評価による
+        // ネットワーク遮断は維持しつつ、広範なhostname/generic CSSとclass/id走査だけを
+        // 適用しない。プレーヤー周辺を隠さない限定広告枠CSSは別経路で注入する。
+        if (isYoutubeDocumentUrl(url)) {
+            applyYoutubeCosmeticFilters(view, entry, url, enabled)
+            return
+        }
         if (!enabled || !blocker.isReady()) {
-            if (entry.cosmeticAppliedUrl != null || entry.genericCosmeticAppliedUrl != null) {
+            if (entry.cosmeticAppliedUrl != null || entry.genericCosmeticAppliedUrl != null || entry.youtubeCosmeticAppliedUrl != null) {
                 entry.cosmeticAppliedUrl = null
                 entry.genericCosmeticAppliedUrl = null
+                entry.youtubeCosmeticAppliedUrl = null
                 view.evaluateJavascript(
-                    "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();})();",
+                    "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();document.getElementById('__https_browser_youtube_ad_css')?.remove();})();",
                     null
                 )
             }
@@ -277,6 +272,29 @@ class BrowserWebViewRegistry(
                 }
             }, GENERIC_COSMETIC_DELAY_MS)
         }
+    }
+
+    /** YouTubeのプレーヤー本体・サイズ計算へ触れず、明示的な広告枠だけを非表示にする。 */
+    private fun applyYoutubeCosmeticFilters(view: WebView, entry: Entry, url: String, enabled: Boolean) {
+        if (entry.youtubeCosmeticAppliedUrl == url && enabled) return
+        entry.youtubeCosmeticAppliedUrl = if (enabled) url else null
+        // 同一ドキュメントで通常サイトからYouTubeへSPA遷移した場合にも、汎用CSSを残さない。
+        entry.cosmeticAppliedUrl = null
+        entry.genericCosmeticAppliedUrl = null
+        val css = if (enabled) YOUTUBE_AD_CSS else ""
+        view.evaluateJavascript(
+            """
+            (function(){
+              document.getElementById('__https_browser_adblock_static')?.remove();
+              document.getElementById('__https_browser_adblock_generic')?.remove();
+              var id='__https_browser_youtube_ad_css';
+              var style=document.getElementById(id);
+              if(!style){style=document.createElement('style');style.id=id;document.documentElement.appendChild(style);}
+              style.textContent=${JSONObject.quote(css)};
+            })();
+            """.trimIndent(),
+            null
+        )
     }
 
     private fun applyGenericCosmeticFilters(view: WebView, exceptionsJson: String) {
@@ -356,6 +374,7 @@ class BrowserWebViewRegistry(
             val entry = entries[tabId]
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
+            entry?.youtubeCosmeticAppliedUrl = null
             entry?.activeDocumentUrl = url
             view.setBackgroundColor(android.graphics.Color.BLACK)
             entry?.let { configure(view, it.settings) }
@@ -475,6 +494,7 @@ class BrowserWebViewRegistry(
         var loadedUrl: String? = null,
         var cosmeticAppliedUrl: String? = null,
         var genericCosmeticAppliedUrl: String? = null,
+        var youtubeCosmeticAppliedUrl: String? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
         @Volatile var activeDocumentUrl: String? = null,
@@ -488,6 +508,12 @@ class BrowserWebViewRegistry(
         val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
         intent.getStringExtra("browser_fallback_url")?.let(::upgradeToHttps)
     }.getOrNull()
+
+    private fun isYoutubeDocumentUrl(url: String): Boolean {
+        val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return false
+        return host == "youtube.com" || host.endsWith(".youtube.com") ||
+            host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")
+    }
 
     private fun resourceTypeFor(request: WebResourceRequest): String {
         if (request.isForMainFrame) return "document"
@@ -514,6 +540,16 @@ class BrowserWebViewRegistry(
     private companion object {
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val GENERIC_COSMETIC_DELAY_MS = 350L
+        // #player、video、ytm-player、レイアウトコンテナは意図的に含めない。
+        val YOUTUBE_AD_CSS = """
+            ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,
+            ytd-promoted-sparkles-web-renderer,ytd-companion-slot-renderer,
+            ytd-action-companion-ad-renderer,ytm-ad-slot-renderer,
+            ytm-promoted-sparkles-web-renderer,ytm-companion-ad-renderer,
+            #player-ads,.ytp-ad-overlay-container,.ytp-ad-module {
+              display:none!important;visibility:hidden!important;
+            }
+        """.trimIndent()
         // 各リソース要求ごとに Regex を生成しない。ページの大量リソース読み込み時の
         // Kotlinヒープ確保を抑え、ネイティブフィルタ評価だけに処理を限定する。
         val IMAGE_EXTENSION_REGEX = Regex(".*\\.(png|jpe?g|gif|webp|svg|avif)$", RegexOption.IGNORE_CASE)

@@ -45,6 +45,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.AdBlockUpdateWorker
 import com.example.httpsbrowser.data.SettingsPage
@@ -144,6 +145,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
 
     fun finishFullscreen(notifyPage: Boolean) {
         val content = fullscreenContent ?: return
+        // custom viewが消えた瞬間にPiP自動移行も無効化し、通常ページでPiPにならないようにする。
+        (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(null)
         fullscreenContent = null
         (content.view.parent as? ViewGroup)?.removeView(content.view)
         viewModel.setFullscreen(false)
@@ -154,6 +157,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     fun enterFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
         viewModel.setFullscreen(true)
         fullscreenContent = FullscreenContent(view, callback)
+        (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(view)
         activity?.let {
             WindowCompat.getInsetsController(it.window, it.window.decorView).apply {
                 systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
