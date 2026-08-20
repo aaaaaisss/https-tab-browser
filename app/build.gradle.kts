@@ -57,7 +57,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.webkit:webkit:1.12.1")
+    // Document Start、暗色化、renderer crash handlingの互換性を最新安定版に揃える。
+    implementation("androidx.webkit:webkit:1.17.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("com.google.mlkit:translate:17.0.3")

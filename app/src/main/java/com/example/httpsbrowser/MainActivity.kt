@@ -23,6 +23,13 @@ class MainActivity : ComponentActivity() {
     @Volatile private var fullscreenVideoView: View? = null
     private var pictureInPictureActive by mutableStateOf(false)
     @Volatile private var pictureInPictureTransitionRequested = false
+    // custom viewはComposeのレイアウト、回転、PiP遷移で座標が変わる。
+    // そのたびにauto-enter等の全パラメータを保ったsourceRectHintを更新する。
+    private val pipHintLayoutListener = View.OnLayoutChangeListener { view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+        if (view === fullscreenVideoView && (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom)) {
+            updatePictureInPictureParams(view)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -37,8 +44,12 @@ class MainActivity : ComponentActivity() {
 
     /** WebChromeClientの全画面custom viewが存在する間だけPiPへの手動遷移を許可する。 */
     fun setFullscreenVideoForPictureInPicture(view: View?) {
+        val previousView = fullscreenVideoView
+        if (previousView !== view) previousView?.removeOnLayoutChangeListener(pipHintLayoutListener)
         fullscreenVideoView = view
+        if (previousView !== view) view?.addOnLayoutChangeListener(pipHintLayoutListener)
         if (view == null) pictureInPictureTransitionRequested = false
+        // Viewがまだレイアウトされていない場合もあるため、現在値と将来のレイアウト変化の両方を扱う。
         updatePictureInPictureParams(view)
     }
 
@@ -79,6 +90,12 @@ class MainActivity : ComponentActivity() {
             pictureInPictureTransitionRequested = false
             CrashDiagnostics.record("pip_exited", "fullscreenView=${fullscreenVideoView != null}")
         }
+    }
+
+    override fun onDestroy() {
+        fullscreenVideoView?.removeOnLayoutChangeListener(pipHintLayoutListener)
+        fullscreenVideoView = null
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
