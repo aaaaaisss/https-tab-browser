@@ -188,20 +188,43 @@ class BrowserWebViewRegistry(
 
     private fun configure(view: WebView, settings: BrowserSettings) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        // ダーク化は WebView の標準 API を一系統だけ使う。CSS 反転は動画・地図・iframe を
-        // 壊しやすいため使用しない。サイトが自前のダークテーマを持つ場合はそちらを優先する。
-        val enabled = settings.forceDarkPages
+        configureDarkMode(view, settings.forceDarkPages)
+    }
+
+    /**
+     * Android 13以上はAlgorithmic Darkeningが主方式だが、一部の更新途中WebViewでは
+     * Force Dark featureも同時に公開される。従来のようにAlgorithmic対応時に
+     * FORCE_DARK_OFFを明示すると、そのWebViewでは暗転経路を自ら無効化してしまう。
+     *
+     * CSS反転やページ本文の書換えは使わないため、動画・画像・iframeの色を直接壊さない。
+     */
+    @Suppress("DEPRECATION")
+    private fun configureDarkMode(view: WebView, enabled: Boolean) {
+        val webSettings = view.settings
         val hasAlgorithmicDarkening = WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)
         if (hasAlgorithmicDarkening) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, enabled)
+            // targetSdk 33+での標準経路。WebViewが対応可能なページだけを安全に暗転する。
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, enabled)
         }
+
         if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+            // API 32以下および更新途中のWebView向けfallback。Algorithmic Darkeningを
+            // 利用できる場合でもOFFを強制しない。
             WebSettingsCompat.setForceDark(
-                view.settings,
-                if (!hasAlgorithmicDarkening && enabled) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+                webSettings,
+                if (enabled) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+                WebSettingsCompat.setForceDarkStrategy(
+                    webSettings,
+                    WebSettingsCompat.DARK_STRATEGY_PREFER_WEB_THEME_OVER_USER_AGENT_DARKENING
+                )
+            }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(enabled)
+
+        // Android 10〜12のapp-level Force Dark fallbackを許可する。Android 13+では
+        // 上記Algorithmic Darkeningが処理を担うため、ここは互換性設定としてのみ機能する。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(true)
     }
 
     /**
