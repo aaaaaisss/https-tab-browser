@@ -259,22 +259,14 @@ object BrowserSheets {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
                     Text("今日の遮断件数: ${status.blockedToday} 件", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        when {
-                            status.temporarilyDisabled -> "高互換フィルタエンジン: 安定化のため一時停止中"
-                            status.engineReady -> "高互換フィルタエンジン: 準備済み"
-                            else -> "高互換フィルタエンジン: 準備中または利用不可"
-                        },
+                        "高互換フィルタエンジン: ${if (status.engineReady) "準備済み" else "準備中または利用不可"}",
                         style = MaterialTheme.typography.bodySmall
                     )
-                    if (status.temporarilyDisabled) {
-                        Text("YouTubeを含むWebViewの停止を隔離する緊急版です。リストは保持・更新されますが、遮断処理は実行しません。", style = MaterialTheme.typography.bodySmall)
-                    } else {
-                        Text(
-                            "読み込んだ URL 規則: ${status.networkRuleCount} 件 / cosmetic 規則: ${status.cosmeticRuleCount} 件",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text("HTTPS URL のリストだけを登録できます。例外・オプション・resource type はフィルタエンジンが評価します。", style = MaterialTheme.typography.bodySmall)
-                    }
+                    Text(
+                        "読み込んだ URL 規則: ${status.networkRuleCount} 件 / cosmetic 規則: ${status.cosmeticRuleCount} 件",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text("HTTPS URL のリストだけを登録できます。例外・オプション・resource type はフィルタエンジンが評価します。", style = MaterialTheme.typography.bodySmall)
                 }
             }
             if (sources.isEmpty()) item { EmptyRow("広告ブロックリストはまだありません。") }

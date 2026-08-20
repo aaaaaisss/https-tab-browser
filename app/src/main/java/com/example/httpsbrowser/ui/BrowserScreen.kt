@@ -45,7 +45,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.AdBlockUpdateWorker
 import com.example.httpsbrowser.data.SettingsPage
@@ -121,9 +120,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
 
     LaunchedEffect(Unit) {
-        // 緊急安定化版: ルールは保持・更新するが、YouTubeを含むWebViewの実クラッシュ調査中は
-        // ネイティブ規則コンパイルを開始しない。
         listRepository.ensureStandardLists()
+        // Kotlin/JNIの巨大文字列コピーを避けたファイル直読コンパイルで、標準リストを有効化する。
+        listRepository.loadAndCompile()
         AdBlockUpdateWorker.schedule(context.applicationContext)
     }
     LaunchedEffect(externalUrl) {
@@ -148,14 +147,12 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         fullscreenContent = null
         (content.view.parent as? ViewGroup)?.removeView(content.view)
         viewModel.setFullscreen(false)
-        (activity as? MainActivity)?.setPictureInPictureEligible(false)
         if (notifyPage) content.callback.onCustomViewHidden()
         activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView).show(WindowInsetsCompat.Type.systemBars()) }
     }
 
     fun enterFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
         viewModel.setFullscreen(true)
-        (activity as? MainActivity)?.setPictureInPictureEligible(true)
         fullscreenContent = FullscreenContent(view, callback)
         activity?.let {
             WindowCompat.getInsetsController(it.window, it.window.decorView).apply {
