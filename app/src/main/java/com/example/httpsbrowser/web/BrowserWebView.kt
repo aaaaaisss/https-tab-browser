@@ -100,11 +100,14 @@ class BrowserWebViewRegistry(
     fun resume(tabId: String) = entries[tabId]?.webView?.onResume()
 
     fun remove(tabId: String) {
-        entries.remove(tabId)?.webView?.apply {
-            stopLoading()
-            loadUrl("about:blank")
-            clearHistory()
-            destroy()
+        entries.remove(tabId)?.let { entry ->
+            entry.isActive = false
+            entry.webView.apply {
+                stopLoading()
+                loadUrl("about:blank")
+                clearHistory()
+                destroy()
+            }
         }
     }
 
@@ -246,7 +249,7 @@ class BrowserWebViewRegistry(
             entry.genericCosmeticAppliedUrl = url
             val exceptions = resources.optJSONArray("exceptions")?.toString() ?: "[]"
             view.postDelayed({
-                if (entry.genericCosmeticAppliedUrl == url && entry.cosmeticAppliedUrl == url && !view.isDestroyed) {
+                if (entry.isActive && entry.genericCosmeticAppliedUrl == url && entry.cosmeticAppliedUrl == url) {
                     applyGenericCosmeticFilters(view, exceptions)
                 }
             }, GENERIC_COSMETIC_DELAY_MS)
@@ -359,6 +362,7 @@ class BrowserWebViewRegistry(
             // 同じURLを即時に再生成すると、壊れたページ・メモリ不足でレンダラーが再度落ちる無限ループになる。
             // 既に描画プロセスを失ったWebViewには loadUrl/clearHistory/stopLoading を実行せず、destroyだけを行う。
             val entry = entries.remove(tabId)
+            entry?.isActive = false
             val callbacks = entry?.callbacks ?: BrowserWebCallbacks.Empty
             CrashDiagnostics.recordWebViewRendererGone(detail.didCrash(), detail.rendererPriorityAtExit())
             runCatching { view.destroy() }
@@ -451,7 +455,8 @@ class BrowserWebViewRegistry(
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
         @Volatile var activeDocumentUrl: String? = null,
-        @Volatile var adBlockingEnabled: Boolean = true
+        @Volatile var adBlockingEnabled: Boolean = true,
+        @Volatile var isActive: Boolean = true
     )
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
