@@ -85,6 +85,7 @@ class BrowserWebViewRegistry(
             entry.activeDocumentUrl = tab.lastRequestedUrl
             entry.rearmPageLifecycle(tab.lastRequestedUrl)
             CrashDiagnostics.recordWebViewNavigation(tab.lastRequestedUrl)
+            prepareSiteDocumentStartScript(entry, tab.lastRequestedUrl)
             prepareYoutubeDocumentStartScript(entry, tab.lastRequestedUrl)
             entry.webView.loadUrl(tab.lastRequestedUrl)
         }
@@ -100,6 +101,7 @@ class BrowserWebViewRegistry(
                 // コールバック内で WebView.url を読む代わりに遷移前に親URLを保持する。
                 entry.activeDocumentUrl = url
                 CrashDiagnostics.recordWebViewNavigation(url)
+                prepareSiteDocumentStartScript(entry, url)
                 prepareYoutubeDocumentStartScript(entry, url)
                 entry.webView.loadUrl(url)
             } else entry.callbacks.onBlockedNavigation(url)
@@ -241,8 +243,10 @@ class BrowserWebViewRegistry(
         entries.remove(tabId)?.let { entry ->
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
+            runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
+            entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
@@ -431,6 +435,40 @@ class BrowserWebViewRegistry(
             CrashDiagnostics.record("youtube_pip_unlock_ready", "documentStart=true")
         }.onFailure { throwable ->
             CrashDiagnostics.record("youtube_pip_unlock_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+        }
+    }
+
+    /**
+     * 指定2標準リストからBraveが解決したscriptletを、対応するHTTPS主文書のJSより先に注入する。
+     * Rust側のtrust境界により、ユーザー追加URLの規則はscriptlet本文を返せない。
+     * YouTubeはiframeにも同じscriptletを届ける専用経路があるため、ここでは二重注入を避ける。
+     */
+    private fun prepareSiteDocumentStartScript(entry: Entry, url: String) {
+        runCatching { entry.siteDocumentStartScriptHandler?.remove() }
+        entry.siteDocumentStartScriptHandler = null
+        entry.siteDocumentStartScriptUrl = null
+        if (isYoutubeDocumentUrl(url) || !entry.adBlockingEnabled || !blocker.isReady()) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            CrashDiagnostics.record("adblock_site_scriptlet_unsupported", "reason=document_start_api_unavailable")
+            return
+        }
+        val originRule = documentStartOriginRule(url) ?: return
+        val script = blocker.documentStartScript(url)
+        if (script.isBlank()) return
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(entry.webView, script, setOf(originRule))
+        }.onSuccess { handler ->
+            entry.siteDocumentStartScriptHandler = handler
+            entry.siteDocumentStartScriptUrl = url
+            CrashDiagnostics.record(
+                "adblock_site_scriptlet_prepared",
+                "origin=$originRule\\nchars=${script.length}"
+            )
+        }.onFailure { throwable ->
+            CrashDiagnostics.record(
+                "adblock_site_scriptlet_unsupported",
+                "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}"
+            )
         }
     }
 
@@ -919,8 +957,12 @@ class BrowserWebViewRegistry(
         var genericCosmeticAppliedUrl: String? = null,
         var youtubeCosmeticAppliedUrl: String? = null,
         var youtubeCosmeticAggressiveApplied: Boolean? = null,
+        /** YouTube originを含むiframeへ登録するBrave scriptlet。 */
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
+        /** 主文書のoriginにだけ登録する、指定2標準リスト由来のtrusted scriptlet。 */
+        var siteDocumentStartScriptHandler: ScriptHandler? = null,
+        var siteDocumentStartScriptUrl: String? = null,
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
@@ -999,6 +1041,13 @@ class BrowserWebViewRegistry(
     }.getOrNull()
 
     private fun youtubeHost(url: String): String? = runCatching { URI(url).host?.lowercase() }.getOrNull()
+
+    /** document-start APIは完全なHTTPS origin ruleを要求する。 */
+    private fun documentStartOriginRule(url: String): String? = runCatching {
+        val uri = URI(url)
+        if (!uri.scheme.equals("https", ignoreCase = true) || uri.host.isNullOrBlank()) null
+        else "https://${uri.host.lowercase()}"
+    }.getOrNull()
 
     private fun isYoutubeDocumentUrl(url: String): Boolean {
         val host = youtubeHost(url) ?: return false
