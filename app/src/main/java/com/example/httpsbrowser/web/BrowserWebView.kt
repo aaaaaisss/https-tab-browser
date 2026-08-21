@@ -21,6 +21,7 @@ import android.webkit.URLUtil
 import androidx.webkit.SafeBrowsingResponseCompat
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewClientCompat
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import android.content.Intent
@@ -48,9 +49,18 @@ class BrowserWebViewRegistry(
         entry.callbacks = callbacks
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
-        // Fulguris由来のWebView設定だけを適用する。ページ内CSS/JS注入を使わないため、
-        // タブ選択やダークモード切替で動画・履歴を再読み込みしない。
-        configure(entry.webView, settings)
+        // 121e47bの構成をそのまま維持する。一般文書にはWebView標準暗色化と深いCSSを
+        // 適用し、YouTubeとGoogle動画タブは映像面を標準描画のまま保護する。
+        val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages
+        configure(entry.webView, settings, isVideoPlaybackDocumentUrl(tab.lastRequestedUrl))
+        entry.appliedForceDark = settings.forceDarkPages
+        if (darkModeChanged && entry.loadedUrl != null) {
+            // 暗色化切替だけでWebViewを再読込しない。
+            applyDeepDarkCss(
+                entry.webView,
+                settings.forceDarkPages && !isVideoPlaybackDocumentUrl(entry.loadedUrl.orEmpty())
+            )
+        }
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
             entry.activeDocumentUrl = tab.lastRequestedUrl
@@ -208,13 +218,53 @@ class BrowserWebViewRegistry(
         }
     }
 
-    private fun configure(view: WebView, settings: BrowserSettings) {
+    /**
+     * `121e47b`で使用していた暗色化構成。
+     *
+     * 画像・iframe・動画を含む深いCSS反転は一般文書だけに限定し、YouTubeとGoogleの
+     * 動画タブではWebViewの通常の合成経路を使う。暗色化切替に伴うreloadはしない。
+     */
+    private fun configure(view: WebView, settings: BrowserSettings, videoPage: Boolean) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        val applied = FulgurisDarkModeController.apply(view, settings.forceDarkPages)
+        val allowDarkTransforms = settings.forceDarkPages && !videoPage
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowDarkTransforms)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowDarkTransforms)
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+            WebSettingsCompat.setForceDark(
+                view.settings,
+                if (allowDarkTransforms) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+            )
+        }
+        if (allowDarkTransforms && WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+            WebSettingsCompat.setForceDarkStrategy(
+                view.settings,
+                WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
+            )
+        }
         CrashDiagnostics.record(
             "dark_mode_configured",
-            "engine=fulguris_native\nforceRequested=${applied.forceDarkPages}\nappDark=${applied.appUsesDarkTheme}\nalgorithmic=${applied.algorithmicDarkening}\nforceDark=${applied.forceDark}\nforceDarkStrategy=${applied.forceDarkStrategy}"
+            "engine=legacy_121e47b\nforceRequested=${settings.forceDarkPages}\nvideoPage=$videoPage\nallowTransforms=$allowDarkTransforms"
         )
+    }
+
+    /** 121e47bの一般ページ用CSS。動画ページには呼び出さない。 */
+    private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
+        val script = if (enabled) """
+            (function() {
+              var id = '__https_browser_deep_dark';
+              var style = document.getElementById(id);
+              if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
+              style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
+                'body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}' +
+                'img,video,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
+                'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
+            })();
+        """.trimIndent() else """
+            (function() { document.getElementById('__https_browser_deep_dark')?.remove(); })();
+        """.trimIndent()
+        view.evaluateJavascript(script, null)
     }
 
     /**
@@ -443,20 +493,22 @@ class BrowserWebViewRegistry(
             entry?.youtubeCosmeticAppliedUrl = null
             entry?.activeDocumentUrl = url
             view.setBackgroundColor(android.graphics.Color.BLACK)
-            // ページ内CSSは注入しない。Fulguris由来のネイティブ設定を再適用して、
-            // SPA遷移後もWebViewの色テーマ契約だけを維持する。
-            entry?.let { configure(view, it.settings) }
+            // 121e47bと同じく、遷移先が動画文書かどうかに応じて標準暗色化を再設定する。
+            entry?.let { configure(view, it.settings, isVideoPlaybackDocumentUrl(url)) }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
+            // 121e47bのとおり、一般ページだけ初回可視化時から深い暗色CSSを適用する。
+            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoPlaybackDocumentUrl(url))
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
+            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoPlaybackDocumentUrl(url))
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             entry?.let { scheduleCookieFlush(view, it) }
@@ -549,13 +601,14 @@ class BrowserWebViewRegistry(
             val current = entries[tabId] ?: return false
             val newTabId = current.callbacks.onPopupRequested() ?: return false
             val popupView = createWebView(newTabId)
-            configure(popupView, current.settings)
+            configure(popupView, current.settings, false)
             // 新規ウィンドウの WebView を、そのまま新しいタブへ接続する。
             // 空文字を loadedUrl に入れると Compose 再構成時に読み込み状態が不整合になるため null を維持する。
             entries[newTabId] = Entry(
                 webView = popupView,
                 callbacks = current.callbacks,
-                settings = current.settings
+                settings = current.settings,
+                appliedForceDark = current.settings.forceDarkPages
             )
             (resultMsg.obj as? WebView.WebViewTransport)?.webView = popupView
             resultMsg.sendToTarget()
@@ -598,6 +651,7 @@ class BrowserWebViewRegistry(
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
+        var appliedForceDark: Boolean? = null,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true
