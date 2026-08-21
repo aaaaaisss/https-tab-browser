@@ -148,14 +148,19 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
     DisposableEffect(Unit) { onDispose { registry.close() } }
 
+    /**
+     * Fulgurisの`onHideCustomView`と同じ所有権の順序で、custom viewを一度だけ解放する。
+     * 先に状態を空にするため、callbackに伴う再入onHideCustomViewでは何も二重に外さない。
+     */
     fun finishFullscreen(notifyPage: Boolean) {
         val content = fullscreenContent ?: return
+        fullscreenContent = null
         // custom viewが消えた瞬間にPiP自動移行も無効化し、通常ページでPiPにならないようにする。
         (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(null)
-        fullscreenContent = null
+        runCatching { content.view.keepScreenOn = false }
         (content.view.parent as? ViewGroup)?.removeView(content.view)
         viewModel.setFullscreen(false)
-        if (notifyPage) content.callback.onCustomViewHidden()
+        if (notifyPage) runCatching { content.callback.onCustomViewHidden() }
         activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView).show(WindowInsetsCompat.Type.systemBars()) }
     }
 
@@ -169,9 +174,20 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         finishFullscreen(false)
     }
 
+    /**
+     * Fulgurisの`onShowCustomView`から、Compose UIに必要な最小の状態遷移だけを移植する。
+     * WebChromeClientが重複してcustom viewを送った場合、新しいviewを重ねず即時に拒否する。
+     */
     fun enterFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
-        viewModel.setFullscreen(true)
+        if (fullscreenContent != null) {
+            com.example.httpsbrowser.CrashDiagnostics.record("fullscreen_duplicate_show", "ignored=true")
+            runCatching { callback.onCustomViewHidden() }
+            return
+        }
+        runCatching { view.keepScreenOn = true }
         fullscreenContent = FullscreenContent(view, callback)
+        viewModel.setFullscreen(true)
+        // PiPのsource rect、auto-enter、遷移中のonHideCustomView保持はActivityに一元化する。
         (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(view)
         activity?.let {
             WindowCompat.getInsetsController(it.window, it.window.decorView).apply {

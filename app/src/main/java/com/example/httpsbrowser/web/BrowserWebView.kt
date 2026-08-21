@@ -64,6 +64,7 @@ class BrowserWebViewRegistry(
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
             entry.activeDocumentUrl = tab.lastRequestedUrl
+            entry.rearmPageLifecycle(tab.lastRequestedUrl)
             CrashDiagnostics.recordWebViewNavigation(tab.lastRequestedUrl)
             prepareYoutubeDocumentStartScript(entry, tab.lastRequestedUrl)
             entry.webView.loadUrl(tab.lastRequestedUrl)
@@ -75,6 +76,7 @@ class BrowserWebViewRegistry(
         entries[tabId]?.let { entry ->
             if (isHttps(url)) {
                 entry.loadedUrl = url
+                entry.rearmPageLifecycle(url)
                 // shouldInterceptRequest はUIスレッド外から呼ばれ得るため、
                 // コールバック内で WebView.url を読む代わりに遷移前に親URLを保持する。
                 entry.activeDocumentUrl = url
@@ -85,8 +87,19 @@ class BrowserWebViewRegistry(
         }
     }
 
-    fun reload(tabId: String) = entries[tabId]?.webView?.reload()
-    fun goBack(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoBack() }?.goBack()
+    fun reload(tabId: String) = entries[tabId]?.let { entry ->
+        entry.rearmPageLifecycle(entry.webView.url.orEmpty())
+        entry.webView.reload()
+    }
+
+    /** Fulgurisと同様、キャッシュからの履歴遷移でも完了処理が再実行できるよう先に再armする。 */
+    fun goBack(tabId: String) = entries[tabId]?.let { entry ->
+        entry.webView.takeIf { it.canGoBack() }?.let { view ->
+            entry.rearmPageLifecycle(view.url.orEmpty())
+            view.goBack()
+        }
+    }
+
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
     fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
         pageTranslator.translatePage(entry.webView) { message -> entry.callbacks.onNotice(message) }
@@ -103,7 +116,12 @@ class BrowserWebViewRegistry(
             else entry.callbacks.onNotice("ページを保存できませんでした。読み込み完了後にもう一度お試しください。")
         }
     }
-    fun goForward(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoForward() }?.goForward()
+    fun goForward(tabId: String) = entries[tabId]?.let { entry ->
+        entry.webView.takeIf { it.canGoForward() }?.let { view ->
+            entry.rearmPageLifecycle(view.url.orEmpty())
+            view.goForward()
+        }
+    }
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
     fun scrollToTop(tabId: String) = entries[tabId]?.webView?.scrollTo(0, 0)
     fun scrollToBottom(tabId: String) = entries[tabId]?.webView?.let { it.scrollTo(0, (it.contentHeight * it.scale).toInt()) }
@@ -459,6 +477,9 @@ class BrowserWebViewRegistry(
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
             val entry = entries[tabId] ?: return null
             val url = request.url.toString()
+            // Fulgurisと同様、main frame要求でも完了処理を再armする。履歴遷移・SPA・
+            // YouTubeの複数onPageFinishedで、UI後処理が前回の状態に残るのを防ぐ。
+            if (request.isForMainFrame) entry.rearmPageLifecycle(url)
             // Brave エンジンが ABP/AdGuard の例外、第三者判定、resource type を評価する。
             // 独自の YouTube 除外や簡易 URL 判定は行わず、正規のフィルタ規則をそのまま尊重する。
             // shouldInterceptRequest はUIスレッド外から呼ばれ得る。ここで WebView.url など
@@ -492,6 +513,7 @@ class BrowserWebViewRegistry(
             entry?.genericCosmeticAppliedUrl = null
             entry?.youtubeCosmeticAppliedUrl = null
             entry?.activeDocumentUrl = url
+            entry?.rearmPageLifecycle(url)
             view.setBackgroundColor(android.graphics.Color.BLACK)
             // 121e47bと同じく、遷移先が動画文書かどうかに応じて標準暗色化を再設定する。
             entry?.let { configure(view, it.settings, isVideoPlaybackDocumentUrl(url)) }
@@ -507,13 +529,19 @@ class BrowserWebViewRegistry(
         }
 
         override fun onPageFinished(view: WebView, url: String) {
-            val entry = entries[tabId]
-            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoPlaybackDocumentUrl(url))
-            applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
+            val entry = entries[tabId] ?: return
+            // FulgurisがYouTube/キャッシュ復帰で行うのと同じく、progress=100の最初の完了だけを
+            // 採用する。重複したonPageFinishedでCSS注入・Cookie flush・履歴通知を繰り返さない。
+            if (!entry.tryCompletePageLifecycle(view.progress)) {
+                CrashDiagnostics.record("page_finished_skipped", "url=$url\\nprogress=${view.progress}")
+                return
+            }
+            applyDeepDarkCss(view, entry.settings.forceDarkPages && !isVideoPlaybackDocumentUrl(url))
+            applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
-            entry?.let { scheduleCookieFlush(view, it) }
-            entry?.callbacks?.onPageFinished(tabId, url, view.title)
-            entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
+            scheduleCookieFlush(view, entry)
+            entry.callbacks.onPageFinished(tabId, url, view.title)
+            entry.callbacks.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
         }
 
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
@@ -654,8 +682,28 @@ class BrowserWebViewRegistry(
         var appliedForceDark: Boolean? = null,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
-        @Volatile var isActive: Boolean = true
-    )
+        @Volatile var isActive: Boolean = true,
+        @Volatile private var lifecycleUrl: String? = null,
+        @Volatile private var pageFinishedDone: Boolean = false
+    ) {
+        /**
+         * Fulguris WebPageClientの`onPageFinishedDone`再armに相当する最小状態。
+         * `shouldInterceptRequest`からも呼ばれるため、UI状態やWebView本体には触れない。
+         */
+        @Synchronized
+        fun rearmPageLifecycle(url: String) {
+            lifecycleUrl = url
+            pageFinishedDone = false
+        }
+
+        /** `progress == 100`の最初のonPageFinishedだけを後処理に通す。 */
+        @Synchronized
+        fun tryCompletePageLifecycle(progress: Int): Boolean {
+            if (pageFinishedDone || progress != 100) return false
+            pageFinishedDone = true
+            return true
+        }
+    }
 
     /** Cookie書込みをページ完了ごとに同期実行せず、連続遷移をまとめてから一度だけ行う。 */
     private fun scheduleCookieFlush(view: WebView, entry: Entry) {
