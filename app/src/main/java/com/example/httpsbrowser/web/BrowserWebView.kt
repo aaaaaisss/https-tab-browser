@@ -11,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
+import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
@@ -245,9 +246,11 @@ class BrowserWebViewRegistry(
             runCatching { entry.documentStartScriptHandler?.remove() }
             runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
+            runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
+            entry.youtubeAdSanitizerScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             (entry.webView.parent as? ViewGroup)?.removeView(entry.webView)
@@ -332,6 +335,16 @@ class BrowserWebViewRegistry(
         // ログイン状態と埋め込みプレーヤーの認証をアプリ内で維持する。
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+        // ページへ公開するのは再生videoの幅・高さを受け取るread-onlyの数値窓口だけ。
+        // 任意URLやJavaScript実行機能を公開しない。
+        addJavascriptInterface(object {
+            @JavascriptInterface
+            fun report(width: Int, height: Int) {
+                if (width > 0 && height > 0) {
+                    entries[tabId]?.callbacks?.onVideoDimensions(tabId, width, height)
+                }
+            }
+        }, VIDEO_DIMENSIONS_BRIDGE_NAME)
         webViewClient = SecureClient(tabId)
         webChromeClient = SecureChromeClient(tabId)
         setDownloadListener(SecureDownloadListener(tabId))
@@ -397,6 +410,14 @@ class BrowserWebViewRegistry(
      * 一般ページは121e47b型の反転CSSを維持する。一方YouTubeはWeb Componentsが多いため、
      * 反転でなく専用の前景・背景色を指定し、映像surfaceにfilterを一切適用しない。
      */
+    /**
+     * `<video>`の実符号化サイズを監視し、PiP用に横長・縦長をActivityへ通知する。
+     * DOM変更・metadata・resize・再生開始のいずれでも再評価し、同じサイズはページ側で重複通知しない。
+     */
+    private fun installVideoDimensionsReporter(view: WebView) {
+        view.evaluateJavascript(VIDEO_DIMENSIONS_REPORTER_SCRIPT, null)
+    }
+
     private fun applyDeepDarkCss(view: WebView, enabled: Boolean, youtubePage: Boolean = false) {
         val css = when {
             !enabled -> ""
@@ -415,11 +436,10 @@ class BrowserWebViewRegistry(
     }
 
     /**
-     * Brave Androidの公開issueで判明したYouTubeの`disablePictureInPicture`属性を、YouTube origin
-     * に限ってdocument start時から解除する。player response・ネットワーク応答・広告判定は改変しない。
+     * YouTube originだけでPiP阻害を解除し、広告遮断がONなら動画応答内の広告メタデータも
+     * document start時から除去する。動画バイト列・認証Cookie・URL遷移には触れない。
      */
     private fun ensureYoutubePictureInPictureScript(entry: Entry) {
-        if (entry.youtubePictureInPictureScriptHandler != null) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             CrashDiagnostics.record("youtube_pip_unlock_unsupported", "reason=document_start_api_unavailable")
             return
@@ -428,13 +448,30 @@ class BrowserWebViewRegistry(
             "https://youtube.com", "https://*.youtube.com",
             "https://youtube-nocookie.com", "https://*.youtube-nocookie.com"
         )
-        runCatching {
-            WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_PIP_UNLOCK_SCRIPT, originRules)
-        }.onSuccess { handler ->
-            entry.youtubePictureInPictureScriptHandler = handler
-            CrashDiagnostics.record("youtube_pip_unlock_ready", "documentStart=true")
-        }.onFailure { throwable ->
-            CrashDiagnostics.record("youtube_pip_unlock_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+        if (entry.youtubePictureInPictureScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_PIP_UNLOCK_SCRIPT, originRules)
+            }.onSuccess { handler ->
+                entry.youtubePictureInPictureScriptHandler = handler
+                CrashDiagnostics.record("youtube_pip_unlock_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_pip_unlock_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
+        }
+        if (!entry.adBlockingEnabled) {
+            runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            entry.youtubeAdSanitizerScriptHandler = null
+            return
+        }
+        if (entry.youtubeAdSanitizerScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_AD_SANITIZER_SCRIPT, originRules)
+            }.onSuccess { handler ->
+                entry.youtubeAdSanitizerScriptHandler = handler
+                CrashDiagnostics.record("youtube_ad_sanitizer_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_ad_sanitizer_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
         }
     }
 
@@ -786,6 +823,7 @@ class BrowserWebViewRegistry(
                     youtubePage = isYoutubeDocumentUrl(url)
                 )
             }
+            installVideoDimensionsReporter(view)
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
@@ -964,6 +1002,8 @@ class BrowserWebViewRegistry(
         var siteDocumentStartScriptHandler: ScriptHandler? = null,
         var siteDocumentStartScriptUrl: String? = null,
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
+        /** 組込みYouTube広告メタデータ除去script。外部リストには実行権限を与えない。 */
+        var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
@@ -1196,6 +1236,7 @@ class BrowserWebViewRegistry(
 
     private companion object {
         const val ABOUT_BLANK_URL = "about:blank"
+        const val VIDEO_DIMENSIONS_BRIDGE_NAME = "NekoBrowserVideoDimensions"
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 2_000
         const val GENERIC_COSMETIC_DELAY_MS = 350L
@@ -1210,6 +1251,101 @@ class BrowserWebViewRegistry(
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
         // Brave Android PR #28593と同じく、YouTubeのページ側PiP阻害フラグを最小限だけ無効化する。
         // config未生成・対応外構造ではno-opとし、複数回のSPA遷移でも追加の要素を作らない。
+        val VIDEO_DIMENSIONS_REPORTER_SCRIPT = """
+            (function(){
+              if(window.__nekoBrowserVideoDimensionsReporter) return;
+              window.__nekoBrowserVideoDimensionsReporter=true;
+              var last='';
+              function bestVideo(){
+                var videos=Array.prototype.slice.call(document.querySelectorAll('video'));
+                videos.sort(function(a,b){
+                  var as=(a.videoWidth||0)*(a.videoHeight||0),bs=(b.videoWidth||0)*(b.videoHeight||0);
+                  if(!a.paused) as+=1000000000;
+                  if(!b.paused) bs+=1000000000;
+                  return bs-as;
+                });
+                return videos[0];
+              }
+              function report(){
+                var video=bestVideo();
+                if(!video || !video.videoWidth || !video.videoHeight) return;
+                var value=video.videoWidth+'x'+video.videoHeight;
+                if(value===last) return;
+                last=value;
+                try{window.NekoBrowserVideoDimensions.report(video.videoWidth,video.videoHeight);}catch(_e){}
+              }
+              function track(video){
+                if(!video || video.__nekoBrowserDimensionsTracked) return;
+                video.__nekoBrowserDimensionsTracked=true;
+                ['loadedmetadata','resize','playing','loadeddata'].forEach(function(name){video.addEventListener(name,report,{passive:true});});
+              }
+              function scan(){document.querySelectorAll('video').forEach(track);report();}
+              scan();
+              new MutationObserver(scan).observe(document.documentElement||document,{subtree:true,childList:true});
+            })();
+        """.trimIndent()
+
+        // uBlock Originの現行YouTube規則（adPlacements/adSlots/playerAds/Shorts）を、
+        // WebViewで利用可能なdocument-start JavaScriptへ最小限に翻訳した組込み補助。
+        val YOUTUBE_AD_SANITIZER_SCRIPT = """
+            (function(){
+              if(window.__nekoBrowserYouTubeAdSanitizer) return;
+              window.__nekoBrowserYouTubeAdSanitizer=true;
+              var adKeys={adPlacements:1,playerAds:1,adSlots:1,adBreakHeartbeatParams:1};
+              function isAd(node){
+                return !!(node && typeof node==='object' &&
+                  (node.isAd===true || (node.adClientParams && node.adClientParams.isAd===true)));
+              }
+              function sanitize(node,seen){
+                if(!node || typeof node!=='object') return node;
+                seen=seen||[]; if(seen.indexOf(node)>=0) return node; seen.push(node);
+                if(Array.isArray(node)){
+                  for(var i=node.length-1;i>=0;i--){if(isAd(node[i])) node.splice(i,1); else sanitize(node[i],seen);}
+                }else{
+                  Object.keys(node).forEach(function(key){
+                    if(adKeys[key]) { try{delete node[key];}catch(_e){node[key]=undefined;} }
+                    else sanitize(node[key],seen);
+                  });
+                }
+                return node;
+              }
+              function sanitizeText(text){
+                if(typeof text!=='string' || text.length===0) return text;
+                try{return JSON.stringify(sanitize(JSON.parse(text)));}catch(_e){return text;}
+              }
+              function target(url){return /(?:youtubei\/v1\/player|get_watch|playlist\?list=|reel_watch_sequence)/.test(String(url||''));}
+              function hookInitial(name){
+                try{
+                  var value=window[name];
+                  Object.defineProperty(window,name,{configurable:true,get:function(){return value;},set:function(next){value=sanitize(next);}});
+                  if(value) window[name]=value;
+                }catch(_e){}
+              }
+              hookInitial('ytInitialPlayerResponse'); hookInitial('playerResponse');
+              try{
+                var originalFetch=window.fetch;
+                window.fetch=function(){
+                  var args=arguments,request=args[0],url=typeof request==='string'?request:(request&&request.url);
+                  return originalFetch.apply(this,args).then(function(response){
+                    if(!target(url)) return response;
+                    return response.clone().text().then(function(text){
+                      var clean=sanitizeText(text); if(clean===text) return response;
+                      return new Response(clean,{status:response.status,statusText:response.statusText,headers:response.headers});
+                    }).catch(function(){return response;});
+                  });
+                };
+              }catch(_e){}
+              try{
+                var proto=XMLHttpRequest.prototype,open=proto.open;
+                proto.open=function(method,url){this.__nekoYouTubeAdUrl=url;return open.apply(this,arguments);};
+                var descriptor=Object.getOwnPropertyDescriptor(proto,'responseText');
+                if(descriptor&&descriptor.get) Object.defineProperty(proto,'responseText',{configurable:true,get:function(){
+                  var value=descriptor.get.call(this); return target(this.__nekoYouTubeAdUrl)?sanitizeText(value):value;
+                }});
+              }catch(_e){}
+            })();
+        """.trimIndent()
+
         val YOUTUBE_PIP_UNLOCK_SCRIPT = """
             (function(){
               function modifyYtcfgFlags(){
@@ -1364,6 +1500,7 @@ interface BrowserWebCallbacks {
     fun onRendererGone(tabId: String)
     fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideFullscreen()
+    fun onVideoDimensions(tabId: String, width: Int, height: Int)
     fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit)
     fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit)
     fun onPopupRequested(): String?
@@ -1388,6 +1525,7 @@ interface BrowserWebCallbacks {
         override fun onRendererGone(tabId: String) = Unit
         override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = Unit
         override fun onHideFullscreen() = Unit
+        override fun onVideoDimensions(tabId: String, width: Int, height: Int) = Unit
         override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = reply(false)
         override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = reply(false)
         override fun onPopupRequested(): String? = null

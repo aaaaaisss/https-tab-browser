@@ -215,7 +215,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, true) }
         viewModel.setFullscreen(true)
         // PiP、native fullscreen container、system barはActivityへ一元化する。
-        (activity as? MainActivity)?.showFullscreenCustomView(view)
+        (activity as? MainActivity)?.showFullscreenCustomView(view, selectedTab?.id)
     }
 
     LaunchedEffect(selectedTab?.id, selectedTab?.isHome, selectedTab?.lastRequestedUrl, state.settings, rendererVersion) {
@@ -232,6 +232,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onScrollPosition = { scrollFraction = it },
                 onFullscreen = ::enterFullscreen,
                 onHideFullscreen = ::handleWebViewHideFullscreen,
+                onVideoDimensions = { width, height ->
+                    hostActivity.updatePictureInPictureVideoDimensions(tab.id, width, height)
+                },
                 onPermission = { origin, resources, reply ->
                     pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
                 },
@@ -536,6 +539,7 @@ private fun callbacksFor(
     onScrollPosition: (Float) -> Unit,
     onFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideFullscreen: () -> Unit,
+    onVideoDimensions: (Int, Int) -> Unit,
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
     onLongPress: (String) -> Unit,
     showNotice: (String) -> Unit,
@@ -556,6 +560,7 @@ private fun callbacksFor(
     override fun onRendererGone(tabId: String) = onRendererGone()
     override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = onFullscreen(view, callback)
     override fun onHideFullscreen() = onHideFullscreen()
+    override fun onVideoDimensions(tabId: String, width: Int, height: Int) = onVideoDimensions(width, height)
     override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = onPermission(origin, resources, reply)
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id

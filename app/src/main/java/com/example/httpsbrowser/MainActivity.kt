@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.util.Rational
 import android.view.Gravity
 import android.view.MotionEvent
@@ -25,6 +26,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import java.util.concurrent.ConcurrentHashMap
 import com.example.httpsbrowser.ui.BrowserScreen
 import com.example.httpsbrowser.ui.HttpsBrowserTheme
 import com.example.httpsbrowser.web.BrowserWebViewRegistry
@@ -38,6 +40,8 @@ class MainActivity : ComponentActivity() {
     private var normalWebContentBoundsReady = false
     private var forwardingNormalWebTouch = false
     @Volatile private var fullscreenVideoView: View? = null
+    private var fullscreenVideoTabId: String? = null
+    private val videoDimensionsByTab = ConcurrentHashMap<String, VideoDimensions>()
     private var fullscreenContainer: FrameLayout? = null
     private var fullscreenPipButton: View? = null
     private var pictureInPictureActive by mutableStateOf(false)
@@ -160,7 +164,7 @@ class MainActivity : ComponentActivity() {
      * Chromium WebChromeClientが渡すfullscreen custom viewを、Activity root上の単一native containerへ
      * 接続する。通常WebViewはCompose側に残るためAwContentsの描画先を切り替えない。
      */
-    fun showFullscreenCustomView(view: View) {
+    fun showFullscreenCustomView(view: View, tabId: String?) {
         if (::appRoot.isInitialized.not()) return
         if (fullscreenVideoView === view && fullscreenContainer != null) return
         hideFullscreenCustomView(fullscreenVideoView)
@@ -183,6 +187,7 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
         fullscreenContainer = container
+        fullscreenVideoTabId = tabId
         setFullscreenVideoForPictureInPicture(view)
         runCatching { view.keepScreenOn = true }
         setFullscreenSystemBars(true)
@@ -199,12 +204,28 @@ class MainActivity : ComponentActivity() {
         }
         fullscreenContainer = null
         fullscreenPipButton = null
+        fullscreenVideoTabId = null
         // PiPまたは全画面終了後にだけ通常のCompose操作UIを戻す。
         if (::composeOverlayView.isInitialized) composeOverlayView.visibility = View.VISIBLE
         runCatching { view?.keepScreenOn = false }
         setFullscreenVideoForPictureInPicture(null)
         setFullscreenSystemBars(false)
         CrashDiagnostics.record("fullscreen_native_container_hidden", "view=${view?.javaClass?.name.orEmpty()}")
+    }
+
+    /**
+     * WebViewが取得した実映像サイズをタブごとに記録し、全画面中のタブならPiP設定を即時更新する。
+     * 画面回転ではなくvideoWidth/videoHeightを使うため、縦持ち中の横動画も横長PiPになる。
+     */
+    fun updatePictureInPictureVideoDimensions(tabId: String, width: Int, height: Int) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread { updatePictureInPictureVideoDimensions(tabId, width, height) }
+            return
+        }
+        if (tabId.isBlank() || width <= 0 || height <= 0) return
+        val dimensions = VideoDimensions(width, height)
+        if (videoDimensionsByTab.put(tabId, dimensions) == dimensions) return
+        if (fullscreenVideoTabId == tabId) updatePictureInPictureParams(fullscreenVideoView)
     }
 
     /** 全画面custom viewが存在する間だけPiPへ移行できる。 */
@@ -316,9 +337,12 @@ class MainActivity : ComponentActivity() {
             val bounds = Rect()
             if (view.getGlobalVisibleRect(bounds) && bounds.width() > 0 && bounds.height() > 0) {
                 builder.setSourceRectHint(bounds)
-                val ratio = bounds.width().toFloat() / bounds.height().toFloat()
+                val dimensions = fullscreenVideoTabId?.let(videoDimensionsByTab::get)
+                val aspectWidth = dimensions?.width ?: bounds.width()
+                val aspectHeight = dimensions?.height ?: bounds.height()
+                val ratio = aspectWidth.toFloat() / aspectHeight.toFloat()
                 if (ratio in MIN_PIP_ASPECT_RATIO..MAX_PIP_ASPECT_RATIO) {
-                    builder.setAspectRatio(Rational(bounds.width(), bounds.height()))
+                    builder.setAspectRatio(Rational(aspectWidth, aspectHeight))
                 }
             } else {
                 builder.setAspectRatio(Rational(16, 9))
@@ -347,6 +371,8 @@ class MainActivity : ComponentActivity() {
             it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
         }
     }
+
+    private data class VideoDimensions(val width: Int, val height: Int)
 
     private companion object {
         const val MIN_PIP_ASPECT_RATIO = 1f / 2.39f

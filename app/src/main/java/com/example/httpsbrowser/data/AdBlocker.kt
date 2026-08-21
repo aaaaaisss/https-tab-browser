@@ -68,7 +68,7 @@ class AdBlockListRepository(
     /** 初回導入時に公式・HTTPS の標準リストだけを登録する。ユーザー追加リストは変更しない。 */
     suspend fun ensureStandardLists(): List<BlockListSource> = withContext(Dispatchers.IO) {
         var sources = listSourcesInternal()
-        // 旧4標準リストだけを削除し、ユーザーが追加した任意リストはそのまま維持する。
+        // 廃止した組込みリストだけを削除し、ユーザーが追加した任意リストはそのまま維持する。
         val retiredBuiltIns = sources.filter { it.builtIn && it.sourceUrl !in STANDARD_LIST_URLS }
         retiredBuiltIns.forEach { source -> File(directory, "${source.id}.txt").delete() }
         sources = sources.filterNot { it in retiredBuiltIns }
@@ -229,6 +229,18 @@ class AdBlockListRepository(
         private const val MAX_LIST_BYTES = 12 * 1024 * 1024
 
         val STANDARD_LISTS = listOf(
+            BlockListSource(
+                "adguard_android_2_optimized",
+                "AdGuard Base フィルタ（Android 最適化版）",
+                "https://filters.adtidy.org/android/filters/2_optimized.txt",
+                builtIn = true
+            ),
+            BlockListSource(
+                "brave_specific",
+                "Brave Specific（YouTube・動画補助）",
+                "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-specific.txt",
+                builtIn = true
+            ),
             BlockListSource(
                 "adguard_android_101_optimized",
                 "EasyList（AdGuard Android 最適化版）",
