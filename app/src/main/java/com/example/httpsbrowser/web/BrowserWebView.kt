@@ -59,9 +59,12 @@ class BrowserWebViewRegistry(
         entry.appliedForceDarkVideoPages = settings.forceDarkVideoPages
         if (darkModeChanged && entry.loadedUrl != null) {
             // 暗色化切替だけでWebViewを再読込しない。
+            val url = entry.loadedUrl.orEmpty()
             applyDeepDarkCss(
                 entry.webView,
-                shouldApplyPageCssDarkening(settings, isVideoPlaybackDocumentUrl(entry.loadedUrl.orEmpty()))
+                enabled = !entry.fullscreenVideoDarkeningSuppressed &&
+                    shouldApplyPageCssDarkening(settings, isVideoPlaybackDocumentUrl(url), url),
+                youtubePage = isYoutubeDocumentUrl(url)
             )
         }
         if (entry.loadedUrl == null) {
@@ -109,6 +112,21 @@ class BrowserWebViewRegistry(
         val previousIndex = history.currentIndex - 1
         previousIndex >= 0 && isHttps(history.getItemAtIndex(previousIndex).url)
     } == true
+
+    /** 全画面custom video surfaceへページCSSの反転が及ばないよう、表示中だけ暗色CSSを外す。 */
+    fun setFullscreenVideoDarkeningSuppressed(tabId: String, suppressed: Boolean) {
+        entries[tabId]?.let { entry ->
+            entry.fullscreenVideoDarkeningSuppressed = suppressed
+            val url = entry.webView.url ?: entry.activeDocumentUrl.orEmpty()
+            val videoPage = isVideoPlaybackDocumentUrl(url)
+            applyDeepDarkCss(
+                entry.webView,
+                enabled = !suppressed && shouldApplyPageCssDarkening(entry.settings, videoPage, url),
+                youtubePage = isYoutubeDocumentUrl(url)
+            )
+            CrashDiagnostics.record("video_dark_css_suppressed", "tab=$tabId\nsuppressed=$suppressed\nurl=$url")
+        }
+    }
 
     /**
      * 独自ホームへ復帰する際、同タブのChromium履歴を破棄する。
@@ -354,26 +372,27 @@ class BrowserWebViewRegistry(
     private fun shouldApplyPlatformDarkening(settings: BrowserSettings, videoPage: Boolean): Boolean =
         settings.forceDarkPages && !videoPage
 
-    /** 動画サイト上書きはページ本文のCSS反転だけを有効にし、動画はCSSの二重反転で正常色へ戻す。 */
-    private fun shouldApplyPageCssDarkening(settings: BrowserSettings, videoPage: Boolean): Boolean =
-        settings.forceDarkPages && (!videoPage || settings.forceDarkVideoPages)
+    /** 動画サイト上書きはページ本文のCSS反転だけを有効にする。Shortsは映像面を優先して常に除外する。 */
+    private fun shouldApplyPageCssDarkening(settings: BrowserSettings, videoPage: Boolean, url: String = ""): Boolean =
+        settings.forceDarkPages && (!videoPage || settings.forceDarkVideoPages) && !isYoutubeShortsDocumentUrl(url)
 
-    /** 121e47bのページ用CSS。動画ページも上書き設定が有効な場合のみ呼び出す。 */
-    private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
-        val script = if (enabled) """
+    /**
+     * 一般ページは121e47b型の反転CSSを維持する。一方YouTubeはWeb Componentsが多いため、
+     * 反転でなく専用の前景・背景色を指定し、映像surfaceにfilterを一切適用しない。
+     */
+    private fun applyDeepDarkCss(view: WebView, enabled: Boolean, youtubePage: Boolean = false) {
+        val css = when {
+            !enabled -> ""
+            youtubePage -> YOUTUBE_PAGE_DARK_CSS
+            else -> DEEP_DARK_CSS
+        }
+        val script = """
             (function() {
               var id = '__https_browser_deep_dark';
               var style = document.getElementById(id);
               if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
-              style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
-                'body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}' +
-                'img,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
-                /* 動画ページ上書き時でも通常動画・Shorts・埋込動画の映像面は通常色へ戻す。 */
-                'video,video::-webkit-media-controls-panel,video::-webkit-media-controls-enclosure{filter:invert(1) hue-rotate(180deg)!important}' +
-                'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
+              style.textContent = ${JSONObject.quote(css)};
             })();
-        """.trimIndent() else """
-            (function() { document.getElementById('__https_browser_deep_dark')?.remove(); })();
         """.trimIndent()
         view.evaluateJavascript(script, null)
     }
@@ -523,9 +542,19 @@ class BrowserWebViewRegistry(
         // 同一ドキュメントで通常サイトからYouTubeへSPA遷移した場合にも、汎用CSSを残さない。
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
-        // YouTubeの動的selectorはWeb Componentsのレイアウトへ波及し得るため使わない。
-        // 明示的な広告slotだけを対象にし、プレーヤー・幅計算・gridには一切触れない。
-        val css = if (enabled) YOUTUBE_AD_CSS else ""
+        // 以前の指定フィルタで得られるYouTube専用規則を、プレーヤーやページ全体に触れる危険な
+        // selectorを除いた上で再適用する。動的class/id全走査は行わない。
+        val filterCss = if (enabled && blocker.isReady()) {
+            val selectors = runCatching { JSONObject(blocker.cosmeticResources(url)).optJSONArray("hide_selectors") }
+                .getOrNull()
+                .toStringList()
+                .filter(::isSafeYoutubeAdSelector)
+                .take(MAX_STATIC_COSMETIC_SELECTORS)
+            selectors.joinToString(",").takeIf { it.isNotBlank() }
+                ?.plus("{display:none!important;visibility:hidden!important;}")
+                .orEmpty()
+        } else ""
+        val css = if (enabled) YOUTUBE_AD_CSS + "\n" + filterCss else ""
         view.evaluateJavascript(
             """
             (function(){
@@ -603,9 +632,9 @@ class BrowserWebViewRegistry(
             // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
             val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
             val resourceType = resourceTypeFor(request)
-            // YouTube/Googlevideoのiframe bootstrap、player JS、映像chunk、内部APIは
-            // 再生必須として保護する。Google検索動画タブで起動したiframeと映像も同様に保護する。
-            // 明示的なYouTube広告・計測専用ホスト/パスだけは規則評価を継続する。
+            // YouTubeは映像chunkとiframeだけを再生必須として保護する。script/XHRまで全通過させると、
+            // 指定フィルタが広告・計測要求を評価できなくなるため、そこは従来どおりBraveへ渡す。
+            // Google検索の動画タブだけは黒画面回避のため、引き続き個別に全通過させる。
             val googleVideoPreviewDocument = isGoogleVideoSearchDocumentUrl(documentUrl)
             val protectedPlaybackResource = isYoutubePlaybackResource(url, resourceType) ||
                 isGoogleVideoPreviewResource(documentUrl, resourceType)
@@ -636,6 +665,13 @@ class BrowserWebViewRegistry(
             // 共有・アドレスバー・renderer再作成用のタブURLをここで最新化する。
             entry.loadedUrl = url
             entry.activeDocumentUrl = url
+            configure(view, entry.settings, isVideoPlaybackDocumentUrl(url))
+            applyDeepDarkCss(
+                view,
+                enabled = !entry.fullscreenVideoDarkeningSuppressed &&
+                    shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url), url),
+                youtubePage = isYoutubeDocumentUrl(url)
+            )
             entry.callbacks.onVisitedHistory(tabId, url)
             entry.callbacks.onHistoryState(tabId, canGoBack(tabId), view.canGoForward())
         }
@@ -650,14 +686,28 @@ class BrowserWebViewRegistry(
             entry?.rearmPageLifecycle(url)
             view.setBackgroundColor(android.graphics.Color.BLACK)
             // 121e47bと同じく、遷移先が動画文書かどうかに応じて標準暗色化を再設定する。
-            entry?.let { configure(view, it.settings, isVideoPlaybackDocumentUrl(url)) }
+            entry?.let {
+                configure(view, it.settings, isVideoPlaybackDocumentUrl(url))
+                // commit可視化まで待つとbodyの初期白背景が一瞬現れることがあるため、開始時にも適用する。
+                applyDeepDarkCss(
+                    view,
+                    enabled = !it.fullscreenVideoDarkeningSuppressed &&
+                        shouldApplyPageCssDarkening(it.settings, isVideoPlaybackDocumentUrl(url), url),
+                    youtubePage = isYoutubeDocumentUrl(url)
+                )
+            }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
             // 121e47bの暗色化経路を、動画上書き設定を含めて初回可視化時から適用する。
-            applyDeepDarkCss(view, entry?.settings?.let { shouldApplyPageCssDarkening(it, isVideoPlaybackDocumentUrl(url)) } == true)
+            applyDeepDarkCss(
+                view,
+                enabled = entry?.let { !it.fullscreenVideoDarkeningSuppressed &&
+                    shouldApplyPageCssDarkening(it.settings, isVideoPlaybackDocumentUrl(url), url) } == true,
+                youtubePage = isYoutubeDocumentUrl(url)
+            )
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
@@ -670,7 +720,12 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("page_finished_skipped", "url=$url\\nprogress=${view.progress}")
                 return
             }
-            applyDeepDarkCss(view, shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url)))
+            applyDeepDarkCss(
+                view,
+                enabled = !entry.fullscreenVideoDarkeningSuppressed &&
+                    shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url), url),
+                youtubePage = isYoutubeDocumentUrl(url)
+            )
             applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             scheduleCookieFlush(view, entry)
@@ -819,6 +874,7 @@ class BrowserWebViewRegistry(
         var settings: BrowserSettings = BrowserSettings(),
         var appliedForceDark: Boolean? = null,
         var appliedForceDarkVideoPages: Boolean? = null,
+        @Volatile var fullscreenVideoDarkeningSuppressed: Boolean = false,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true,
@@ -896,6 +952,20 @@ class BrowserWebViewRegistry(
             host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")
     }
 
+    /** ShortsはURLで判定できるため、ページ暗色化CSSを使わず映像surfaceを常にそのまま保つ。 */
+    private fun isYoutubeShortsDocumentUrl(url: String): Boolean = runCatching {
+        isYoutubeDocumentUrl(url) && URI(url).path.startsWith("/shorts/")
+    }.getOrDefault(false)
+
+    /** プレーヤー・ページ骨格に触れる規則を避け、広告・販促要素だけをYouTubeへ再適用する。 */
+    private fun isSafeYoutubeAdSelector(selector: String): Boolean {
+        val normalized = selector.lowercase().trim()
+        if (normalized.isBlank() || normalized.length > 500) return false
+        val adToken = listOf("ad", "promoted", "sponsor", "masthead", "merchandise", "paid", "brand").any(normalized::contains)
+        val layoutToken = listOf("#player", "video", "iframe", "ytd-app", "ytm-app", "ytd-page-manager", "html", "body").any(normalized::contains)
+        return adToken && !layoutToken
+    }
+
     /** Google検索は動画タブとプレビュー展開を同じ検索文書上で行うため、広いcosmetic適用を避ける。 */
     private fun isGoogleSearchDocumentUrl(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
@@ -922,11 +992,11 @@ class BrowserWebViewRegistry(
         isGoogleVideoSearchDocumentUrl(documentUrl) && resourceType in PLAYBACK_CRITICAL_RESOURCE_TYPES
 
     /**
-     * 映像復号に必須のYouTube要求だけを保護する。従来のように全resource typeを無条件に
-     * 逃がさないため、画像・stylesheet・fontなどは指定2フィルタで引き続き評価できる。
+     * 映像復号とiframe表示に必須な要求だけを保護する。script/XHRは通常のBrave規則へ渡すことで、
+     * 以前機能していたYouTube広告・計測のネットワーク遮断を回復する。
      */
     private fun isYoutubePlaybackResource(url: String, resourceType: String): Boolean {
-        if (resourceType !in PLAYBACK_CRITICAL_RESOURCE_TYPES) return false
+        if (resourceType !in YOUTUBE_PLAYBACK_PROTECTED_RESOURCE_TYPES) return false
         val host = youtubeHost(url) ?: return false
         return host == "youtube.com" || host.endsWith(".youtube.com") ||
             host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com") ||
@@ -1023,6 +1093,19 @@ class BrowserWebViewRegistry(
         """.trimIndent()
         // 指定101リストのyoutube.com/m.youtube.com専用cosmetic規則だけを固定適用する。
         // #player、video、ytm-player、grid/layoutコンテナは意図的に含めない。
+        val DEEP_DARK_CSS = "html{background:#000!important;color-scheme:dark!important}" +
+            "body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}" +
+            "img,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}" +
+            "video,video::-webkit-media-controls-panel,video::-webkit-media-controls-enclosure{filter:invert(1) hue-rotate(180deg)!important}" +
+            "input,textarea,select{background:#e8e8e8!important;color:#111!important}"
+        // YouTubeは反転ではなく前景・背景を直接指定し、動画surfaceは常にfilter:noneで保護する。
+        val YOUTUBE_PAGE_DARK_CSS = "html,body,ytd-app,ytm-app{background:#0f0f0f!important;color:#f1f1f1!important;color-scheme:dark!important}" +
+            "#masthead-container,#masthead,ytd-masthead,ytm-mobile-topbar-renderer,ytm-pivot-bar-renderer{background:#0f0f0f!important;color:#f1f1f1!important}" +
+            "ytd-app *,ytm-app *{border-color:#3f3f3f!important}" +
+            "ytd-app a,ytm-app a,ytd-app yt-formatted-string,ytm-app yt-formatted-string,ytd-app h1,ytd-app h2,ytd-app h3,ytd-app h4,ytd-app span,ytm-app span{color:#f1f1f1!important}" +
+            "input,textarea,select{background:#202020!important;color:#f1f1f1!important;border-color:#555!important}" +
+            "video,video *,#player video,ytm-player video{filter:none!important;background:#000!important;color-scheme:normal!important}" +
+            ".ytp-gradient-top,.ytp-gradient-bottom{filter:none!important}"
         val YOUTUBE_AD_CSS = """
             #player-ads,.ytp-ad-overlay-container,.ytp-ad-module,
             ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,
@@ -1073,6 +1156,7 @@ class BrowserWebViewRegistry(
         val MEDIA_EXTENSION_REGEX = Regex(".*\\.(mp4|webm|m3u8|mpd|mp3|m4a)$", RegexOption.IGNORE_CASE)
         val GOOGLE_VIDEO_SEARCH_QUERY_REGEX = Regex("(?:^|&)(?:tbm=vid|udm=7)(?:&|$)")
         val PLAYBACK_CRITICAL_RESOURCE_TYPES = setOf("media", "subdocument", "script", "xmlhttprequest")
+        val YOUTUBE_PLAYBACK_PROTECTED_RESOURCE_TYPES = setOf("media", "subdocument")
         val COLLECT_COSMETIC_KEYS_SCRIPT = """
             (function(){
               var classes=[],ids=[],seenClasses=new Set(),seenIds=new Set();

@@ -36,6 +36,8 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
@@ -65,6 +67,8 @@ private data class FullscreenContent(
 fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val context = LocalContext.current
     val activity = context as? Activity
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val blocker = remember { com.example.httpsbrowser.data.BraveAdBlockEngine(context.applicationContext) }
     // WebViewはActivity contextで生成する。application contextではWindow/表示設定に紐づかず、
     // 動画surface・全画面・autofillの描画経路が不安定になり得る。
@@ -96,8 +100,16 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         pendingPermission = null
     }
 
+    /** 編集状態・フォーカス・IMEを同じ操作で終了し、遷移後にキーボードだけが残らないようにする。 */
+    fun endAddressEditing() {
+        keyboardController?.hide()
+        focusManager.clearFocus(force = true)
+        viewModel.stopAddressEditing()
+    }
+
     /** 新規URL入力だけをWebViewへ命令し、戻る・進む・ページ内遷移ではWebView履歴を再読込しない。 */
     fun navigate(input: String = state.addressInput) {
+        endAddressEditing()
         val prepared = viewModel.prepareNavigation(input) ?: return
         selectedTab?.let { tab -> registry.load(tab.id, prepared.url) }
     }
@@ -130,6 +142,12 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
     LaunchedEffect(externalUrl) {
         externalUrl?.let(::navigate)
+    }
+    LaunchedEffect(state.isAddressFocused) {
+        if (!state.isAddressFocused) {
+            keyboardController?.hide()
+            focusManager.clearFocus(force = true)
+        }
     }
     LaunchedEffect(state.bookmarks) {
         homeBookmarkSelection = homeBookmarkSelection.intersect(state.bookmarks.map { it.id }.toSet())
@@ -165,6 +183,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     fun finishFullscreen(notifyPage: Boolean) {
         val content = fullscreenContent ?: return
         fullscreenContent = null
+        selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, false) }
         // Activity rootのnative containerを先に外す。ComposeのAndroidViewへ差し戻さないため、
         // Chromiumの動画surfaceが再親子化されず、全画面終了時の停止を抑える。
         (activity as? MainActivity)?.hideFullscreenCustomView(content.view)
@@ -193,6 +212,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             return
         }
         fullscreenContent = FullscreenContent(view, callback)
+        selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, true) }
         viewModel.setFullscreen(true)
         // PiP、native fullscreen container、system barはActivityへ一元化する。
         (activity as? MainActivity)?.showFullscreenCustomView(view)
@@ -335,7 +355,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     NavigationRow(
                         canGoBack = (selectedTab.canGoBack || selectedTab.returnToHomeOnBack) && !selectedTab.isHome,
                         canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
-                        onTabs = { viewModel.stopAddressEditing(); viewModel.toggleTabSheet() },
+                        onTabs = { endAddressEditing(); viewModel.toggleTabSheet() },
                         onBack = {
                             viewModel.stopAddressEditing()
                             if (!selectedTab.isHome) {
