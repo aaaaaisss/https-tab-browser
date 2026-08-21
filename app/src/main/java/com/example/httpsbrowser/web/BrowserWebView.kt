@@ -97,13 +97,40 @@ class BrowserWebViewRegistry(
 
     /** Fulgurisと同様、キャッシュからの履歴遷移でも完了処理が再実行できるよう先に再armする。 */
     fun goBack(tabId: String) = entries[tabId]?.let { entry ->
-        entry.webView.takeIf { it.canGoBack() }?.let { view ->
+        entry.webView.takeIf { canGoBack(tabId) }?.let { view ->
             entry.rearmPageLifecycle(view.url.orEmpty())
             view.goBack()
         }
     }
 
-    fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
+    /** 独自ホーム復帰用のabout:blankを戻る先にせず、直前がHTTPS文書の時だけ戻る。 */
+    fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.let { view ->
+        val history = view.copyBackForwardList()
+        val previousIndex = history.currentIndex - 1
+        previousIndex >= 0 && isHttps(history.getItemAtIndex(previousIndex).url)
+    } == true
+
+    /**
+     * 独自ホームへ復帰する際、同タブのChromium履歴を破棄する。
+     * UIだけをホームへ切り替えると、次に開いたページから以前のサイトやforward履歴へ戻れてしまう。
+     */
+    fun resetForHome(tabId: String) {
+        entries[tabId]?.let { entry ->
+            entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
+            entry.cookieFlushRunnable = null
+            entry.loadedUrl = null
+            entry.activeDocumentUrl = null
+            entry.rearmPageLifecycle(ABOUT_BLANK_URL)
+            entry.webView.apply {
+                stopLoading()
+                loadUrl(ABOUT_BLANK_URL)
+                clearHistory()
+                scrollTo(0, 0)
+            }
+            entry.callbacks.onHistoryState(tabId, false, false)
+            CrashDiagnostics.record("webview_history_reset_for_home", "tab=$tabId")
+        }
+    }
 
     /** SPA遷移を含む実際の表示URL。共有とrenderer再作成ではタブ保存値より優先する。 */
     fun currentUrl(tabId: String): String? = entries[tabId]?.let { entry ->
@@ -610,7 +637,7 @@ class BrowserWebViewRegistry(
             entry.loadedUrl = url
             entry.activeDocumentUrl = url
             entry.callbacks.onVisitedHistory(tabId, url)
-            entry.callbacks.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
+            entry.callbacks.onHistoryState(tabId, canGoBack(tabId), view.canGoForward())
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
@@ -648,7 +675,7 @@ class BrowserWebViewRegistry(
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             scheduleCookieFlush(view, entry)
             entry.callbacks.onPageFinished(tabId, url, view.title)
-            entry.callbacks.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
+            entry.callbacks.onHistoryState(tabId, canGoBack(tabId), view.canGoForward())
         }
 
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
@@ -964,6 +991,7 @@ class BrowserWebViewRegistry(
     }
 
     private companion object {
+        const val ABOUT_BLANK_URL = "about:blank"
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val GENERIC_COSMETIC_DELAY_MS = 350L
         const val COOKIE_FLUSH_DEBOUNCE_MS = 750L

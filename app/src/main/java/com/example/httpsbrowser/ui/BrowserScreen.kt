@@ -231,6 +231,16 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         }
     }
 
+    /** 独自ホームへ戻る時はUI状態とChromium履歴を同じ遷移で初期化する。 */
+    fun returnSelectedTabToHome() {
+        selectedTab?.takeIf { !it.isHome }?.let { tab ->
+            // Compose更新を待たず先にhostを外すため、ホームがnative WebViewに覆われる瞬間を作らない。
+            (activity as? MainActivity)?.hideNormalWebContent()
+            registry.resetForHome(tab.id)
+        }
+        viewModel.returnSelectedTabToHome()
+    }
+
     BackHandler {
         when {
             state.isFullscreen -> finishFullscreen(true)
@@ -243,7 +253,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             }
             selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
             // 独自ホームから開いたブックマーク等は、WebView履歴が尽きた次の戻るでホームへ戻す。
-            selectedTab?.returnToHomeOnBack == true -> viewModel.returnSelectedTabToHome()
+            selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()
             // 通常ページの履歴が尽きた時は、Android戻るとして終了する。
             else -> activity?.finish()
         }
@@ -331,7 +341,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             viewModel.stopAddressEditing()
                             if (!selectedTab.isHome) {
                                 if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
-                                else viewModel.returnSelectedTabToHome()
+                                else returnSelectedTabToHome()
                             }
                         },
                         onSearch = viewModel::startAddressEditing,

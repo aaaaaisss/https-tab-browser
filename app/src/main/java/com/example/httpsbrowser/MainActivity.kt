@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -33,7 +34,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var appRoot: FrameLayout
     /** 通常ページをComposeのAndroidViewから分離して保持する、選択タブ専用のnative host。 */
     private lateinit var normalWebContentHost: FrameLayout
+    private lateinit var composeOverlayView: ComposeView
     private var normalWebContentBoundsReady = false
+    private var forwardingNormalWebTouch = false
     @Volatile private var fullscreenVideoView: View? = null
     private var fullscreenContainer: FrameLayout? = null
     private var pictureInPictureActive by mutableStateOf(false)
@@ -60,24 +63,53 @@ class MainActivity : ComponentActivity() {
             clipChildren = true
             clipToPadding = true
         }
-        val composeView = ComposeView(this).apply {
+        composeOverlayView = ComposeView(this).apply {
             setContent {
                 HttpsBrowserTheme {
                     BrowserScreen(viewModel(), externalUrl = incomingUrl)
                 }
             }
         }
-        // Composeはホームと操作バーを描き、通常ページはその上の限定矩形native hostが描く。
-        // hostは下部操作バーと重ならない矩形にだけ配置するため、操作は常にCompose側で受ける。
-        appRoot.addView(composeView, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        ))
+        // 通常ページhostを最下層、Composeを常にその上に置く。ページ領域以外のComposeは透明なので
+        // WebViewの描画・タップを妨げず、下部バー、ホーム、各シートは常に最前面で操作できる。
         appRoot.addView(normalWebContentHost, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
+        appRoot.addView(composeOverlayView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        // Composeは操作UIを前面表示するが、ページ領域の連続タッチだけはnative WebViewへ転送する。
+        // これにより下部バー・ホーム・検索候補は覆われず、スクロール・ピンチ操作も維持する。
+        composeOverlayView.setOnTouchListener { _, event -> forwardPageTouchToNativeWebView(event) }
         setContentView(appRoot)
+    }
+
+    /**
+     * Compose rootが最前面でも、ページ矩形内で始まった連続タッチをnative WebViewへ転送する。
+     * 右端レール用の細い領域はComposeへ残し、通常ページ上のスクロール・ピンチを阻害しない。
+     */
+    private fun forwardPageTouchToNativeWebView(event: MotionEvent): Boolean {
+        if (::normalWebContentHost.isInitialized.not() || normalWebContentHost.visibility != View.VISIBLE) return false
+        val railWidth = (40 * resources.displayMetrics.density).toInt()
+        val withinHost = event.x >= normalWebContentHost.left && event.x < normalWebContentHost.right &&
+            event.y >= normalWebContentHost.top && event.y < normalWebContentHost.bottom
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                forwardingNormalWebTouch = withinHost && event.x < normalWebContentHost.right - railWidth
+            }
+            MotionEvent.ACTION_CANCEL -> Unit
+        }
+        if (!forwardingNormalWebTouch) return false
+        val forwarded = MotionEvent.obtain(event)
+        forwarded.offsetLocation(-normalWebContentHost.left.toFloat(), -normalWebContentHost.top.toFloat())
+        normalWebContentHost.dispatchTouchEvent(forwarded)
+        forwarded.recycle()
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            forwardingNormalWebTouch = false
+        }
+        return true
     }
 
     /** 選択タブの通常WebViewをnative hostへ接続し、Composeの再構成から親Viewを分離する。 */
@@ -86,7 +118,6 @@ class MainActivity : ComponentActivity() {
         registry.attachToNativeHost(tabId, normalWebContentHost)
         // Composeからページ矩形を受けるまで全画面の仮LayoutParamsを見せない。
         normalWebContentHost.visibility = if (normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
-        if (normalWebContentBoundsReady) normalWebContentHost.bringToFront()
         CrashDiagnostics.record("normal_webview_native_host_shown", "tab=$tabId")
     }
 
@@ -98,7 +129,6 @@ class MainActivity : ComponentActivity() {
             return
         }
         normalWebContentHost.visibility = if (visible && normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
-        if (visible && normalWebContentBoundsReady) normalWebContentHost.bringToFront()
     }
 
     /** ホーム等ではWebViewを破棄せず、表示hostからだけ外す。 */
@@ -122,7 +152,6 @@ class MainActivity : ComponentActivity() {
         normalWebContentHost.layoutParams = current
         if (normalWebContentHost.childCount > 0 && normalWebContentHost.visibility != View.INVISIBLE) {
             normalWebContentHost.visibility = View.VISIBLE
-            normalWebContentHost.bringToFront()
         }
     }
 
