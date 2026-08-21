@@ -209,9 +209,9 @@ class BrowserWebViewRegistry(
             // WebView専用UA分岐を避け、通常のモバイルChrome相当のページを要求する。
             // Version/端末情報は残し、WebView識別子だけを取り除く。
             userAgentString = userAgentString.replace("; wv", "")
-            // WebViewではwide viewportが既定で無効なため、サイト側のmeta viewportを尊重する。
-            // YouTube/Google埋め込みのモバイル幅・初期倍率はページ側に委ねる。
-            useWideViewPort = true
+            // Fulgurisと同じ通常モバイルviewport。wide viewportはdesktop mode専用であり、
+            // 常時有効にするとYouTube/Google動画タブの幅・左端・初期縮尺が崩れ得る。
+            useWideViewPort = false
             loadWithOverviewMode = false
             builtInZoomControls = true
             displayZoomControls = false

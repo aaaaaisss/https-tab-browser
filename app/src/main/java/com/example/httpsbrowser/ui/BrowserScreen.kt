@@ -154,13 +154,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     fun finishFullscreen(notifyPage: Boolean) {
         val content = fullscreenContent ?: return
         fullscreenContent = null
-        // custom viewが消えた瞬間にPiP自動移行も無効化し、通常ページでPiPにならないようにする。
-        (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(null)
-        runCatching { content.view.keepScreenOn = false }
-        (content.view.parent as? ViewGroup)?.removeView(content.view)
+        // Activity rootのnative containerを先に外す。ComposeのAndroidViewへ差し戻さないため、
+        // Chromiumの動画surfaceが再親子化されず、全画面終了時の停止を抑える。
+        (activity as? MainActivity)?.hideFullscreenCustomView(content.view)
         viewModel.setFullscreen(false)
         if (notifyPage) runCatching { content.callback.onCustomViewHidden() }
-        activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView).show(WindowInsetsCompat.Type.systemBars()) }
     }
 
     fun handleWebViewHideFullscreen() {
@@ -183,17 +181,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             runCatching { callback.onCustomViewHidden() }
             return
         }
-        runCatching { view.keepScreenOn = true }
         fullscreenContent = FullscreenContent(view, callback)
         viewModel.setFullscreen(true)
-        // PiPのsource rect、auto-enter、遷移中のonHideCustomView保持はActivityに一元化する。
-        (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(view)
-        activity?.let {
-            WindowCompat.getInsetsController(it.window, it.window.decorView).apply {
-                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                hide(WindowInsetsCompat.Type.systemBars())
-            }
-        }
+        // PiP、native fullscreen container、system barはActivityへ一元化する。
+        (activity as? MainActivity)?.showFullscreenCustomView(view)
     }
 
     BackHandler {
@@ -361,22 +352,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             }
         }
 
-        // normal WebViewの上にのみfullscreen custom viewを置く。PiP中も同じ描画階層を維持する。
-        if (state.isFullscreen) {
-            fullscreenContent?.let { content ->
-                AndroidView(
-                    factory = { FrameLayout(it).apply { setBackgroundColor(android.graphics.Color.BLACK) } },
-                    update = { host ->
-                        if (content.view.parent !== host) {
-                            (content.view.parent as? ViewGroup)?.removeView(content.view)
-                            host.removeAllViews()
-                            host.addView(content.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-        }
 
         if (!state.isFullscreen && selectedTab?.isHome == true && homeBookmarkEditMode) {
             BookmarkEditActionBar(

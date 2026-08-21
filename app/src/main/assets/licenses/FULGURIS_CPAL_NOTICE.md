@@ -4,7 +4,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| 対象ファイル | `app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt`、`app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt` |
+| 対象ファイル | `app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt`、`app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt`、`app/src/main/java/com/example/httpsbrowser/MainActivity.kt` |
 | 原コード | Fulguris `app/src/main/java/fulguris/view/WebPageClient.kt` のロード状態再arm・重複`onPageFinished`抑止、および `app/src/main/java/fulguris/activity/WebBrowserActivity.kt` の`onShowCustomView`／`onHideCustomView`状態遷移とGoogle Translate URL生成 |
 | 原プロジェクト | [Fulguris](https://github.com/Slion/Fulguris) |
 | 原著作権表示 | Copyright © 2020–2021 Stéphane Lenclud、Copyright 2014 A.C.R. Development |
@@ -19,7 +19,7 @@ FulgurisのActivity、Hilt、RxJava、XMLレイアウト、独自タブモデル
 
 `BrowserWebView.kt`では、main-frame要求・`onPageStarted`・戻る・進む・再読込の際にページ完了状態を再armし、`WebView.progress == 100`の最初の`onPageFinished`だけで暗色CSS、広告cosmetic、Cookie書込み、履歴UI通知を処理します。これはYouTubeなどが`onPageFinished`を複数回呼ぶ場合と、履歴復帰でmain-frame要求が来ない場合の両方を扱うための構成です。
 
-`BrowserScreen.kt`では、custom viewを一度だけ所有し、重複した`onShowCustomView`を即時に拒否し、PiP遷移中のview保持をActivityへ委譲し、解除時にはkeep-screen-on、親View、system bars、callbackの順で復帰します。Fulgurisの回転固定、`VideoView.stopPlayback()`、独自カーソルレイヤー、XML Activity全体は採用していません。
+`BrowserScreen.kt`では、custom viewを一度だけ所有し、重複した`onShowCustomView`を即時に拒否します。`MainActivity.kt`はFulgurisのActivity構成を参考に、custom viewをComposeのAndroidViewへ重ねず、Activity root上の黒いnative `FrameLayout`へ一度だけ接続します。PiP遷移中はこのcontainerを保持し、解除時にはcontainer、keep-screen-on、system bars、callbackの順で復帰します。Fulgurisの回転固定、`VideoView.stopPlayback()`、独自カーソルレイヤー、XML Activity全体は採用していません。
 
 翻訳ボタンは、Fulgurisと同じ`https://translate.google.com/translate?sl=auto&tl=<端末ロケール>&u=<現在URL>`を安全に組み立て、現在のタブを通常遷移させます。端末内翻訳モデル、DOMテキスト抽出、本文置換は採用していません。
 
