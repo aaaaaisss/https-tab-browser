@@ -8,13 +8,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.view.View
-import android.view.ViewGroup
-import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,16 +32,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.AdBlockUpdateWorker
@@ -73,7 +66,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val context = LocalContext.current
     val activity = context as? Activity
     val blocker = remember { com.example.httpsbrowser.data.BraveAdBlockEngine(context.applicationContext) }
-    val registry = remember { BrowserWebViewRegistry(context.applicationContext, blocker) }
+    // WebViewはActivity contextで生成する。application contextではWindow/表示設定に紐づかず、
+    // 動画surface・全画面・autofillの描画経路が不安定になり得る。
+    val registry = remember { BrowserWebViewRegistry(context, blocker) }
     val listRepository = remember { AdBlockListRepository(context.applicationContext, blocker) }
     val state = viewModel.uiState
     val selectedTab = state.selectedTab
@@ -147,6 +142,55 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
     DisposableEffect(Unit) { onDispose { registry.close() } }
 
+    LaunchedEffect(
+        state.isTabSheetVisible,
+        state.isSettingsSheetVisible,
+        pendingPermission,
+        longPressedLink,
+        externalAppUrl,
+        notice,
+        addBookmarkDialog,
+        editingHomeBookmark
+    ) {
+        val overlayVisible = state.isTabSheetVisible || state.isSettingsSheetVisible ||
+            pendingPermission != null || longPressedLink != null || externalAppUrl != null ||
+            notice != null || addBookmarkDialog || editingHomeBookmark != null
+        (activity as? MainActivity)?.setNormalWebContentVisible(!overlayVisible)
+    }
+
+    LaunchedEffect(selectedTab?.id, selectedTab?.isHome, selectedTab?.lastRequestedUrl, state.settings, rendererVersion) {
+        val hostActivity = activity as? MainActivity
+        val tab = selectedTab
+        if (hostActivity == null || tab == null || tab.isHome) {
+            hostActivity?.hideNormalWebContent()
+        } else {
+            registry.obtain(tab, state.settings, callbacksFor(
+                viewModel = viewModel,
+                registry = registry,
+                tabId = tab.id,
+                onProgress = { progress = it },
+                onScrollPosition = { scrollFraction = it },
+                onFullscreen = ::enterFullscreen,
+                onHideFullscreen = ::handleWebViewHideFullscreen,
+                onPermission = { origin, resources, reply ->
+                    pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
+                },
+                onLongPress = { longPressedLink = it },
+                showNotice = { notice = it },
+                onExternalApp = { externalAppUrl = it },
+                onRendererGone = {
+                    rendererVersion++
+                    notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
+                },
+                onPageArchiveReady = { sourcePath, fileName ->
+                    pendingPageArchive = File(sourcePath)
+                    pageArchiveLauncher.launch(fileName)
+                }
+            ))
+            hostActivity.showNormalWebContent(registry, tab.id)
+        }
+    }
+
     /**
      * Fulgurisの`onHideCustomView`と同じ所有権の順序で、custom viewを一度だけ解放する。
      * 先に状態を空にするため、callbackに伴う再入onHideCustomViewでは何も二重に外さない。
@@ -205,13 +249,32 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Box(
+        modifier = if (selectedTab?.isHome == true) {
+            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+        } else {
+            Modifier.fillMaxSize()
+        }
+    ) {
         // Chromium WebViewのfullscreenは元のWebViewを残したままcustom viewを上に重ねる。
         // 通常Viewを外すとAwContentsの描画先が切り替わり、再生停止や黒画面の原因になる。
         if (selectedTab != null) {
             // 表示領域と操作バーを重ねずに分離する。操作バーのタップは WebView へ透過しない。
             Column(Modifier.fillMaxSize()) {
-                Box(if (state.isFullscreen) Modifier.fillMaxSize() else Modifier.weight(1f).fillMaxWidth()) {
+                Box(
+                    (if (state.isFullscreen) Modifier.fillMaxSize() else Modifier.weight(1f).fillMaxWidth())
+                        .onGloballyPositioned { coordinates ->
+                            if (!selectedTab.isHome) {
+                                val position = coordinates.positionInRoot()
+                                (activity as? MainActivity)?.setNormalWebContentBounds(
+                                    left = position.x.toInt(),
+                                    top = position.y.toInt(),
+                                    width = coordinates.size.width,
+                                    height = coordinates.size.height
+                                )
+                            }
+                        }
+                ) {
                     if (selectedTab.isHome) {
                         HomeScreen(
                             bookmarks = state.bookmarks,
@@ -232,69 +295,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             }
                         )
                     } else {
-                        androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
-                            AndroidView(
-                                factory = {
-                                    registry.obtain(selectedTab, state.settings, callbacksFor(
-                                        viewModel = viewModel,
-                                        registry = registry,
-                                        tabId = selectedTab.id,
-                                        onProgress = { progress = it },
-                                        onScrollPosition = { scrollFraction = it },
-                                        onFullscreen = ::enterFullscreen,
-                                        onHideFullscreen = ::handleWebViewHideFullscreen,
-                                        onPermission = { origin, resources, reply ->
-                                            pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
-                                        },
-                                        onLongPress = { longPressedLink = it },
-                                        showNotice = { notice = it },
-                                        onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = {
-                                            // Fulgurisと同じく、renderer終了はタブを閉じずWebViewだけを破棄する。
-                                            // rendererVersionを変えると同じBrowserTabから新しいWebViewが生成される。
-                                            // その際の再読込はユーザーが元URLを選択したタブ内でのみ行う。
-                                            rendererVersion++
-                                            notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
-                                        },
-                                        onPageArchiveReady = { sourcePath, fileName ->
-                                            pendingPageArchive = File(sourcePath)
-                                            pageArchiveLauncher.launch(fileName)
-                                        }
-                                    ))
-                                },
-                                update = {
-                                    registry.obtain(selectedTab, state.settings, callbacksFor(
-                                        viewModel = viewModel,
-                                        registry = registry,
-                                        tabId = selectedTab.id,
-                                        onProgress = { progress = it },
-                                        onScrollPosition = { scrollFraction = it },
-                                        onFullscreen = ::enterFullscreen,
-                                        onHideFullscreen = ::handleWebViewHideFullscreen,
-                                        onPermission = { origin, resources, reply ->
-                                            pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
-                                        },
-                                        onLongPress = { longPressedLink = it },
-                                        showNotice = { notice = it },
-                                        onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = {
-                                            // Fulgurisと同じく、renderer終了はタブを閉じずWebViewだけを破棄する。
-                                            // rendererVersionを変えると同じBrowserTabから新しいWebViewが生成される。
-                                            // その際の再読込はユーザーが元URLを選択したタブ内でのみ行う。
-                                            rendererVersion++
-                                            notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
-                                        },
-                                        onPageArchiveReady = { sourcePath, fileName ->
-                                            pendingPageArchive = File(sourcePath)
-                                            pageArchiveLauncher.launch(fileName)
-                                        }
-                                    ))
-                                },
-                                modifier = Modifier.fillMaxSize().pointerInput(state.isAddressFocused) {
-                                    detectTapGestures(onTap = { if (state.isAddressFocused) viewModel.stopAddressEditing() })
-                                }
-                            )
-                        }
+                        // 通常WebViewはActivity rootのnative hostへ接続する。Compose内で再親子化しない。
+                    }
                         if (!state.isFullscreen) {
                             Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
                                 RightEdgeScrollRail(
@@ -341,7 +343,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             viewModel.stopAddressEditing()
                             if (!selectedTab.isHome) registry.savePageArchive(selectedTab.id, selectedTab.title)
                         },
-                        onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, selectedTab.url) },
+                        onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, registry.currentUrl(selectedTab.id) ?: selectedTab.url) },
                         onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
                     )
                         TabBar(
@@ -511,6 +513,7 @@ private fun callbacksFor(
 ) = object : BrowserWebCallbacks {
     override fun onPageStarted(tabId: String, url: String) = viewModel.onPageStarted(tabId, url)
     override fun onPageFinished(tabId: String, url: String, title: String?) = viewModel.onPageFinished(tabId, url, title)
+    override fun onVisitedHistory(tabId: String, url: String) = viewModel.onVisitedHistory(tabId, url)
     override fun onTitle(tabId: String, title: String) = viewModel.onTitleChanged(tabId, title)
     override fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean) = viewModel.onHistoryStateChanged(tabId, canGoBack, canGoForward)
     override fun onProgress(tabId: String, progress: Int) = onProgress(progress)

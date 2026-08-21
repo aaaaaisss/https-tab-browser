@@ -26,10 +26,14 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.httpsbrowser.ui.BrowserScreen
 import com.example.httpsbrowser.ui.HttpsBrowserTheme
+import com.example.httpsbrowser.web.BrowserWebViewRegistry
 
 class MainActivity : ComponentActivity() {
     private var incomingUrl by mutableStateOf<String?>(null)
     private lateinit var appRoot: FrameLayout
+    /** 通常ページをComposeのAndroidViewから分離して保持する、選択タブ専用のnative host。 */
+    private lateinit var normalWebContentHost: FrameLayout
+    private var normalWebContentBoundsReady = false
     @Volatile private var fullscreenVideoView: View? = null
     private var fullscreenContainer: FrameLayout? = null
     private var pictureInPictureActive by mutableStateOf(false)
@@ -50,6 +54,12 @@ class MainActivity : ComponentActivity() {
         // custom viewはComposeのAndroidViewに重ねず、Fulgurisと同じくActivityのnative rootへ追加する。
         // これにより動画surfaceの親・測定サイズがCompose再構成で変わらない。
         appRoot = FrameLayout(this)
+        normalWebContentHost = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+            clipChildren = true
+            clipToPadding = true
+        }
         val composeView = ComposeView(this).apply {
             setContent {
                 HttpsBrowserTheme {
@@ -57,11 +67,63 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // Composeはホームと操作バーを描き、通常ページはその上の限定矩形native hostが描く。
+        // hostは下部操作バーと重ならない矩形にだけ配置するため、操作は常にCompose側で受ける。
         appRoot.addView(composeView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
+        appRoot.addView(normalWebContentHost, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
         setContentView(appRoot)
+    }
+
+    /** 選択タブの通常WebViewをnative hostへ接続し、Composeの再構成から親Viewを分離する。 */
+    fun showNormalWebContent(registry: BrowserWebViewRegistry, tabId: String) {
+        if (::normalWebContentHost.isInitialized.not()) return
+        registry.attachToNativeHost(tabId, normalWebContentHost)
+        // Composeからページ矩形を受けるまで全画面の仮LayoutParamsを見せない。
+        normalWebContentHost.visibility = if (normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
+        if (normalWebContentBoundsReady) normalWebContentHost.bringToFront()
+        CrashDiagnostics.record("normal_webview_native_host_shown", "tab=$tabId")
+    }
+
+    /** Composeのシートやダイアログ表示中だけ、通常ページを破棄せず隠してUIを最前面にする。 */
+    fun setNormalWebContentVisible(visible: Boolean) {
+        if (::normalWebContentHost.isInitialized.not()) return
+        if (normalWebContentHost.childCount == 0) {
+            normalWebContentHost.visibility = View.GONE
+            return
+        }
+        normalWebContentHost.visibility = if (visible && normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
+        if (visible && normalWebContentBoundsReady) normalWebContentHost.bringToFront()
+    }
+
+    /** ホーム等ではWebViewを破棄せず、表示hostからだけ外す。 */
+    fun hideNormalWebContent() {
+        if (::normalWebContentHost.isInitialized.not()) return
+        normalWebContentHost.removeAllViews()
+        // 次に通常ページへ戻る時は、最後に確定した同じページ矩形をすぐ利用できる。
+        normalWebContentHost.visibility = View.GONE
+    }
+
+    /** Composeが計測したページ矩形だけを通常WebViewへ割り当て、下部操作UIと重ねない。 */
+    fun setNormalWebContentBounds(left: Int, top: Int, width: Int, height: Int) {
+        if (::normalWebContentHost.isInitialized.not() || width <= 0 || height <= 0) return
+        val current = normalWebContentHost.layoutParams as? FrameLayout.LayoutParams ?: return
+        normalWebContentBoundsReady = true
+        if (current.leftMargin == left && current.topMargin == top && current.width == width && current.height == height) return
+        current.leftMargin = left
+        current.topMargin = top
+        current.width = width
+        current.height = height
+        normalWebContentHost.layoutParams = current
+        if (normalWebContentHost.childCount > 0 && normalWebContentHost.visibility != View.INVISIBLE) {
+            normalWebContentHost.visibility = View.VISIBLE
+            normalWebContentHost.bringToFront()
+        }
     }
 
     /**
@@ -170,6 +232,7 @@ class MainActivity : ComponentActivity() {
         fullscreenVideoView?.removeOnLayoutChangeListener(pipHintLayoutListener)
         fullscreenVideoView = null
         fullscreenContainer = null
+        if (::normalWebContentHost.isInitialized) normalWebContentHost.removeAllViews()
         super.onDestroy()
     }
 

@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.PermissionRequest
@@ -104,6 +105,37 @@ class BrowserWebViewRegistry(
 
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
 
+    /** SPA遷移を含む実際の表示URL。共有とrenderer再作成ではタブ保存値より優先する。 */
+    fun currentUrl(tabId: String): String? = entries[tabId]?.let { entry ->
+        entry.webView.url?.takeIf(::isHttps)
+            ?: entry.activeDocumentUrl?.takeIf(::isHttps)
+            ?: entry.loadedUrl?.takeIf(::isHttps)
+    }
+
+    /**
+     * 選択タブの通常WebViewをActivity rootのnative hostへ接続する。
+     * Compose AndroidViewを介さないため、再構成時にAwContentsの親・測定経路を変えない。
+     */
+    fun attachToNativeHost(tabId: String, host: ViewGroup): Boolean {
+        val view = entries[tabId]?.webView ?: return false
+        if (view.parent === host) return true
+        (view.parent as? ViewGroup)?.removeView(view)
+        host.removeAllViews()
+        host.addView(view, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        view.visibility = View.VISIBLE
+        return true
+    }
+
+    /** 非選択タブは破棄せずnative hostからだけ外す。タブ履歴・ログイン状態・再生状態を保持する。 */
+    fun detachFromNativeHost(tabId: String, host: ViewGroup? = null) {
+        val view = entries[tabId]?.webView ?: return
+        val parent = view.parent as? ViewGroup ?: return
+        if (host == null || parent === host) parent.removeView(view)
+    }
+
     /**
      * Fulgurisと同じく、翻訳はGoogle Translateのページ遷移として実行する。
      * 端末内モデルや本文DOMの置換を使わないため、動的ページの部分翻訳・再スキャン・
@@ -156,6 +188,7 @@ class BrowserWebViewRegistry(
             entry.youtubePictureInPictureScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
+            (entry.webView.parent as? ViewGroup)?.removeView(entry.webView)
             entry.webView.apply {
                 stopLoading()
                 loadUrl("about:blank")
@@ -307,7 +340,9 @@ class BrowserWebViewRegistry(
               if (!style) { style = document.createElement('style'); style.id = id; document.documentElement.appendChild(style); }
               style.textContent = 'html{background:#000!important;color-scheme:dark!important}' +
                 'body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}' +
-                'img,video,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
+                'img,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}' +
+                /* 動画ページ上書き時でも通常動画・Shorts・埋込動画の映像面は通常色へ戻す。 */
+                'video,video::-webkit-media-controls-panel,video::-webkit-media-controls-enclosure{filter:invert(1) hue-rotate(180deg)!important}' +
                 'input,textarea,select{background:#e8e8e8!important;color:#111!important}';
             })();
         """.trimIndent() else """
@@ -566,6 +601,18 @@ class BrowserWebViewRegistry(
             return super.shouldInterceptRequest(view, request)
         }
 
+        override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+            super.doUpdateVisitedHistory(view, url, isReload)
+            if (!isHttps(url)) return
+            val entry = entries[tabId] ?: return
+            // YouTube等のSPAはmain-frame loadを発生させずURLだけをhistory APIで更新する。
+            // 共有・アドレスバー・renderer再作成用のタブURLをここで最新化する。
+            entry.loadedUrl = url
+            entry.activeDocumentUrl = url
+            entry.callbacks.onVisitedHistory(tabId, url)
+            entry.callbacks.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
+        }
+
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
@@ -643,6 +690,8 @@ class BrowserWebViewRegistry(
             entry?.isActive = false
             entry?.cookieFlushRunnable?.let(view::removeCallbacks)
             entry?.cookieFlushRunnable = null
+            // native hostへ接続済みでも、終了済みrendererを親に残さない。
+            (view.parent as? ViewGroup)?.removeView(view)
             val callbacks = entry?.callbacks ?: BrowserWebCallbacks.Empty
             CrashDiagnostics.recordWebViewRendererGone(detail.didCrash(), detail.rendererPriorityAtExit())
             runCatching { view.destroy() }
@@ -1024,6 +1073,7 @@ class BrowserWebViewRegistry(
 interface BrowserWebCallbacks {
     fun onPageStarted(tabId: String, url: String)
     fun onPageFinished(tabId: String, url: String, title: String?)
+    fun onVisitedHistory(tabId: String, url: String)
     fun onTitle(tabId: String, title: String)
     fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean)
     fun onProgress(tabId: String, progress: Int)
@@ -1047,6 +1097,7 @@ interface BrowserWebCallbacks {
     data object Empty : BrowserWebCallbacks {
         override fun onPageStarted(tabId: String, url: String) = Unit
         override fun onPageFinished(tabId: String, url: String, title: String?) = Unit
+        override fun onVisitedHistory(tabId: String, url: String) = Unit
         override fun onTitle(tabId: String, title: String) = Unit
         override fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean) = Unit
         override fun onProgress(tabId: String, progress: Int) = Unit

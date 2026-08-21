@@ -233,6 +233,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistSoon()
     }
 
+    /**
+     * YouTube等のSPAがHistory APIだけでURLを変えた時の追従処理。
+     * main-frame loadを伴わないためonPageFinishedだけでは共有先URLが古いまま残る。
+     */
+    fun onVisitedHistory(tabId: String, url: String) {
+        if (!isHttps(url)) return
+        updateTab(tabId) { tab ->
+            val googleQuery = googleSearchQuery(url)
+            tab.copy(
+                url = url,
+                lastRequestedUrl = url,
+                displayText = googleQuery ?: url,
+                displayMode = if (googleQuery != null) AddressDisplayMode.SEARCH else AddressDisplayMode.URL,
+                isHome = false
+            )
+        }
+        val tab = uiState.tabs.firstOrNull { it.id == tabId } ?: return
+        if (!tab.isPrivate) {
+            val entry = HistoryEntry(title = tab.title, url = url, query = tab.displayText.takeIf { tab.displayMode == AddressDisplayMode.SEARCH })
+            uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
+        }
+        if (uiState.selectedTabId == tabId && !uiState.isAddressFocused) {
+            uiState = uiState.copy(addressInput = tab.displayText)
+        }
+        persistSoon()
+    }
+
     fun onTitleChanged(tabId: String, title: String) {
         updateTab(tabId) { it.copy(title = title.ifBlank { it.title }) }
         persistSoon()
