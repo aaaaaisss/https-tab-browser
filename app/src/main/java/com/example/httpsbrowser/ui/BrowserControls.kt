@@ -403,8 +403,10 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
             Image(
                 bitmap = favicon!!,
                 contentDescription = "$title のサイトアイコン",
-                modifier = Modifier.fillMaxSize().padding(5.dp),
-                contentScale = ContentScale.Fit
+                // タブでは画像そのものを優先し、favicon内の余白を残さない。
+                // 正方形でない画像や端の意匠は円形クリップで少し切れてもよい。
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
             )
         } else {
             Icon(

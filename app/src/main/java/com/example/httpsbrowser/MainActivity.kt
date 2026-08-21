@@ -241,9 +241,10 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        // Android 12以上でもauto-enterだけに依存しない。Fulgurisと同様に明示開始し、端末の
-        // ジェスチャー実装差でPiPへ入らない経路をなくす。
-        if (fullscreenVideoView != null && !isInPictureInPictureMode) {
+        // Android 12以降は、事前に設定したauto-enterがジェスチャーPiPをより滑らかに開始する。
+        // ここで明示enterを重ねると、WebView custom viewの停止・再親子化と競合し黒画面化し得る。
+        // API 26〜30だけ従来の明示経路を使う。
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && fullscreenVideoView != null && !isInPictureInPictureMode) {
             enterFullscreenPictureInPictureMode()
         }
     }

@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.util.Base64
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
@@ -571,11 +572,13 @@ class BrowserWebViewRegistry(
         // 同一ドキュメントで通常サイトからYouTubeへSPA遷移した場合にも、汎用CSSを残さない。
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
-        // 以前の指定フィルタで得られるYouTube専用規則を、プレーヤーやページ全体に触れる危険な
-        // selectorを除いた上で再適用する。動的class/id全走査は行わない。
-        val filterCss = if (enabled && blocker.isReady()) {
-            val selectors = runCatching { JSONObject(blocker.cosmeticResources(url)).optJSONArray("hide_selectors") }
-                .getOrNull()
+        // 通常モードでは指定フィルタのYouTube専用規則を、安全な広告selectorだけに絞る。
+        // 攻めたモードでは後段でgeneric class/id規則も追加し、最大遮断を選べるようにする。
+        val resources = if (enabled && blocker.isReady()) {
+            runCatching { JSONObject(blocker.cosmeticResources(url)) }.getOrDefault(JSONObject())
+        } else JSONObject()
+        val filterCss = if (enabled) {
+            val selectors = resources.optJSONArray("hide_selectors")
                 .toStringList()
                 .filter { selector -> aggressive || isSafeYoutubeAdSelector(selector) }
                 .take(if (aggressive) MAX_AGGRESSIVE_YOUTUBE_SELECTORS else MAX_STATIC_COSMETIC_SELECTORS)
@@ -597,6 +600,21 @@ class BrowserWebViewRegistry(
             """.trimIndent(),
             null
         )
+        // 攻めたモードではYouTubeでもBraveのgeneric cosmetic規則を一度だけ適用する。
+        // 通常モードとGoogle動画タブには戻さず、再生安全性を維持する。
+        if (aggressive && enabled && entry.genericCosmeticAppliedUrl != url) {
+            entry.genericCosmeticAppliedUrl = url
+            val exceptions = resources.optJSONArray("exceptions")?.toString() ?: "[]"
+            view.postDelayed({
+                if (entry.isActive && entry.genericCosmeticAppliedUrl == url &&
+                    entry.youtubeCosmeticAppliedUrl == url && entry.aggressiveAdBlockingEnabled
+                ) {
+                    applyGenericCosmeticFilters(view, exceptions)
+                }
+            }, GENERIC_COSMETIC_DELAY_MS)
+        } else if (!aggressive) {
+            entry.genericCosmeticAppliedUrl = null
+        }
     }
 
     private fun applyGenericCosmeticFilters(view: WebView, exceptionsJson: String) {
@@ -667,21 +685,25 @@ class BrowserWebViewRegistry(
             val googleVideoPreviewDocument = isGoogleVideoSearchDocumentUrl(documentUrl)
             val protectedPlaybackResource = isYoutubePlaybackResource(url, resourceType) ||
                 isGoogleVideoPreviewResource(documentUrl, resourceType)
-            // Google動画タブはYouTube iframeの初期化をGoogle検索文書内で行う。現在のBrave統合の
-            // cosmetic/network境界が映像面だけを黒にする最後の有力原因であるため、この文書だけは
-            // Fulgurisの通常WebView経路と同じくリソースを全通過させる。直接YouTubeは従来どおり遮断する。
-            val shouldCheck = !googleVideoPreviewDocument &&
+            // 通常モードはGoogle動画タブと映像chunk/iframeを保護する。一方、攻めたモードは
+            // Braveのfirst-party規則・redirect規則まで評価するため、これらの保護を意図的に外す。
+            val shouldCheck = (!googleVideoPreviewDocument || entry.aggressiveAdBlockingEnabled) &&
                 (!protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url) || entry.aggressiveAdBlockingEnabled)
-            if (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
+            if (entry.adBlockingEnabled && shouldCheck) {
+                val decision = blocker.networkDecision(
                     url = url,
                     documentUrl = documentUrl,
                     resourceType = resourceType
                 )
-            ) {
-                return WebResourceResponse(
-                    "text/plain", "utf-8", 204, "No Content",
-                    mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0))
-                )
+                if (decision.shouldBlock) {
+                    return WebResourceResponse(
+                        "text/plain", "utf-8", 204, "No Content",
+                        mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+                // `$redirect`はBraveがdata URLとして返す。動画・主文書には適用せず、
+                // 小さく検証済みのscript/style/image置換だけをWebViewへ返す。
+                createSafeBraveRedirectResponse(decision.redirectDataUrl, resourceType)?.let { return it }
             }
             return super.shouldInterceptRequest(view, request)
         }
@@ -1064,6 +1086,37 @@ class BrowserWebViewRegistry(
         }
     }
 
+    /**
+     * Braveの`$redirect`はdata URLとして返る。WebViewではリダイレクト先URLを安全に再発行できないため、
+     * 埋込み可能な小さなscript/style/imageだけを検証して返す。主文書、iframe、media、XHRは対象外とする。
+     */
+    private fun createSafeBraveRedirectResponse(dataUrl: String?, resourceType: String): WebResourceResponse? {
+        if (dataUrl.isNullOrBlank() || resourceType !in SAFE_REDIRECT_RESOURCE_TYPES ||
+            dataUrl.length > MAX_SAFE_REDIRECT_DATA_URL_CHARS
+        ) return null
+        val match = DATA_URL_BASE64_REGEX.matchEntire(dataUrl) ?: return null
+        val mimeType = match.groupValues[1].lowercase()
+        if (!isSafeRedirectMimeType(resourceType, mimeType)) return null
+        val bytes = runCatching { Base64.decode(match.groupValues[2], Base64.DEFAULT) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() && it.size <= MAX_SAFE_REDIRECT_BYTES }
+            ?: return null
+        val encoding = if (mimeType.startsWith("text/") || mimeType.contains("javascript") || mimeType.endsWith("+xml")) {
+            "utf-8"
+        } else null
+        return WebResourceResponse(
+            mimeType, encoding, 200, "OK",
+            mapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"),
+            ByteArrayInputStream(bytes)
+        )
+    }
+
+    private fun isSafeRedirectMimeType(resourceType: String, mimeType: String): Boolean = when (resourceType) {
+        "script" -> mimeType in SAFE_REDIRECT_SCRIPT_MIME_TYPES
+        "stylesheet" -> mimeType == "text/css"
+        "image" -> mimeType in SAFE_REDIRECT_IMAGE_MIME_TYPES
+        else -> false
+    }
+
     private fun resourceTypeFor(request: WebResourceRequest): String {
         if (request.isForMainFrame) return "document"
         val headers = request.requestHeaders
@@ -1097,17 +1150,44 @@ class BrowserWebViewRegistry(
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 2_000
         const val GENERIC_COSMETIC_DELAY_MS = 350L
+        const val MAX_SAFE_REDIRECT_DATA_URL_CHARS = 256 * 1024
+        const val MAX_SAFE_REDIRECT_BYTES = 128 * 1024
+        val DATA_URL_BASE64_REGEX = Regex("^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$", RegexOption.IGNORE_CASE)
+        val SAFE_REDIRECT_RESOURCE_TYPES = setOf("script", "stylesheet", "image")
+        val SAFE_REDIRECT_SCRIPT_MIME_TYPES = setOf("application/javascript", "application/x-javascript", "text/javascript")
+        val SAFE_REDIRECT_IMAGE_MIME_TYPES = setOf("image/gif", "image/png", "image/svg+xml")
+
         const val COOKIE_FLUSH_DEBOUNCE_MS = 750L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
+        // Brave Android PR #28593と同じく、YouTubeのページ側PiP阻害フラグを最小限だけ無効化する。
+        // config未生成・対応外構造ではno-opとし、複数回のSPA遷移でも追加の要素を作らない。
         val YOUTUBE_PIP_UNLOCK_SCRIPT = """
             (function(){
+              function modifyYtcfgFlags(){
+                try{
+                  if(!window.ytcfg || typeof window.ytcfg.get!=='function') return;
+                  var config=window.ytcfg.get('WEB_PLAYER_CONTEXT_CONFIGS');
+                  config=config&&config.WEB_PLAYER_CONTEXT_CONFIG_ID_MWEB_WATCH;
+                  if(!config || typeof config.serializedExperimentFlags!=='string') return;
+                  var flags=config.serializedExperimentFlags;
+                  var replacements=[
+                    ['html5_picture_in_picture_blocking_ontimeupdate=true','html5_picture_in_picture_blocking_ontimeupdate=false'],
+                    ['html5_picture_in_picture_blocking_onresize=true','html5_picture_in_picture_blocking_onresize=false'],
+                    ['html5_picture_in_picture_blocking_document_fullscreen=true','html5_picture_in_picture_blocking_document_fullscreen=false'],
+                    ['html5_picture_in_picture_blocking_standard_api=true','html5_picture_in_picture_blocking_standard_api=false'],
+                    ['html5_picture_in_picture_logging_onresize=true','html5_picture_in_picture_logging_onresize=false']
+                  ];
+                  replacements.forEach(function(pair){flags=flags.replace(pair[0],pair[1]);});
+                  config.serializedExperimentFlags=flags;
+                }catch(_e){}
+              }
               function unlock(video){
                 if(!video) return;
                 try{video.disablePictureInPicture=false;}catch(_e){}
                 try{video.removeAttribute('disablePictureInPicture');}catch(_e){}
               }
               function unlockAll(){document.querySelectorAll('video').forEach(unlock);}
-              function start(){
+              function startVideos(){
                 unlockAll();
                 var root=document.documentElement||document;
                 new MutationObserver(function(records){
@@ -1121,7 +1201,13 @@ class BrowserWebViewRegistry(
                   });
                 }).observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['disablepictureinpicture']});
               }
-              if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',start,{once:true}); else start();
+              modifyYtcfgFlags();
+              if(!window.ytcfg){
+                document.addEventListener('load',function(event){
+                  if(event.target&&event.target.tagName==='SCRIPT') modifyYtcfgFlags();
+                },true);
+              }
+              if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startVideos,{once:true}); else startVideos();
             })();
         """.trimIndent()
         // 指定101リストのyoutube.com/m.youtube.com専用cosmetic規則だけを固定適用する。
