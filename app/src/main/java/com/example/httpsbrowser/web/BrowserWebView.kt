@@ -60,7 +60,7 @@ class BrowserWebViewRegistry(
             // 暗色化切替だけでWebViewを再読込しない。
             applyDeepDarkCss(
                 entry.webView,
-                shouldApplyDarkTransforms(settings, isVideoPlaybackDocumentUrl(entry.loadedUrl.orEmpty()))
+                shouldApplyPageCssDarkening(settings, isVideoPlaybackDocumentUrl(entry.loadedUrl.orEmpty()))
             )
         }
         if (entry.loadedUrl == null) {
@@ -261,23 +261,24 @@ class BrowserWebViewRegistry(
     /**
      * `121e47b`で使用していた暗色化構成。
      *
-     * 画像・iframe・動画を含む深いCSS反転は一般文書だけに限定し、YouTubeとGoogleの
-     * 動画タブではWebViewの通常の合成経路を使う。暗色化切替に伴うreloadはしない。
+     * WebView標準のAlgorithmic Darkening／Force Darkは全画面custom video surfaceにも及び得る。
+     * そのため動画文書では、動画サイト暗色化設定がONでも標準暗色化を常に停止する。ページ本文だけの
+     * CSS反転は別途許可し、`video`の二重反転で映像そのものを常に正常色に保つ。切替に伴うreloadはしない。
      */
     private fun configure(view: WebView, settings: BrowserSettings, videoPage: Boolean) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        val allowDarkTransforms = shouldApplyDarkTransforms(settings, videoPage)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowDarkTransforms)
+        val allowPlatformDarkening = shouldApplyPlatformDarkening(settings, videoPage)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowPlatformDarkening)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowDarkTransforms)
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowPlatformDarkening)
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
             WebSettingsCompat.setForceDark(
                 view.settings,
-                if (allowDarkTransforms) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+                if (allowPlatformDarkening) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
             )
         }
-        if (allowDarkTransforms && WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+        if (allowPlatformDarkening && WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
             WebSettingsCompat.setForceDarkStrategy(
                 view.settings,
                 WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
@@ -285,12 +286,16 @@ class BrowserWebViewRegistry(
         }
         CrashDiagnostics.record(
             "dark_mode_configured",
-            "engine=legacy_121e47b\nforceRequested=${settings.forceDarkPages}\nvideoPage=$videoPage\nallowTransforms=$allowDarkTransforms"
+            "engine=legacy_121e47b\nforceRequested=${settings.forceDarkPages}\nvideoPage=$videoPage\nplatformDarkening=$allowPlatformDarkening\npageCssDarkening=${shouldApplyPageCssDarkening(settings, videoPage)}"
         )
     }
 
-    /** 動画ページは既定で除外し、ユーザーが上書き設定を有効にした時だけ同じ経路を適用する。 */
-    private fun shouldApplyDarkTransforms(settings: BrowserSettings, videoPage: Boolean): Boolean =
+    /** video surfaceの全画面合成を反転しないため、標準暗色化は動画文書では常に無効にする。 */
+    private fun shouldApplyPlatformDarkening(settings: BrowserSettings, videoPage: Boolean): Boolean =
+        settings.forceDarkPages && !videoPage
+
+    /** 動画サイト上書きはページ本文のCSS反転だけを有効にし、動画はCSSの二重反転で正常色へ戻す。 */
+    private fun shouldApplyPageCssDarkening(settings: BrowserSettings, videoPage: Boolean): Boolean =
         settings.forceDarkPages && (!videoPage || settings.forceDarkVideoPages)
 
     /** 121e47bのページ用CSS。動画ページも上書き設定が有効な場合のみ呼び出す。 */
@@ -578,7 +583,7 @@ class BrowserWebViewRegistry(
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
             // 121e47bの暗色化経路を、動画上書き設定を含めて初回可視化時から適用する。
-            applyDeepDarkCss(view, entry?.settings?.let { shouldApplyDarkTransforms(it, isVideoPlaybackDocumentUrl(url)) } == true)
+            applyDeepDarkCss(view, entry?.settings?.let { shouldApplyPageCssDarkening(it, isVideoPlaybackDocumentUrl(url)) } == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
@@ -591,7 +596,7 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("page_finished_skipped", "url=$url\\nprogress=${view.progress}")
                 return
             }
-            applyDeepDarkCss(view, shouldApplyDarkTransforms(entry.settings, isVideoPlaybackDocumentUrl(url)))
+            applyDeepDarkCss(view, shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url)))
             applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             scheduleCookieFlush(view, entry)

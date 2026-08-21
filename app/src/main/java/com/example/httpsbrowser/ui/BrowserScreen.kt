@@ -250,9 +250,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
                                         onRendererGone = {
-                                            // 同じクラッシュURLを自動再読込せず、操作可能なホームへ復帰する。
-                                            viewModel.openHome()
-                                            notice = "このページの描画プロセスが停止しました。ホームへ戻りました。"
+                                            // Fulgurisと同じく、renderer終了はタブを閉じずWebViewだけを破棄する。
+                                            // rendererVersionを変えると同じBrowserTabから新しいWebViewが生成される。
+                                            // その際の再読込はユーザーが元URLを選択したタブ内でのみ行う。
+                                            rendererVersion++
+                                            notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
                                         },
                                         onPageArchiveReady = { sourcePath, fileName ->
                                             pendingPageArchive = File(sourcePath)
@@ -276,9 +278,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                         showNotice = { notice = it },
                                         onExternalApp = { externalAppUrl = it },
                                         onRendererGone = {
-                                            // 同じクラッシュURLを自動再読込せず、操作可能なホームへ復帰する。
-                                            viewModel.openHome()
-                                            notice = "このページの描画プロセスが停止しました。ホームへ戻りました。"
+                                            // Fulgurisと同じく、renderer終了はタブを閉じずWebViewだけを破棄する。
+                                            // rendererVersionを変えると同じBrowserTabから新しいWebViewが生成される。
+                                            // その際の再読込はユーザーが元URLを選択したタブ内でのみ行う。
+                                            rendererVersion++
+                                            notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
                                         },
                                         onPageArchiveReady = { sourcePath, fileName ->
                                             pendingPageArchive = File(sourcePath)
