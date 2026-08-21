@@ -356,8 +356,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     }
                 }
             }
-        }
-
 
         if (!state.isFullscreen && selectedTab?.isHome == true && homeBookmarkEditMode) {
             BookmarkEditActionBar(
