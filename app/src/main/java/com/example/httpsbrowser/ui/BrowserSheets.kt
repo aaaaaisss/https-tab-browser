@@ -172,6 +172,19 @@ object BrowserSheets {
                 )
             }
             item { SettingSwitch("広告 URL ルールをブロック", state.settings.adBlockingEnabled) { onSettings { setting -> setting.copy(adBlockingEnabled = it) } } }
+            item {
+                SettingSwitch(
+                    "攻めた広告遮断モード",
+                    state.settings.aggressiveAdBlockingEnabled
+                ) { enabled -> onSettings { setting -> setting.copy(aggressiveAdBlockingEnabled = enabled) } }
+            }
+            item {
+                Text(
+                    "YouTubeを含む動画サイトで再生保護を外し、ネットワーク・広告要素の遮断を最優先します。動画が止まる・画面が崩れる場合はOFFにしてください。",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                )
+            }
             item { SettingSwitch("JavaScript を有効化", state.settings.javascriptEnabled) { onSettings { setting -> setting.copy(javascriptEnabled = it) } } }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             item { SheetTitle("管理") }
@@ -271,6 +284,7 @@ object BrowserSheets {
         var status by remember { mutableStateOf(listRepository.blockStatus()) }
         var creating by remember { mutableStateOf(false) }
         var editing by remember { mutableStateOf<BlockListSource?>(null) }
+        var updating by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
             sources = listRepository.loadAndCompile()
             status = listRepository.blockStatus()
@@ -289,6 +303,20 @@ object BrowserSheets {
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text("HTTPS URL のリストだけを登録できます。例外・オプション・resource type はフィルタエンジンが評価します。", style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        enabled = !updating,
+                        onClick = {
+                            scope.launch {
+                                updating = true
+                                listRepository.forceUpdateEnabledLists().onSuccess { count ->
+                                    sources = listRepository.loadAndCompile()
+                                    status = listRepository.blockStatus()
+                                    onNotice("有効なフィルタ $count 件を手動更新しました。")
+                                }.onFailure { onNotice(it.message ?: "フィルタを更新できませんでした。") }
+                                updating = false
+                            }
+                        }
+                    ) { Text(if (updating) "フィルタを更新中…" else "フィルタを今すぐ更新") }
                 }
             }
             if (sources.isEmpty()) item { EmptyRow("広告ブロックリストはまだありません。") }

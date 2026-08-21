@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
     private var forwardingNormalWebTouch = false
     @Volatile private var fullscreenVideoView: View? = null
     private var fullscreenContainer: FrameLayout? = null
+    private var fullscreenPipButton: View? = null
     private var pictureInPictureActive by mutableStateOf(false)
     @Volatile private var pictureInPictureTransitionRequested = false
 
@@ -170,11 +171,13 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        container.addView(createPipButton(), FrameLayout.LayoutParams(
+        val pipButton = createPipButton()
+        container.addView(pipButton, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.END
         ).apply { setMargins(0, 18, 18, 0) })
+        fullscreenPipButton = pipButton
         appRoot.addView(container, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
@@ -195,6 +198,9 @@ class MainActivity : ComponentActivity() {
             container.removeAllViews()
         }
         fullscreenContainer = null
+        fullscreenPipButton = null
+        // PiPまたは全画面終了後にだけ通常のCompose操作UIを戻す。
+        if (::composeOverlayView.isInitialized) composeOverlayView.visibility = View.VISIBLE
         runCatching { view?.keepScreenOn = false }
         setFullscreenVideoForPictureInPicture(null)
         setFullscreenSystemBars(false)
@@ -251,6 +257,13 @@ class MainActivity : ComponentActivity() {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode)
         pictureInPictureActive = isInPictureInPictureMode
         pictureInPictureTransitionRequested = false
+        // PiP windowには動画だけを残す。操作ボタンやCompose下部バーはPiP中に合成しない。
+        fullscreenPipButton?.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        if (isInPictureInPictureMode) {
+            if (::composeOverlayView.isInitialized) composeOverlayView.visibility = View.GONE
+        } else if (fullscreenContainer == null && ::composeOverlayView.isInitialized) {
+            composeOverlayView.visibility = View.VISIBLE
+        }
         CrashDiagnostics.record(
             if (isInPictureInPictureMode) "pip_entered" else "pip_exited",
             "fullscreenView=${fullscreenVideoView != null}"

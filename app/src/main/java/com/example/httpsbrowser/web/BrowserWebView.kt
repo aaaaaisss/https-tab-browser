@@ -50,6 +50,8 @@ class BrowserWebViewRegistry(
         entry.callbacks = callbacks
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
+        val aggressiveModeChanged = entry.aggressiveAdBlockingEnabled != settings.aggressiveAdBlockingEnabled
+        entry.aggressiveAdBlockingEnabled = settings.aggressiveAdBlockingEnabled
         ensureYoutubePictureInPictureScript(entry)
         // 121e47bの構成を基準にする。動画文書を対象へ含めるかは明示設定で選択する。
         val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages ||
@@ -65,6 +67,16 @@ class BrowserWebViewRegistry(
                 enabled = !entry.fullscreenVideoDarkeningSuppressed &&
                     shouldApplyPageCssDarkening(settings, isVideoPlaybackDocumentUrl(url), url),
                 youtubePage = isYoutubeDocumentUrl(url)
+            )
+        }
+        if (aggressiveModeChanged && entry.loadedUrl != null) {
+            // モード切替だけでは再読込せず、表示中文書へcosmetic規則を即時再適用する。
+            applyBraveCosmeticFilters(
+                entry.webView,
+                entry.loadedUrl.orEmpty(),
+                entry.adBlockingEnabled,
+                includeGeneric = true,
+                aggressive = entry.aggressiveAdBlockingEnabled
             )
         }
         if (entry.loadedUrl == null) {
@@ -461,13 +473,19 @@ class BrowserWebViewRegistry(
      * Brave エンジンが返す hostname-specific selector と、実際に DOM に存在する class/id に
      * 対応する generic selector だけを注入する。例外規則は native engine が評価する。
      */
-    private fun applyBraveCosmeticFilters(view: WebView, url: String, enabled: Boolean, includeGeneric: Boolean) {
+    private fun applyBraveCosmeticFilters(
+        view: WebView,
+        url: String,
+        enabled: Boolean,
+        includeGeneric: Boolean,
+        aggressive: Boolean = false
+    ) {
         val entry = entries.entries.firstOrNull { it.value.webView === view }?.value ?: return
         // YouTubeはWeb ComponentsとSPA遷移でDOM構造が頻繁に変わる。BraveのURL評価による
         // ネットワーク遮断は維持しつつ、広範なhostname/generic CSSとclass/id走査だけを
         // 適用しない。プレーヤー周辺を隠さない限定広告枠CSSは別経路で注入する。
         if (isYoutubeDocumentUrl(url)) {
-            applyYoutubeCosmeticFilters(view, entry, url, enabled)
+            applyYoutubeCosmeticFilters(view, entry, url, enabled, aggressive)
             return
         }
         // Google検索は動画タブへの遷移やプレビュー展開を同一文書内で行うことがある。
@@ -482,6 +500,7 @@ class BrowserWebViewRegistry(
                 entry.cosmeticAppliedUrl = null
                 entry.genericCosmeticAppliedUrl = null
                 entry.youtubeCosmeticAppliedUrl = null
+                entry.youtubeCosmeticAggressiveApplied = null
                 view.evaluateJavascript(
                     "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();document.getElementById('__https_browser_youtube_ad_css')?.remove();})();",
                     null
@@ -529,6 +548,7 @@ class BrowserWebViewRegistry(
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
         entry.youtubeCosmeticAppliedUrl = null
+        entry.youtubeCosmeticAggressiveApplied = null
         view.evaluateJavascript(
             "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();document.getElementById('__https_browser_youtube_ad_css')?.remove();})();",
             null
@@ -536,9 +556,18 @@ class BrowserWebViewRegistry(
     }
 
     /** YouTubeのプレーヤー本体・サイズ計算へ触れず、明示的な広告枠だけを非表示にする。 */
-    private fun applyYoutubeCosmeticFilters(view: WebView, entry: Entry, url: String, enabled: Boolean) {
-        if (entry.youtubeCosmeticAppliedUrl == url && enabled) return
+    private fun applyYoutubeCosmeticFilters(
+        view: WebView,
+        entry: Entry,
+        url: String,
+        enabled: Boolean,
+        aggressive: Boolean
+    ) {
+        if (entry.youtubeCosmeticAppliedUrl == url && enabled &&
+            entry.youtubeCosmeticAggressiveApplied == aggressive
+        ) return
         entry.youtubeCosmeticAppliedUrl = if (enabled) url else null
+        entry.youtubeCosmeticAggressiveApplied = if (enabled) aggressive else null
         // 同一ドキュメントで通常サイトからYouTubeへSPA遷移した場合にも、汎用CSSを残さない。
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
@@ -548,8 +577,8 @@ class BrowserWebViewRegistry(
             val selectors = runCatching { JSONObject(blocker.cosmeticResources(url)).optJSONArray("hide_selectors") }
                 .getOrNull()
                 .toStringList()
-                .filter(::isSafeYoutubeAdSelector)
-                .take(MAX_STATIC_COSMETIC_SELECTORS)
+                .filter { selector -> aggressive || isSafeYoutubeAdSelector(selector) }
+                .take(if (aggressive) MAX_AGGRESSIVE_YOUTUBE_SELECTORS else MAX_STATIC_COSMETIC_SELECTORS)
             selectors.joinToString(",").takeIf { it.isNotBlank() }
                 ?.plus("{display:none!important;visibility:hidden!important;}")
                 .orEmpty()
@@ -642,7 +671,7 @@ class BrowserWebViewRegistry(
             // cosmetic/network境界が映像面だけを黒にする最後の有力原因であるため、この文書だけは
             // Fulgurisの通常WebView経路と同じくリソースを全通過させる。直接YouTubeは従来どおり遮断する。
             val shouldCheck = !googleVideoPreviewDocument &&
-                (!protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url))
+                (!protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url) || entry.aggressiveAdBlockingEnabled)
             if (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
                     url = url,
                     documentUrl = documentUrl,
@@ -682,6 +711,7 @@ class BrowserWebViewRegistry(
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
             entry?.youtubeCosmeticAppliedUrl = null
+            entry?.youtubeCosmeticAggressiveApplied = null
             entry?.activeDocumentUrl = url
             entry?.rearmPageLifecycle(url)
             view.setBackgroundColor(android.graphics.Color.BLACK)
@@ -866,6 +896,7 @@ class BrowserWebViewRegistry(
         var cosmeticAppliedUrl: String? = null,
         var genericCosmeticAppliedUrl: String? = null,
         var youtubeCosmeticAppliedUrl: String? = null,
+        var youtubeCosmeticAggressiveApplied: Boolean? = null,
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
@@ -874,6 +905,7 @@ class BrowserWebViewRegistry(
         var settings: BrowserSettings = BrowserSettings(),
         var appliedForceDark: Boolean? = null,
         var appliedForceDarkVideoPages: Boolean? = null,
+        @Volatile var aggressiveAdBlockingEnabled: Boolean = false,
         @Volatile var fullscreenVideoDarkeningSuppressed: Boolean = false,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
@@ -1063,6 +1095,7 @@ class BrowserWebViewRegistry(
     private companion object {
         const val ABOUT_BLANK_URL = "about:blank"
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
+        const val MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 2_000
         const val GENERIC_COSMETIC_DELAY_MS = 350L
         const val COOKIE_FLUSH_DEBOUNCE_MS = 750L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"

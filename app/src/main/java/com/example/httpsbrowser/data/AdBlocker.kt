@@ -101,6 +101,23 @@ class AdBlockListRepository(
         }
     }
 
+    /** ユーザー操作時は更新期限を待たず、有効な標準・追加リストをすべて取得して即時再コンパイルする。 */
+    suspend fun forceUpdateEnabledLists(): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            var sources = listSourcesInternal()
+            var updatedCount = 0
+            sources.filter { it.enabled }.forEach { source ->
+                fetchToFile(source, source.id)
+                val updated = source.copy(updatedAt = System.currentTimeMillis())
+                sources = sources.map { if (it.id == source.id) updated else it }
+                updatedCount++
+            }
+            saveSources(sources)
+            loadAndCompile()
+            updatedCount
+        }
+    }
+
     suspend fun addOrUpdate(name: String, sourceUrl: String): Result<BlockListSource> = withContext(Dispatchers.IO) {
         runCatching {
             val normalizedUrl = validateHttpsUrl(sourceUrl)
