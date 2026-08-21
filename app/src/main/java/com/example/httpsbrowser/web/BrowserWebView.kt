@@ -49,16 +49,17 @@ class BrowserWebViewRegistry(
         entry.callbacks = callbacks
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
-        // 121e47bの構成をそのまま維持する。一般文書にはWebView標準暗色化と深いCSSを
-        // 適用し、YouTubeとGoogle動画タブは映像面を標準描画のまま保護する。
-        val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages
+        // 121e47bの構成を基準にする。動画文書を対象へ含めるかは明示設定で選択する。
+        val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages ||
+            entry.appliedForceDarkVideoPages != settings.forceDarkVideoPages
         configure(entry.webView, settings, isVideoPlaybackDocumentUrl(tab.lastRequestedUrl))
         entry.appliedForceDark = settings.forceDarkPages
+        entry.appliedForceDarkVideoPages = settings.forceDarkVideoPages
         if (darkModeChanged && entry.loadedUrl != null) {
             // 暗色化切替だけでWebViewを再読込しない。
             applyDeepDarkCss(
                 entry.webView,
-                settings.forceDarkPages && !isVideoPlaybackDocumentUrl(entry.loadedUrl.orEmpty())
+                shouldApplyDarkTransforms(settings, isVideoPlaybackDocumentUrl(entry.loadedUrl.orEmpty()))
             )
         }
         if (entry.loadedUrl == null) {
@@ -113,10 +114,7 @@ class BrowserWebViewRegistry(
         when {
             translateUrl == null -> entry.callbacks.onNotice("HTTPSページの読み込み完了後に翻訳してください。")
             isGoogleTranslateDocumentUrl(sourceUrl) -> entry.callbacks.onNotice("このページはすでにGoogle翻訳で開かれています。")
-            else -> {
-                entry.callbacks.onNotice("Google 翻訳を開いています…")
-                load(tabId, translateUrl)
-            }
+            else -> load(tabId, translateUrl)
         }
     }
 
@@ -258,7 +256,7 @@ class BrowserWebViewRegistry(
      */
     private fun configure(view: WebView, settings: BrowserSettings, videoPage: Boolean) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        val allowDarkTransforms = settings.forceDarkPages && !videoPage
+        val allowDarkTransforms = shouldApplyDarkTransforms(settings, videoPage)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowDarkTransforms)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowDarkTransforms)
@@ -281,7 +279,11 @@ class BrowserWebViewRegistry(
         )
     }
 
-    /** 121e47bの一般ページ用CSS。動画ページには呼び出さない。 */
+    /** 動画ページは既定で除外し、ユーザーが上書き設定を有効にした時だけ同じ経路を適用する。 */
+    private fun shouldApplyDarkTransforms(settings: BrowserSettings, videoPage: Boolean): Boolean =
+        settings.forceDarkPages && (!videoPage || settings.forceDarkVideoPages)
+
+    /** 121e47bのページ用CSS。動画ページも上書き設定が有効な場合のみ呼び出す。 */
     private fun applyDeepDarkCss(view: WebView, enabled: Boolean) {
         val script = if (enabled) """
             (function() {
@@ -536,8 +538,8 @@ class BrowserWebViewRegistry(
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
-            // 121e47bのとおり、一般ページだけ初回可視化時から深い暗色CSSを適用する。
-            applyDeepDarkCss(view, entry?.settings?.forceDarkPages == true && !isVideoPlaybackDocumentUrl(url))
+            // 121e47bの暗色化経路を、動画上書き設定を含めて初回可視化時から適用する。
+            applyDeepDarkCss(view, entry?.settings?.let { shouldApplyDarkTransforms(it, isVideoPlaybackDocumentUrl(url)) } == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
@@ -550,7 +552,7 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("page_finished_skipped", "url=$url\\nprogress=${view.progress}")
                 return
             }
-            applyDeepDarkCss(view, entry.settings.forceDarkPages && !isVideoPlaybackDocumentUrl(url))
+            applyDeepDarkCss(view, shouldApplyDarkTransforms(entry.settings, isVideoPlaybackDocumentUrl(url)))
             applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             scheduleCookieFlush(view, entry)
@@ -650,7 +652,8 @@ class BrowserWebViewRegistry(
                 webView = popupView,
                 callbacks = current.callbacks,
                 settings = current.settings,
-                appliedForceDark = current.settings.forceDarkPages
+                appliedForceDark = current.settings.forceDarkPages,
+                appliedForceDarkVideoPages = current.settings.forceDarkVideoPages
             )
             (resultMsg.obj as? WebView.WebViewTransport)?.webView = popupView
             resultMsg.sendToTarget()
@@ -694,6 +697,7 @@ class BrowserWebViewRegistry(
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
         var appliedForceDark: Boolean? = null,
+        var appliedForceDarkVideoPages: Boolean? = null,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true,

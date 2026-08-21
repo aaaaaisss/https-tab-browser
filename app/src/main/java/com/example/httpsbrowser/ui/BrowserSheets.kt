@@ -53,7 +53,9 @@ import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BrowserUiState
 import com.example.httpsbrowser.data.SettingsPage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 object BrowserSheets {
     @OptIn(ExperimentalMaterial3Api::class)
@@ -140,6 +142,7 @@ object BrowserSheets {
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
                 SettingsPage.DATA -> DataPage(onClear, onBack)
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPage(onBack, onShareDiagnostics)
+                SettingsPage.OPEN_SOURCE_LICENSES -> OpenSourceLicensesPage(onBack)
             }
         }
     }
@@ -155,6 +158,19 @@ object BrowserSheets {
         LazyColumn(Modifier.padding(bottom = 24.dp)) {
             item { SheetTitle("設定") }
             item { SettingSwitch("ページを強制的に暗色化", state.settings.forceDarkPages) { onSettings { setting -> setting.copy(forceDarkPages = it) } } }
+            item {
+                SettingSwitch(
+                    "動画サイトにも暗色化を適用",
+                    state.settings.forceDarkVideoPages
+                ) { enabled -> onSettings { setting -> setting.copy(forceDarkVideoPages = enabled) } }
+            }
+            item {
+                Text(
+                    "YouTube・Google動画タブの映像表示が崩れる場合は、この設定をOFFのままにしてください。",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                )
+            }
             item { SettingSwitch("広告 URL ルールをブロック", state.settings.adBlockingEnabled) { onSettings { setting -> setting.copy(adBlockingEnabled = it) } } }
             item { SettingSwitch("JavaScript を有効化", state.settings.javascriptEnabled) { onSettings { setting -> setting.copy(javascriptEnabled = it) } } }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
@@ -164,6 +180,7 @@ object BrowserSheets {
             item { NavigationItem("ダウンロード", Icons.Default.Download, onDownloads) }
             item { NavigationItem("広告ブロック", Icons.Default.Security) { onOpenPage(SettingsPage.AD_BLOCK) } }
             item { NavigationItem("クラッシュ診断", Icons.Default.Security) { onOpenPage(SettingsPage.DIAGNOSTICS) } }
+            item { NavigationItem("オープンソースライセンス", Icons.Default.Security) { onOpenPage(SettingsPage.OPEN_SOURCE_LICENSES) } }
             item { NavigationItem("閲覧データの消去", Icons.Default.Delete) { onOpenPage(SettingsPage.DATA) } }
             item { TextButton(onClick = onDismiss, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { Text("閉じる") } }
         }
@@ -333,6 +350,59 @@ object BrowserSheets {
                 Text(details, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
         }
+    }
+
+    @Composable
+    private fun OpenSourceLicensesPage(onBack: () -> Unit) {
+        val context = LocalContext.current
+        var fulgurisNotice by remember { mutableStateOf("") }
+        var thirdPartyNotice by remember { mutableStateOf("") }
+        var cpalText by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) {
+            val documents = withContext(Dispatchers.IO) {
+                fun readAsset(name: String) = runCatching {
+                    context.assets.open("licenses/$name").bufferedReader(Charsets.UTF_8).use { it.readText() }
+                }.getOrDefault("ライセンス文書を読み込めませんでした。")
+                Triple(
+                    readAsset("FULGURIS_CPAL_NOTICE.md"),
+                    readAsset("THIRD_PARTY_NOTICES.md"),
+                    readAsset("CPAL-1.0.txt")
+                )
+            }
+            fulgurisNotice = documents.first
+            thirdPartyNotice = documents.second
+            cpalText = documents.third
+        }
+        PageHeader("オープンソースライセンス", onBack)
+        LazyColumn(Modifier.padding(bottom = 24.dp)) {
+            item {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                    Text("Powered by Fulguris Browser", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "ねこぶらうざはFulguris由来の動画ライフサイクル、全画面表示、Google Translate遷移を最小限適合しています。詳細な変更記録と対応ソースは以下に表示します。",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                HorizontalDivider()
+            }
+            item { LicenseSection("Fulguris CPAL-1.0変更記録", fulgurisNotice) }
+            item { LicenseSection("第三者通知", thirdPartyNotice) }
+            item { LicenseSection("CPAL-1.0 全文", cpalText) }
+        }
+    }
+
+    @Composable
+    private fun LicenseSection(title: String, content: String) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (content.isBlank()) "読み込み中…" else content,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        HorizontalDivider()
     }
 
     @Composable

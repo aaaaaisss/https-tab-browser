@@ -20,6 +20,7 @@ class BrowserRepository(private val context: Context) {
         val bookmarks = stringPreferencesKey("bookmarks")
         val forceDark = booleanPreferencesKey("force_dark")
         val forceDarkInitialized = booleanPreferencesKey("force_dark_initialized")
+        val forceDarkVideoPages = booleanPreferencesKey("force_dark_video_pages")
         val adBlock = booleanPreferencesKey("ad_block")
         val javascript = booleanPreferencesKey("javascript")
     }
@@ -43,6 +44,7 @@ class BrowserRepository(private val context: Context) {
             bookmarks = decodeBookmarks(preferences[Keys.bookmarks]),
             settings = BrowserSettings(
                 forceDarkPages = forceDarkPages,
+                forceDarkVideoPages = preferences[Keys.forceDarkVideoPages] ?: false,
                 adBlockingEnabled = preferences[Keys.adBlock] ?: true,
                 javascriptEnabled = preferences[Keys.javascript] ?: true
             )
@@ -62,6 +64,7 @@ class BrowserRepository(private val context: Context) {
             preferences[Keys.bookmarks] = encodeBookmarks(state.bookmarks).toString()
             preferences[Keys.forceDark] = state.settings.forceDarkPages
             preferences[Keys.forceDarkInitialized] = true
+            preferences[Keys.forceDarkVideoPages] = state.settings.forceDarkVideoPages
             preferences[Keys.adBlock] = state.settings.adBlockingEnabled
             preferences[Keys.javascript] = state.settings.javascriptEnabled
         }

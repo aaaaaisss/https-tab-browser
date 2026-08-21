@@ -4,7 +4,7 @@ import java.util.UUID
 
 enum class AddressDisplayMode { URL, SEARCH }
 
-enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, AD_BLOCK, DATA, DIAGNOSTICS }
+enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, AD_BLOCK, DATA, DIAGNOSTICS, OPEN_SOURCE_LICENSES }
 
 data class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
@@ -41,6 +41,8 @@ data class Bookmark(
 
 data class BrowserSettings(
     val forceDarkPages: Boolean = true,
+    /** YouTube・Google動画タブも121e47b型暗色化の対象に含める、既定OFFの上書き設定。 */
+    val forceDarkVideoPages: Boolean = false,
     val adBlockingEnabled: Boolean = true,
     val javascriptEnabled: Boolean = true
 )

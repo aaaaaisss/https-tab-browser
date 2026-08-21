@@ -127,8 +127,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
 
     LaunchedEffect(Unit) {
-        // Fulguris CPAL-1.0由来のネイティブ暗色化コードに必要な起動時帰属表示。
-        notice = "Powered by Fulguris Browser"
+        // Fulgurisの帰属と対応ソースは設定内「オープンソースライセンス」で常時閲覧可能にする。
         listRepository.ensureStandardLists()
         // Kotlin/JNIの巨大文字列コピーを避けたファイル直読コンパイルで、標準リストを有効化する。
         listRepository.loadAndCompile()
