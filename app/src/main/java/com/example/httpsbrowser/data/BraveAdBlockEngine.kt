@@ -43,38 +43,39 @@ class BraveAdBlockEngine(context: Context) {
      * ネットワーク/CSS規則には使うが、ページ内JavaScriptのscriptlet実行権限を持たない。
      */
     fun replaceRuleFiles(files: List<File>, trustedRuleFiles: Set<File> = emptySet()) {
-        val existingFiles = files.filter { it.isFile && it.length() > 0L }
-        if (existingFiles.isEmpty()) {
-            CrashDiagnostics.record("adblock_compile_skipped", "reason=no_filter_files")
-            return
-        }
-        val resourceFile = ensureScriptletResourceFileOrNull()
-        val trustedPaths = trustedRuleFiles.asSequence()
-            .filter { it.isFile && it.length() > 0L }
-            .map(File::getAbsolutePath)
-            .toSet()
-        val signature = contentSignature(existingFiles, resourceFile, trustedPaths)
-        if (activeHandle.get() != 0L && compiledFileSignature == signature) return
-        if (statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) {
-            CrashDiagnostics.record("adblock_compile_skipped", "reason=previous_compile_did_not_finish\nfiles=${existingFiles.size}")
-            return
-        }
+        // フィルタ更新と初期化が同時に走っても、稼働中のnative engineを先に破棄しない。
+        // 新しいengineが完全に構築・検査できた時点だけで原子的に入れ替える。
         synchronized(COMPILATION_LOCK) {
-            if (statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) return
+            val existingFiles = files.filter { it.isFile && it.length() > 0L }
+            if (existingFiles.isEmpty()) {
+                CrashDiagnostics.record("adblock_compile_skipped", "reason=no_filter_files")
+                return
+            }
+            val resourceFile = ensureScriptletResourceFileOrNull()
+            val trustedPaths = trustedRuleFiles.asSequence()
+                .filter { it.isFile && it.length() > 0L }
+                .map(File::getAbsolutePath)
+                .toSet()
+            val signature = contentSignature(existingFiles, resourceFile, trustedPaths)
+            if (activeHandle.get() != 0L && compiledFileSignature == signature) return
+
+            // 前プロセスが強制終了した場合だけ、この永続フラグが残る。
+            // それを理由に以後の遮断を永続停止せず、安全にキャッシュ復元または再コンパイルする。
+            if (statistics.getBoolean(COMPILATION_IN_PROGRESS_KEY, false)) {
+                statistics.edit().remove(COMPILATION_IN_PROGRESS_KEY).commit()
+                CrashDiagnostics.record("adblock_compile_recovered", "reason=stale_in_progress_flag\nfiles=${existingFiles.size}")
+            }
             statistics.edit().putBoolean(COMPILATION_IN_PROGRESS_KEY, true).commit()
             val totalBytes = existingFiles.sumOf(File::length)
             CrashDiagnostics.record(
                 "adblock_engine_prepare_started",
                 "files=${existingFiles.size}\ntrustedFiles=${trustedPaths.size}\nbytes=$totalBytes\nscriptletResources=${resourceFile?.name ?: "unavailable"}"
             )
+            var candidateHandle = 0L
             try {
-                val previous = activeHandle.getAndSet(0L)
-                if (previous != 0L) NativeAdBlockEngine.destroy(previous)
-                compiledFileSignature = null
-
                 val resourcePath = resourceFile?.absolutePath.orEmpty()
                 val cachedHandle = restoreCachedEngine(signature, resourcePath)
-                val newHandle = if (cachedHandle != 0L) {
+                candidateHandle = if (cachedHandle != 0L) {
                     CrashDiagnostics.record("adblock_cache_restored", "files=${existingFiles.size}\nbytes=$totalBytes")
                     cachedHandle
                 } else {
@@ -85,22 +86,26 @@ class BraveAdBlockEngine(context: Context) {
                         scriptletResourcePath = resourcePath
                     )
                 }
-                if (newHandle == 0L) {
+                if (candidateHandle == 0L) {
                     CrashDiagnostics.record("adblock_compile_failed", "native_handle=0\nfiles=${existingFiles.size}")
                     return
                 }
 
-                activeHandle.set(newHandle)
-                compiledFileSignature = signature
-                if (cachedHandle == 0L) persistCachedEngine(newHandle, signature)
+                // ルール数の読み取りをswap前に終え、例外時にも既存engineを使い続ける。
                 val counts = countRules(existingFiles)
+                val previousHandle = activeHandle.getAndSet(candidateHandle)
+                candidateHandle = 0L
+                compiledFileSignature = signature
                 networkRuleCount = counts.first
                 cosmeticRuleCount = counts.second
+                if (cachedHandle == 0L) persistCachedEngine(activeHandle.get(), signature)
+                if (previousHandle != 0L) NativeAdBlockEngine.destroy(previousHandle)
                 CrashDiagnostics.record(
                     "adblock_engine_ready",
                     "source=${if (cachedHandle != 0L) "cache" else "compile"}\nnetworkRules=$networkRuleCount\ncosmeticRules=$cosmeticRuleCount\nfiles=${existingFiles.size}\ntrustedFiles=${trustedPaths.size}\nscriptletResources=${resourceFile != null}"
                 )
             } catch (throwable: Throwable) {
+                if (candidateHandle != 0L) NativeAdBlockEngine.destroy(candidateHandle)
                 CrashDiagnostics.record("adblock_engine_exception", "${throwable.javaClass.name}: ${throwable.message.orEmpty()}")
             } finally {
                 statistics.edit().remove(COMPILATION_IN_PROGRESS_KEY).commit()

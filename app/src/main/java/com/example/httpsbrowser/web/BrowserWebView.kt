@@ -17,10 +17,11 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.webkit.URLUtil
+import androidx.webkit.SafeBrowsingResponseCompat
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import android.content.Intent
@@ -119,6 +120,8 @@ class BrowserWebViewRegistry(
             entry.documentStartScriptHandler = null
             entry.darkDocumentStartHandler = null
             entry.darkReaderDocumentStartHandler = null
+            entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
+            entry.cookieFlushRunnable = null
             entry.webView.apply {
                 stopLoading()
                 loadUrl("about:blank")
@@ -135,6 +138,8 @@ class BrowserWebViewRegistry(
     /** 画面そのものが閉じる時だけ、翻訳モデルとネイティブフィルタを解放する。 */
     fun close() {
         destroyAll()
+        // 遅延集約中のCookieもアプリ終了時には確実にディスクへ反映する。
+        runCatching { CookieManager.getInstance().flush() }
         pageTranslator.close()
         blocker.close()
     }
@@ -479,7 +484,7 @@ class BrowserWebViewRegistry(
     private fun JSONArray?.toStringList(): List<String> =
         this?.let { array -> List(array.length()) { index -> array.optString(index) }.filter(String::isNotBlank) }.orEmpty()
 
-    private inner class SecureClient(private val tabId: String) : WebViewClient() {
+    private inner class SecureClient(private val tabId: String) : WebViewClientCompat() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val url = request.url.toString()
             if (!request.isForMainFrame) return false
@@ -558,7 +563,7 @@ class BrowserWebViewRegistry(
             applyDarkBaseStyle(view, url, entry?.settings?.forceDarkPages == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
-            CookieManager.getInstance().flush()
+            entry?.let { scheduleCookieFlush(view, it) }
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
         }
@@ -568,11 +573,40 @@ class BrowserWebViewRegistry(
             entries[tabId]?.callbacks?.onSslError(error.url)
         }
 
+        /**
+         * WebViewの既定interstitialへ進ませず、危険ページでは直前の安全な文書へ戻す。
+         * falseを渡すことで、個人利用・最小通信の方針に合わせてこの判定を報告しない。
+         */
+        override fun onSafeBrowsingHit(
+            view: WebView,
+            request: WebResourceRequest,
+            threatType: Int,
+            callback: SafeBrowsingResponseCompat
+        ) {
+            CrashDiagnostics.record("webview_safe_browsing_blocked", "threatType=$threatType")
+            when {
+                WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_RESPONSE_BACK_TO_SAFETY) -> {
+                    callback.backToSafety(false)
+                    entries[tabId]?.callbacks?.onNotice("安全でない可能性があるページをブロックしました。")
+                }
+                WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_RESPONSE_SHOW_INTERSTITIAL) -> {
+                    // 古いWebViewでは、Chromium標準の警告画面を表示して利用者に判断を委ねる。
+                    callback.showInterstitial(false)
+                }
+                else -> {
+                    // 応答APIが不完全な実装では、既定の警告を試みる。失敗時もアプリ本体は落とさない。
+                    runCatching { callback.showInterstitial(false) }
+                }
+            }
+        }
+
         override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
             // 同じURLを即時に再生成すると、壊れたページ・メモリ不足でレンダラーが再度落ちる無限ループになる。
             // 既に描画プロセスを失ったWebViewには loadUrl/clearHistory/stopLoading を実行せず、destroyだけを行う。
             val entry = entries.remove(tabId)
             entry?.isActive = false
+            entry?.cookieFlushRunnable?.let(view::removeCallbacks)
+            entry?.cookieFlushRunnable = null
             val callbacks = entry?.callbacks ?: BrowserWebCallbacks.Empty
             CrashDiagnostics.recordWebViewRendererGone(detail.didCrash(), detail.rendererPriorityAtExit())
             runCatching { view.destroy() }
@@ -668,6 +702,7 @@ class BrowserWebViewRegistry(
         var darkDocumentStartHandler: ScriptHandler? = null,
         var darkReaderDocumentStartHandler: ScriptHandler? = null,
         var darkDocumentStartEnabled: Boolean = false,
+        var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
         var appliedForceDark: Boolean? = null,
@@ -675,6 +710,17 @@ class BrowserWebViewRegistry(
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true
     )
+
+    /** Cookie書込みをページ完了ごとに同期実行せず、連続遷移をまとめてから一度だけ行う。 */
+    private fun scheduleCookieFlush(view: WebView, entry: Entry) {
+        entry.cookieFlushRunnable?.let(view::removeCallbacks)
+        val runnable = Runnable {
+            entry.cookieFlushRunnable = null
+            if (entry.isActive) runCatching { CookieManager.getInstance().flush() }
+        }
+        entry.cookieFlushRunnable = runnable
+        view.postDelayed(runnable, COOKIE_FLUSH_DEBOUNCE_MS)
+    }
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
 
@@ -745,7 +791,7 @@ class BrowserWebViewRegistry(
             if (metrics.isNotBlank()) {
                 CrashDiagnostics.record(
                     "youtube_viewport_metrics",
-                    "url=$url\nwebViewWidth=${view.width}\nwebViewHeight=${view.height}\nscrollX=${view.scrollX}\nscrollY=${view.scrollY}\nscale=${view.scale}\n$metrics"
+                    "host=${youtubeHost(url).orEmpty()}\nwebViewWidth=${view.width}\nwebViewHeight=${view.height}\nscrollX=${view.scrollX}\nscrollY=${view.scrollY}\nscale=${view.scale}\n$metrics"
                 )
             }
         }
@@ -782,6 +828,7 @@ class BrowserWebViewRegistry(
     private companion object {
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val GENERIC_COSMETIC_DELAY_MS = 350L
+        const val COOKIE_FLUSH_DEBOUNCE_MS = 750L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
         const val DARK_READER_ASSET = "darkreader/darkreader-4.9.128.js"
         const val DARK_READER_VERSION = "4.9.128"

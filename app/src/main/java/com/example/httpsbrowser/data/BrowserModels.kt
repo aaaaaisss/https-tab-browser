@@ -16,7 +16,11 @@ data class BrowserTab(
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
     val isHome: Boolean = true,
-    /** シークレットタブは履歴・タブ復元へ保存しない。Cookie の完全分離は別途必要。 */
+    /**
+     * シークレットタブは履歴・タブ復元へ保存しない。
+     * Android System WebViewがmulti-profileを提供しない端末では、Cookie等を通常タブと完全分離できない。
+     * 通常ログインを壊す全Cookie削除は行わず、profile API対応時にのみ隔離を有効化する。
+     */
     val isPrivate: Boolean = false
 )
 

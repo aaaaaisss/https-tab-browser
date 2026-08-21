@@ -85,8 +85,10 @@ class BrowserRepository(private val context: Context) {
             displayMode = runCatching { AddressDisplayMode.valueOf(item.optString("displayMode")) }
                 .getOrDefault(AddressDisplayMode.URL),
             lastRequestedUrl = item.optString("lastRequestedUrl", item.optString("url")),
-            canGoBack = item.optBoolean("canGoBack"),
-            canGoForward = item.optBoolean("canGoForward"),
+            // WebViewのBackForwardListそのものは保存していないため、以前の真偽値を復元すると
+            // 「有効に見えるが戻れない」操作になってしまう。再生成後のWebViewが実測で更新するまでOFFにする。
+            canGoBack = false,
+            canGoForward = false,
             isHome = item.optBoolean("isHome", item.optString("url").isBlank()),
             isPrivate = item.optBoolean("isPrivate", false)
         )
@@ -120,8 +122,10 @@ class BrowserRepository(private val context: Context) {
         tabs.forEach { tab -> put(JSONObject().apply {
             put("id", tab.id); put("url", tab.url); put("title", tab.title)
             put("displayText", tab.displayText); put("displayMode", tab.displayMode.name)
-            put("lastRequestedUrl", tab.lastRequestedUrl); put("canGoBack", tab.canGoBack)
-            put("canGoForward", tab.canGoForward); put("isHome", tab.isHome); put("isPrivate", tab.isPrivate)
+            // BackForwardListはWebViewインスタンス内だけの状態であり、DataStoreへ保存しない。
+            // 次回生成時はfalseから開始し、onHistoryStateで実体に合わせて更新する。
+            put("lastRequestedUrl", tab.lastRequestedUrl)
+            put("isHome", tab.isHome); put("isPrivate", tab.isPrivate)
         }) }
     }
 

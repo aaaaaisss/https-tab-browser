@@ -12,7 +12,9 @@
 
     <application
         android:name=".BrowserApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:label="ねこぶらうざ"
@@ -20,6 +22,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.HttpsTabBrowser"
         android:usesCleartextTraffic="false">
+        <!-- 個人利用のブラウザとして、WebViewの任意利用統計をアプリ単位で送信しない。 -->
+        <meta-data
+            android:name="android.webkit.WebView.MetricsOptOut"
+            android:value="true" />
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
