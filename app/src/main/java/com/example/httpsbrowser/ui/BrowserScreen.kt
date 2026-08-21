@@ -207,7 +207,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 homeBookmarkSelection = emptySet()
             }
             selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
-            // WebViewの履歴が尽きた時は、ホームへ強制遷移せず通常のAndroid戻るとして終了する。
+            // 独自ホームから開いたブックマーク等は、WebView履歴が尽きた次の戻るでホームへ戻す。
+            selectedTab?.returnToHomeOnBack == true -> viewModel.returnSelectedTabToHome()
+            // 通常ページの履歴が尽きた時は、Android戻るとして終了する。
             else -> activity?.finish()
         }
     }
@@ -325,10 +327,16 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         onEditingStarted = viewModel::startAddressEditing
                     )
                     NavigationRow(
-                        canGoBack = selectedTab.canGoBack && !selectedTab.isHome,
+                        canGoBack = (selectedTab.canGoBack || selectedTab.returnToHomeOnBack) && !selectedTab.isHome,
                         canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
                         onTabs = { viewModel.stopAddressEditing(); viewModel.toggleTabSheet() },
-                        onBack = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goBack(selectedTab.id) },
+                        onBack = {
+                            viewModel.stopAddressEditing()
+                            if (!selectedTab.isHome) {
+                                if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
+                                else viewModel.returnSelectedTabToHome()
+                            }
+                        },
                         onSearch = viewModel::startAddressEditing,
                         onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
                         onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },

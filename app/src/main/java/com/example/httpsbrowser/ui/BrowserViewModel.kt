@@ -171,13 +171,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun prepareNavigation(input: String = uiState.addressInput): PreparedNavigation? {
         val prepared = buildNavigation(input) ?: return null
-        updateSelected { it.copy(
-            url = prepared.url,
-            lastRequestedUrl = prepared.url,
-            displayText = prepared.displayText,
-            displayMode = prepared.displayMode,
-            isHome = false
-        ) }
+        updateSelected { tab ->
+            tab.copy(
+                url = prepared.url,
+                lastRequestedUrl = prepared.url,
+                displayText = prepared.displayText,
+                displayMode = prepared.displayMode,
+                isHome = false,
+                // 独自ホームから開いたブックマーク・検索・URLは、WebView履歴の次にホームへ戻す。
+                returnToHomeOnBack = tab.isHome || tab.returnToHomeOnBack
+            )
+        }
         suggestionJob?.cancel()
         uiState = uiState.copy(
             addressInput = prepared.displayText,
@@ -191,7 +195,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun openHome() {
         updateSelected { tab ->
-            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, canGoBack = false, canGoForward = false)
+            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, returnToHomeOnBack = false, canGoBack = false, canGoForward = false)
         }
         suggestionJob?.cancel()
         uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
@@ -269,6 +273,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setFullscreen(value: Boolean) { uiState = uiState.copy(isFullscreen = value) }
+
+    /** WebView履歴が尽きたホーム起点ページを、独自ホームへ戻す。 */
+    fun returnSelectedTabToHome() {
+        if (uiState.selectedTab?.returnToHomeOnBack == true) openHome()
+    }
 
     fun updateSettings(transform: (BrowserSettings) -> BrowserSettings) {
         uiState = uiState.copy(settings = transform(uiState.settings))

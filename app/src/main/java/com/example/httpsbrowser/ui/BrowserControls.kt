@@ -79,6 +79,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
@@ -114,6 +115,7 @@ fun AddressBar(
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
 
     LaunchedEffect(value) {
@@ -126,6 +128,7 @@ fun AddressBar(
             focusRequester.requestFocus()
         } else {
             focusManager.clearFocus(force = true)
+            keyboardController?.hide()
         }
     }
 
@@ -142,7 +145,13 @@ fun AddressBar(
                 cursorBrush = SolidColor(Color.White),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+                keyboardActions = KeyboardActions(onSearch = {
+                    // IMEの検索確定直後にWebViewへフォーカスが移っても、端末差でキーボードが
+                    // 残らないよう先に明示的に閉じる。ViewModel側も候補・編集状態を同時に終了する。
+                    keyboardController?.hide()
+                    focusManager.clearFocus(force = true)
+                    onSubmit()
+                }),
                 decorationBox = { innerTextField ->
                     Row(
                         modifier = Modifier.fillMaxSize().padding(start = 10.dp, end = 3.dp),

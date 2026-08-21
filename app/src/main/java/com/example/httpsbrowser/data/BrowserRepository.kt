@@ -93,6 +93,7 @@ class BrowserRepository(private val context: Context) {
             canGoBack = false,
             canGoForward = false,
             isHome = item.optBoolean("isHome", item.optString("url").isBlank()),
+            returnToHomeOnBack = item.optBoolean("returnToHomeOnBack", false),
             isPrivate = item.optBoolean("isPrivate", false)
         )
     }
@@ -128,7 +129,7 @@ class BrowserRepository(private val context: Context) {
             // BackForwardListはWebViewインスタンス内だけの状態であり、DataStoreへ保存しない。
             // 次回生成時はfalseから開始し、onHistoryStateで実体に合わせて更新する。
             put("lastRequestedUrl", tab.lastRequestedUrl)
-            put("isHome", tab.isHome); put("isPrivate", tab.isPrivate)
+            put("isHome", tab.isHome); put("returnToHomeOnBack", tab.returnToHomeOnBack); put("isPrivate", tab.isPrivate)
         }) }
     }
 
