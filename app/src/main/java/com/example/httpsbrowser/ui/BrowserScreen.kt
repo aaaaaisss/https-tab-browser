@@ -316,7 +316,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             }
                         }
                     }
-                }
                 if (!state.isFullscreen) {
                     Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
                     if (state.isSuggestionPanelVisible) SuggestionPanel(state.suggestions) { suggestion ->
@@ -364,6 +363,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             onAdd = { viewModel.stopAddressEditing(); viewModel.addTab() }
                         )
                     }
+                }
                 }
             }
 
