@@ -158,39 +158,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         (activity as? MainActivity)?.setNormalWebContentVisible(!overlayVisible)
     }
 
-    LaunchedEffect(selectedTab?.id, selectedTab?.isHome, selectedTab?.lastRequestedUrl, state.settings, rendererVersion) {
-        val hostActivity = activity as? MainActivity
-        val tab = selectedTab
-        if (hostActivity == null || tab == null || tab.isHome) {
-            hostActivity?.hideNormalWebContent()
-        } else {
-            registry.obtain(tab, state.settings, callbacksFor(
-                viewModel = viewModel,
-                registry = registry,
-                tabId = tab.id,
-                onProgress = { progress = it },
-                onScrollPosition = { scrollFraction = it },
-                onFullscreen = ::enterFullscreen,
-                onHideFullscreen = ::handleWebViewHideFullscreen,
-                onPermission = { origin, resources, reply ->
-                    pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
-                },
-                onLongPress = { longPressedLink = it },
-                showNotice = { notice = it },
-                onExternalApp = { externalAppUrl = it },
-                onRendererGone = {
-                    rendererVersion++
-                    notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
-                },
-                onPageArchiveReady = { sourcePath, fileName ->
-                    pendingPageArchive = File(sourcePath)
-                    pageArchiveLauncher.launch(fileName)
-                }
-            ))
-            hostActivity.showNormalWebContent(registry, tab.id)
-        }
-    }
-
     /**
      * Fulgurisの`onHideCustomView`と同じ所有権の順序で、custom viewを一度だけ解放する。
      * 先に状態を空にするため、callbackに伴う再入onHideCustomViewでは何も二重に外さない。
@@ -229,6 +196,39 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         viewModel.setFullscreen(true)
         // PiP、native fullscreen container、system barはActivityへ一元化する。
         (activity as? MainActivity)?.showFullscreenCustomView(view)
+    }
+
+    LaunchedEffect(selectedTab?.id, selectedTab?.isHome, selectedTab?.lastRequestedUrl, state.settings, rendererVersion) {
+        val hostActivity = activity as? MainActivity
+        val tab = selectedTab
+        if (hostActivity == null || tab == null || tab.isHome) {
+            hostActivity?.hideNormalWebContent()
+        } else {
+            registry.obtain(tab, state.settings, callbacksFor(
+                viewModel = viewModel,
+                registry = registry,
+                tabId = tab.id,
+                onProgress = { progress = it },
+                onScrollPosition = { scrollFraction = it },
+                onFullscreen = ::enterFullscreen,
+                onHideFullscreen = ::handleWebViewHideFullscreen,
+                onPermission = { origin, resources, reply ->
+                    pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
+                },
+                onLongPress = { longPressedLink = it },
+                showNotice = { notice = it },
+                onExternalApp = { externalAppUrl = it },
+                onRendererGone = {
+                    rendererVersion++
+                    notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
+                },
+                onPageArchiveReady = { sourcePath, fileName ->
+                    pendingPageArchive = File(sourcePath)
+                    pageArchiveLauncher.launch(fileName)
+                }
+            ))
+            hostActivity.showNormalWebContent(registry, tab.id)
+        }
     }
 
     BackHandler {
