@@ -20,7 +20,6 @@ import android.webkit.WebView
 import android.webkit.URLUtil
 import androidx.webkit.SafeBrowsingResponseCompat
 import androidx.webkit.ScriptHandler
-import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -43,20 +42,15 @@ class BrowserWebViewRegistry(
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
     private val pageTranslator = PageTranslator()
-    private val darkReaderScript: String? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { loadDarkReaderDocumentStartScript() }
 
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
-        val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
-        entry.appliedForceDark = settings.forceDarkPages
-        prepareDarkDocumentStartStyles(entry)
-        configure(entry.webView, settings, entry.darkReaderDocumentStartHandler != null)
-        // 最後に動作した構成と同様、暗色化設定の切替時だけ現在文書を一度読み直す。
-        // 戻る・進む・タブ選択ではここに入らず、WebView履歴を維持する。
-        if (darkModeChanged && entry.loadedUrl != null) entry.webView.reload()
+        // Fulguris由来のWebView設定だけを適用する。ページ内CSS/JS注入を使わないため、
+        // タブ選択やダークモード切替で動画・履歴を再読み込みしない。
+        configure(entry.webView, settings)
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
             entry.activeDocumentUrl = tab.lastRequestedUrl
@@ -115,11 +109,7 @@ class BrowserWebViewRegistry(
         entries.remove(tabId)?.let { entry ->
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
-            runCatching { entry.darkDocumentStartHandler?.remove() }
-            runCatching { entry.darkReaderDocumentStartHandler?.remove() }
             entry.documentStartScriptHandler = null
-            entry.darkDocumentStartHandler = null
-            entry.darkReaderDocumentStartHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             entry.webView.apply {
@@ -218,106 +208,14 @@ class BrowserWebViewRegistry(
         }
     }
 
-    private fun configure(view: WebView, settings: BrowserSettings, usesDarkReader: Boolean = false) {
+    private fun configure(view: WebView, settings: BrowserSettings) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        configureDarkMode(view, settings.forceDarkPages, usesDarkReader)
-    }
-
-    /**
-     * 公式の単一路径にする。Algorithmic Darkening対応WebViewでは旧Force Darkを併用せず、
-     * 未対応の古いWebViewだけでForce Darkをfallbackにする。画像・動画をCSS反転しない。
-     */
-    @Suppress("DEPRECATION")
-    private fun configureDarkMode(view: WebView, enabled: Boolean, usesDarkReader: Boolean) {
-        val webSettings = view.settings
-        val hasAlgorithmicDarkening = WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)
-        val hasForceDark = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)
-        val hasForceDarkStrategy = WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)
-        val useWebViewDarkening = enabled && !usesDarkReader
-        if (hasAlgorithmicDarkening) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(webSettings, useWebViewDarkening)
-            if (hasForceDark) WebSettingsCompat.setForceDark(webSettings, WebSettingsCompat.FORCE_DARK_OFF)
-        } else if (hasForceDark) {
-            WebSettingsCompat.setForceDark(
-                webSettings,
-                if (useWebViewDarkening) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
-            )
-            if (hasForceDarkStrategy) {
-                WebSettingsCompat.setForceDarkStrategy(
-                    webSettings,
-                    WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
-                )
-            }
-        }
-        // Algorithmic Darkening利用時はapp-level Force Darkを重ねない。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(!hasAlgorithmicDarkening && useWebViewDarkening)
+        val applied = FulgurisDarkModeController.apply(view, settings.forceDarkPages)
         CrashDiagnostics.record(
             "dark_mode_configured",
-            "enabled=$enabled\napi=${Build.VERSION.SDK_INT}\nalgorithmic=$hasAlgorithmicDarkening\nforceDark=$hasForceDark\nforceDarkStrategy=$hasForceDarkStrategy\ndarkReader=$usesDarkReader\nmode=${if (usesDarkReader) "dark_reader_dynamic" else if (hasAlgorithmicDarkening) "algorithmic" else "force_dark_fallback"}"
+            "engine=fulguris_native\nforceRequested=${applied.forceDarkPages}\nappDark=${applied.appUsesDarkTheme}\nalgorithmic=${applied.algorithmicDarkening}\nforceDark=${applied.forceDark}\nforceDarkStrategy=${applied.forceDarkStrategy}"
         )
     }
-
-    /**
-     * 初期白フラッシュを防ぐ最小CSSと、固定同梱したDark ReaderをDocument Startで登録する。
-     * Dark ReaderはYouTube・YouTube iframe・Google動画タブを自ら除外する。外部コードは読み込まない。
-     */
-    private fun prepareDarkDocumentStartStyles(entry: Entry) {
-        // Dark Readerは文書内JavaScriptとして動くため、JavaScript無効時は標準WebView暗色化へfallbackする。
-        val enabled = entry.settings.forceDarkPages && entry.settings.javascriptEnabled
-        if (entry.darkDocumentStartEnabled == enabled) return
-        runCatching { entry.darkDocumentStartHandler?.remove() }
-        runCatching { entry.darkReaderDocumentStartHandler?.remove() }
-        entry.darkDocumentStartHandler = null
-        entry.darkReaderDocumentStartHandler = null
-        entry.darkDocumentStartEnabled = enabled
-        if (!enabled || !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        runCatching {
-            WebViewCompat.addDocumentStartJavaScript(entry.webView, DARK_BASE_STYLE_SCRIPT, setOf("https://*"))
-        }.onSuccess { handler ->
-            entry.darkDocumentStartHandler = handler
-        }.onFailure { throwable ->
-            CrashDiagnostics.record("dark_document_start_unavailable", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
-        }
-        val dynamicScript = darkReaderScript
-        if (dynamicScript == null) return
-        runCatching {
-            WebViewCompat.addDocumentStartJavaScript(entry.webView, dynamicScript, setOf("https://*"))
-        }.onSuccess { handler ->
-            entry.darkReaderDocumentStartHandler = handler
-            CrashDiagnostics.record("dark_reader_ready", "version=$DARK_READER_VERSION\nsha256=$DARK_READER_SHA256")
-        }.onFailure { throwable ->
-            CrashDiagnostics.record("dark_reader_unavailable", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
-        }
-    }
-
-    /** Document Start非対応時にも安全に背景を補正する。反転・画像/動画へのfilterは一切使わない。 */
-    private fun applyDarkBaseStyle(view: WebView, url: String, enabled: Boolean) {
-        // 再生ページでは背景用CSSさえ映像面・プレーヤーの初期合成と競合し得るため、完全に外す。
-        // それ以外のページは従来どおり初期白フラッシュを抑える。
-        val shouldApply = enabled && !isVideoPlaybackDocumentUrl(url)
-        view.evaluateJavascript(if (shouldApply) DARK_BASE_STYLE_SCRIPT else REMOVE_DARK_BASE_STYLE_SCRIPT, null)
-    }
-
-    /** 固定同梱資産を読み込む。取得失敗時はWebView標準暗色化だけに安全にfallbackする。 */
-    private fun loadDarkReaderDocumentStartScript(): String? = runCatching {
-        val library = context.assets.open(DARK_READER_ASSET).bufferedReader(Charsets.UTF_8).use { it.readText() }
-        check(library.isNotBlank()) { "Dark Reader asset is empty" }
-        """
-            if (window.top === window) {
-              $library
-              (function(){
-                var host=location.hostname.toLowerCase();
-                var search=location.search;
-                var videoHost=host==='youtube.com'||host.endsWith('.youtube.com')||host==='youtube-nocookie.com'||host.endsWith('.youtube-nocookie.com');
-                var googleVideo=(host==='google.com'||host.endsWith('.google.com'))&&location.pathname==='/search'&&(/(?:^|[?&])(?:tbm=vid|udm=7)(?:&|$)/.test(search));
-                if(videoHost||googleVideo||host==='accounts.google.com'||host==='pay.google.com') return;
-                try { DarkReader.enable({brightness:100,contrast:90,sepia:0}); } catch (_) {}
-              })();
-            }
-        """.trimIndent()
-    }.onFailure { throwable ->
-        CrashDiagnostics.record("dark_reader_asset_unavailable", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
-    }.getOrNull()
 
     /**
      * 指定標準リストからBraveが解決したYouTube scriptletだけを、ページのJSより先に注入する。
@@ -545,22 +443,20 @@ class BrowserWebViewRegistry(
             entry?.youtubeCosmeticAppliedUrl = null
             entry?.activeDocumentUrl = url
             view.setBackgroundColor(android.graphics.Color.BLACK)
-            // Google通常検索から動画タブへ移った場合にも、前文書の背景CSSを映像面へ持ち越さない。
-            applyDarkBaseStyle(view, url, entry?.settings?.forceDarkPages == true)
-            entry?.let { configure(view, it.settings, it.darkReaderDocumentStartHandler != null) }
+            // ページ内CSSは注入しない。Fulguris由来のネイティブ設定を再適用して、
+            // SPA遷移後もWebViewの色テーマ契約だけを維持する。
+            entry?.let { configure(view, it.settings) }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyDarkBaseStyle(view, url, entry?.settings?.forceDarkPages == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
             super.onPageCommitVisible(view, url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
-            applyDarkBaseStyle(view, url, entry?.settings?.forceDarkPages == true)
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             entry?.let { scheduleCookieFlush(view, it) }
@@ -699,13 +595,9 @@ class BrowserWebViewRegistry(
         var youtubeCosmeticAppliedUrl: String? = null,
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
-        var darkDocumentStartHandler: ScriptHandler? = null,
-        var darkReaderDocumentStartHandler: ScriptHandler? = null,
-        var darkDocumentStartEnabled: Boolean = false,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
-        var appliedForceDark: Boolean? = null,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true
@@ -830,26 +722,6 @@ class BrowserWebViewRegistry(
         const val GENERIC_COSMETIC_DELAY_MS = 350L
         const val COOKIE_FLUSH_DEBOUNCE_MS = 750L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
-        const val DARK_READER_ASSET = "darkreader/darkreader-4.9.128.js"
-        const val DARK_READER_VERSION = "4.9.128"
-        // 配布元CRLFをLFへ正規化した同梱ファイルのSHA-256。JavaScriptトークンは不変。
-        const val DARK_READER_SHA256 = "52cdb6603e5eb6bb9b53ebd59efdec0d36f71bd2196d695eb466ad7adfb97b83"
-        val DARK_BASE_STYLE_SCRIPT = """
-            (function(){
-              if(window.top!==window) return;
-              var host=location.hostname.toLowerCase(),search=location.search;
-              var youtube=host==='youtube.com'||host.endsWith('.youtube.com')||host==='youtube-nocookie.com'||host.endsWith('.youtube-nocookie.com');
-              var googleVideo=(host==='google.com'||host.endsWith('.google.com'))&&location.pathname==='/search'&&/(?:^|[?&])(?:tbm=vid|udm=7)(?:&|$)/.test(search);
-              if(youtube||googleVideo) return;
-              var id='__https_browser_dark_base';
-              var style=document.getElementById(id);
-              if(!style){style=document.createElement('style');style.id=id;(document.head||document.documentElement).appendChild(style);}
-              style.textContent=':root{color-scheme:dark!important;background-color:#000!important}html,body{background-color:#000!important;}';
-            })();
-        """.trimIndent()
-        val REMOVE_DARK_BASE_STYLE_SCRIPT = """
-            (function(){document.getElementById('__https_browser_dark_base')?.remove();})();
-        """.trimIndent()
         // 指定101リストのyoutube.com/m.youtube.com専用cosmetic規則だけを固定適用する。
         // #player、video、ytm-player、grid/layoutコンテナは意図的に含めない。
         val YOUTUBE_AD_CSS = """
