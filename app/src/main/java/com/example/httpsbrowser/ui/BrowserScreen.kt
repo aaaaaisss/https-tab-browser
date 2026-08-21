@@ -352,29 +352,32 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
                         onEditingStarted = viewModel::startAddressEditing
                     )
-                    NavigationRow(
-                        canGoBack = (selectedTab.canGoBack || selectedTab.returnToHomeOnBack) && !selectedTab.isHome,
-                        canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
-                        onTabs = { endAddressEditing(); viewModel.toggleTabSheet() },
-                        onBack = {
-                            viewModel.stopAddressEditing()
-                            if (!selectedTab.isHome) {
-                                if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
-                                else returnSelectedTabToHome()
-                            }
-                        },
-                        onSearch = viewModel::startAddressEditing,
-                        onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
-                        onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
-                        onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
-                        onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
-                        onSavePage = {
-                            viewModel.stopAddressEditing()
-                            if (!selectedTab.isHome) registry.savePageArchive(selectedTab.id, selectedTab.title)
-                        },
-                        onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, registry.currentUrl(selectedTab.id) ?: selectedTab.url) },
-                        onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
-                    )
+                    // IME表示中はURLバーと横の翻訳・更新ボタンだけをキーボード直上に固定する。
+                    // 操作列とタブバーを同時に再計測しないため、キーボードにめり込んだり戻ったりしない。
+                    if (!state.isAddressFocused) {
+                        NavigationRow(
+                            canGoBack = (selectedTab.canGoBack || selectedTab.returnToHomeOnBack) && !selectedTab.isHome,
+                            canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
+                            onTabs = { endAddressEditing(); viewModel.toggleTabSheet() },
+                            onBack = {
+                                viewModel.stopAddressEditing()
+                                if (!selectedTab.isHome) {
+                                    if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
+                                    else returnSelectedTabToHome()
+                                }
+                            },
+                            onSearch = viewModel::startAddressEditing,
+                            onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
+                            onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
+                            onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
+                            onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
+                            onSavePage = {
+                                viewModel.stopAddressEditing()
+                                if (!selectedTab.isHome) registry.savePageArchive(selectedTab.id, selectedTab.title)
+                            },
+                            onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, registry.currentUrl(selectedTab.id) ?: selectedTab.url) },
+                            onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
+                        )
                         TabBar(
                             tabs = state.tabs,
                             selectedTabId = state.selectedTabId,
@@ -382,6 +385,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             onClose = { id -> viewModel.stopAddressEditing(); registry.remove(id); viewModel.closeTab(id) },
                             onAdd = { viewModel.stopAddressEditing(); viewModel.addTab() }
                         )
+                    }
                     }
                 }
                 }

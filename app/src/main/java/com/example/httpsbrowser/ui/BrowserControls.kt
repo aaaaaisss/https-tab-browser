@@ -308,10 +308,16 @@ fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) ->
                         .padding(start = 8.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    BookmarkFavicon(
+                        url = tab.url,
+                        title = tab.title.ifBlank { "ホーム" },
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
                     Text(
                         tab.title.ifBlank { "ホーム" },
                         color = BottomBarText,
-                        modifier = Modifier.width(46.dp),
+                        modifier = Modifier.width(42.dp),
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis,
