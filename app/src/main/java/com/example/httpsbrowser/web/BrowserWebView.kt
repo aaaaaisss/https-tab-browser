@@ -500,10 +500,10 @@ class BrowserWebViewRegistry(
             // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
             val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
             val resourceType = resourceTypeFor(request)
-            // YouTube/Googlevideo/ytimgのiframe bootstrap、player JS、映像chunk、内部APIは
+            // YouTube/Googlevideoのiframe bootstrap、player JS、映像chunk、内部APIは
             // 再生必須として保護する。Google検索動画タブで起動したiframeと映像も同様に保護する。
             // 明示的なYouTube広告・計測専用ホスト/パスだけは規則評価を継続する。
-            val protectedPlaybackResource = isYoutubePlaybackResource(url) ||
+            val protectedPlaybackResource = isYoutubePlaybackResource(url, resourceType) ||
                 isGoogleVideoPreviewResource(documentUrl, resourceType)
             val shouldCheck = !protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url)
             if (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
@@ -789,17 +789,23 @@ class BrowserWebViewRegistry(
     private fun isVideoPlaybackDocumentUrl(url: String): Boolean =
         isYoutubeDocumentUrl(url) || isGoogleVideoSearchDocumentUrl(url)
 
-    /** Google動画タブが生成するiframeと映像要求は、広告規則の誤遮断から守る。 */
+    /**
+     * Google動画タブが生成するiframe、player script、映像chunk、内部APIは誤遮断から守る。
+     * 画像・スタイル・fontなどの非必須要求は通常のBrave規則に渡し、広告枠の遮断余地を残す。
+     */
     private fun isGoogleVideoPreviewResource(documentUrl: String, resourceType: String): Boolean =
-        isGoogleVideoSearchDocumentUrl(documentUrl) && (resourceType == "media" || resourceType == "subdocument")
+        isGoogleVideoSearchDocumentUrl(documentUrl) && resourceType in PLAYBACK_CRITICAL_RESOURCE_TYPES
 
-    /** YouTubeのiframe bootstrap・player JS・映像chunk・内部APIを広告規則の誤判定から守る。 */
-    private fun isYoutubePlaybackResource(url: String): Boolean {
+    /**
+     * 映像復号に必須のYouTube要求だけを保護する。従来のように全resource typeを無条件に
+     * 逃がさないため、画像・stylesheet・fontなどは指定2フィルタで引き続き評価できる。
+     */
+    private fun isYoutubePlaybackResource(url: String, resourceType: String): Boolean {
+        if (resourceType !in PLAYBACK_CRITICAL_RESOURCE_TYPES) return false
         val host = youtubeHost(url) ?: return false
         return host == "youtube.com" || host.endsWith(".youtube.com") ||
             host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com") ||
             host == "googlevideo.com" || host.endsWith(".googlevideo.com") ||
-            host == "ytimg.com" || host.endsWith(".ytimg.com") ||
             host == "youtubei.googleapis.com"
     }
 
@@ -915,6 +921,7 @@ class BrowserWebViewRegistry(
         val IMAGE_EXTENSION_REGEX = Regex(".*\\.(png|jpe?g|gif|webp|svg|avif)$", RegexOption.IGNORE_CASE)
         val MEDIA_EXTENSION_REGEX = Regex(".*\\.(mp4|webm|m3u8|mpd|mp3|m4a)$", RegexOption.IGNORE_CASE)
         val GOOGLE_VIDEO_SEARCH_QUERY_REGEX = Regex("(?:^|&)(?:tbm=vid|udm=7)(?:&|$)")
+        val PLAYBACK_CRITICAL_RESOURCE_TYPES = setOf("media", "subdocument", "script", "xmlhttprequest")
         val COLLECT_COSMETIC_KEYS_SCRIPT = """
             (function(){
               var classes=[],ids=[],seenClasses=new Set(),seenIds=new Set();

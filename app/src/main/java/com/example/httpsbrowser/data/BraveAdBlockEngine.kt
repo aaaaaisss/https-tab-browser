@@ -339,7 +339,7 @@ class BraveAdBlockEngine(context: Context) {
         const val BRAVE_RESOURCES_COMMIT = "9a0cc4312e155cb5b16b701afc0ab9285dc30f24"
         const val BRAVE_RESOURCES_SHA256 = "dca2802415565b15ceb7288811685d47ddf4bc6b0c4324357ac66e33c1de4948"
         const val CACHE_FORMAT_VERSION = "2"
-        const val NATIVE_ENGINE_CACHE_VERSION = "adblock-rust-0.13.2"
+        const val NATIVE_ENGINE_CACHE_VERSION = "adblock-rust-0.13.3"
         const val SIGNATURE_BUFFER_BYTES = 64 * 1024
     }
 }

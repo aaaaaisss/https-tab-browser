@@ -2,7 +2,9 @@
 
 ## Brave adblock-rust
 
-The native content-filtering engine is built from the [`adblock`](https://crates.io/crates/adblock) crate maintained by Brave Software. It is licensed under the **Mozilla Public License 2.0**. The project source is available at <https://github.com/brave/adblock-rust>.
+The native content-filtering engine is built from the [`adblock`](https://crates.io/crates/adblock) crate maintained by Brave Software. The project is pinned to the compatible **0.13.3** crate release in `app/src/main/rust/Cargo.toml`; its serialized-engine cache is versioned so an engine produced by another upstream version is never restored. It is licensed under the **Mozilla Public License 2.0**. The project source is available at <https://github.com/brave/adblock-rust>.
+
+The WebView bridge delegates ABP/AdGuard matching to the native engine. For YouTube and Google video search, only decode-critical media, subdocument, player-script, and player-API requests are protected from false positives; non-critical resources remain eligible for the selected filters. Player response JSON is not modified.
 
 ## AdGuard filter lists
 
