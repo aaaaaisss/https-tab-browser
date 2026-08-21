@@ -35,6 +35,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.net.URI
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 class BrowserWebViewRegistry(
@@ -42,7 +43,6 @@ class BrowserWebViewRegistry(
     private val blocker: BraveAdBlockEngine
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
-    private val pageTranslator = PageTranslator()
 
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
@@ -101,8 +101,23 @@ class BrowserWebViewRegistry(
     }
 
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
+
+    /**
+     * Fulgurisと同じく、翻訳はGoogle Translateのページ遷移として実行する。
+     * 端末内モデルや本文DOMの置換を使わないため、動的ページの部分翻訳・再スキャン・
+     * 大容量JNIを持たず、ブラウザの戻る操作で原文へ戻れる。
+     */
     fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
-        pageTranslator.translatePage(entry.webView) { message -> entry.callbacks.onNotice(message) }
+        val sourceUrl = entry.webView.url.orEmpty()
+        val translateUrl = googleTranslateUrl(sourceUrl)
+        when {
+            translateUrl == null -> entry.callbacks.onNotice("HTTPSページの読み込み完了後に翻訳してください。")
+            isGoogleTranslateDocumentUrl(sourceUrl) -> entry.callbacks.onNotice("このページはすでにGoogle翻訳で開かれています。")
+            else -> {
+                entry.callbacks.onNotice("Google 翻訳を開いています…")
+                load(tabId, translateUrl)
+            }
+        }
     }
 
     /** 現ページを MHTML として一時保存し、UI 側でユーザーが選んだ保存先へ書き出す。 */
@@ -153,12 +168,11 @@ class BrowserWebViewRegistry(
         entries.keys.toList().forEach(::remove)
     }
 
-    /** 画面そのものが閉じる時だけ、翻訳モデルとネイティブフィルタを解放する。 */
+    /** 画面そのものが閉じる時だけ、ネイティブフィルタを解放する。 */
     fun close() {
         destroyAll()
         // 遅延集約中のCookieもアプリ終了時には確実にディスクへ反映する。
         runCatching { CookieManager.getInstance().flush() }
-        pageTranslator.close()
         blocker.close()
     }
 
@@ -717,6 +731,32 @@ class BrowserWebViewRegistry(
     }
 
     private fun isHttps(url: String) = url.startsWith("https://", ignoreCase = true)
+
+    /** FulgurisのGoogle Translate URL経路。中国語だけは地域を含む完全タグを渡す。 */
+    private fun googleTranslateUrl(sourceUrl: String): String? {
+        val source = runCatching { Uri.parse(sourceUrl) }.getOrNull() ?: return null
+        if (!source.scheme.equals("https", ignoreCase = true) || source.host.isNullOrBlank()) return null
+        val locale = Locale.getDefault()
+        val targetLanguage = if (locale.language.equals("zh", ignoreCase = true)) {
+            locale.toLanguageTag()
+        } else {
+            locale.language.ifBlank { "en" }
+        }
+        return Uri.Builder()
+            .scheme("https")
+            .authority("translate.google.com")
+            .appendPath("translate")
+            .appendQueryParameter("sl", "auto")
+            .appendQueryParameter("tl", targetLanguage)
+            .appendQueryParameter("u", sourceUrl)
+            .build()
+            .toString()
+    }
+
+    private fun isGoogleTranslateDocumentUrl(url: String): Boolean = runCatching {
+        val uri = URI(url)
+        uri.host.equals("translate.google.com", ignoreCase = true) && uri.path == "/translate"
+    }.getOrDefault(false)
 
     private fun intentFallbackUrl(url: String): String? = runCatching {
         val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)

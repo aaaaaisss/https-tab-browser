@@ -25,20 +25,20 @@ The application bundles Brave's official scriptlet resource manifest solely to r
 
 User-added remote filter lists do not receive scriptlet execution permission.
 
-## Fulguris native dark-mode controller
+## Fulguris WebView lifecycle and translation path
 
-The application contains `app/src/main/java/com/example/httpsbrowser/web/FulgurisDarkModeController.kt`, a CPAL-1.0-derived adaptation of the native WebView dark-mode decision path in Fulguris `WebPageTab.kt`.
+The application contains CPAL-1.0-derived adaptations in `app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt` and `app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt`. These adaptations cover the page-lifecycle rearm/duplicate-completion guard, full-screen custom-view ownership sequence, and Google Translate navigation path used by Fulguris.
 
 - Source repository: <https://github.com/Slion/Fulguris>
-- Original code: <https://github.com/Slion/Fulguris/blob/main/app/src/main/java/fulguris/view/WebPageTab.kt>
+- Original code: <https://github.com/Slion/Fulguris/blob/main/app/src/main/java/fulguris/view/WebPageClient.kt> and <https://github.com/Slion/Fulguris/blob/main/app/src/main/java/fulguris/activity/WebBrowserActivity.kt>
 - Original copyright notices: Stéphane Lenclud (2020–2021) and A.C.R. Development (2014)
-- License for the adapted source file: **Common Public Attribution License 1.0 (CPAL-1.0)**
+- License for the adapted source: **Common Public Attribution License 1.0 (CPAL-1.0)**
 - License text: `LICENSES/CPAL-1.0.txt`
 - Modification notice and corresponding-source location: `FULGURIS_CPAL_NOTICE.md`
 
 In accordance with CPAL-1.0 attribution terms and Fulguris' published project terms, the application displays `Powered by Fulguris Browser` on every application start. Fulguris is not affiliated with or responsible for this application.
 
-Dark Reader is no longer bundled or executed. The application uses the Fulguris-derived native WebView setting path rather than a page-level JavaScript/CSS transformer.
+The force-dark implementation is intentionally restored to the prior `121e47b` WebView API path. Dark Reader is not bundled or executed.
 
 ## Design references (no source code copied or bundled)
 
