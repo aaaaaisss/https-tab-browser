@@ -49,6 +49,7 @@ class BrowserWebViewRegistry(
         entry.callbacks = callbacks
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
+        ensureYoutubePictureInPictureScript(entry)
         // 121e47bの構成を基準にする。動画文書を対象へ含めるかは明示設定で選択する。
         val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages ||
             entry.appliedForceDarkVideoPages != settings.forceDarkVideoPages
@@ -150,7 +151,9 @@ class BrowserWebViewRegistry(
         entries.remove(tabId)?.let { entry ->
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
+            runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
+            entry.youtubePictureInPictureScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             entry.webView.apply {
@@ -194,6 +197,11 @@ class BrowserWebViewRegistry(
         }
     }.apply {
         setBackgroundColor(android.graphics.Color.BLACK)
+        // FulgurisのWebViewEx/XML設定と同じく、ページ全体へかかるAndroidのfocus highlightを
+        // 無効化する。WebViewの実描画面へ半透明のfocus層が残る端末差を避ける。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) defaultFocusHighlightEnabled = false
+        isFocusable = true
+        isFocusableInTouchMode = true
         // WebViewへ恒久的なオフスクリーンGPUレイヤーを強制しない。
         // HTML5動画はChromiumが専用の合成面を管理するため、通常のLAYER_TYPE_NONEに委ねる。
         // これによりGoogle動画プレビューの映像面と親WebViewの黒白レイヤーの競合を避ける。
@@ -223,6 +231,8 @@ class BrowserWebViewRegistry(
             // 動画ページのプレーヤー初期化やログイン確認を妨げない。
             mediaPlaybackRequiresUserGesture = false
             safeBrowsingEnabled = true
+            // Fulgurisの通常タブと同じく、初期フォーカスによるページ先頭への不要なscrollを避ける。
+            setNeedInitialFocus(false)
         }
         // ログイン状態と埋め込みプレーヤーの認証をアプリ内で維持する。
         CookieManager.getInstance().setAcceptCookie(true)
@@ -299,6 +309,30 @@ class BrowserWebViewRegistry(
             (function() { document.getElementById('__https_browser_deep_dark')?.remove(); })();
         """.trimIndent()
         view.evaluateJavascript(script, null)
+    }
+
+    /**
+     * Brave Androidの公開issueで判明したYouTubeの`disablePictureInPicture`属性を、YouTube origin
+     * に限ってdocument start時から解除する。player response・ネットワーク応答・広告判定は改変しない。
+     */
+    private fun ensureYoutubePictureInPictureScript(entry: Entry) {
+        if (entry.youtubePictureInPictureScriptHandler != null) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            CrashDiagnostics.record("youtube_pip_unlock_unsupported", "reason=document_start_api_unavailable")
+            return
+        }
+        val originRules = setOf(
+            "https://youtube.com", "https://*.youtube.com",
+            "https://youtube-nocookie.com", "https://*.youtube-nocookie.com"
+        )
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_PIP_UNLOCK_SCRIPT, originRules)
+        }.onSuccess { handler ->
+            entry.youtubePictureInPictureScriptHandler = handler
+            CrashDiagnostics.record("youtube_pip_unlock_ready", "documentStart=true")
+        }.onFailure { throwable ->
+            CrashDiagnostics.record("youtube_pip_unlock_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+        }
     }
 
     /**
@@ -505,9 +539,14 @@ class BrowserWebViewRegistry(
             // YouTube/Googlevideoのiframe bootstrap、player JS、映像chunk、内部APIは
             // 再生必須として保護する。Google検索動画タブで起動したiframeと映像も同様に保護する。
             // 明示的なYouTube広告・計測専用ホスト/パスだけは規則評価を継続する。
+            val googleVideoPreviewDocument = isGoogleVideoSearchDocumentUrl(documentUrl)
             val protectedPlaybackResource = isYoutubePlaybackResource(url, resourceType) ||
                 isGoogleVideoPreviewResource(documentUrl, resourceType)
-            val shouldCheck = !protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url)
+            // Google動画タブはYouTube iframeの初期化をGoogle検索文書内で行う。現在のBrave統合の
+            // cosmetic/network境界が映像面だけを黒にする最後の有力原因であるため、この文書だけは
+            // Fulgurisの通常WebView経路と同じくリソースを全通過させる。直接YouTubeは従来どおり遮断する。
+            val shouldCheck = !googleVideoPreviewDocument &&
+                (!protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url))
             if (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
                     url = url,
                     documentUrl = documentUrl,
@@ -693,6 +732,7 @@ class BrowserWebViewRegistry(
         var youtubeCosmeticAppliedUrl: String? = null,
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
+        var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
@@ -874,6 +914,31 @@ class BrowserWebViewRegistry(
         const val GENERIC_COSMETIC_DELAY_MS = 350L
         const val COOKIE_FLUSH_DEBOUNCE_MS = 750L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
+        val YOUTUBE_PIP_UNLOCK_SCRIPT = """
+            (function(){
+              function unlock(video){
+                if(!video) return;
+                try{video.disablePictureInPicture=false;}catch(_e){}
+                try{video.removeAttribute('disablePictureInPicture');}catch(_e){}
+              }
+              function unlockAll(){document.querySelectorAll('video').forEach(unlock);}
+              function start(){
+                unlockAll();
+                var root=document.documentElement||document;
+                new MutationObserver(function(records){
+                  records.forEach(function(record){
+                    if(record.type==='attributes' && record.target && record.target.tagName==='VIDEO') unlock(record.target);
+                    record.addedNodes&&record.addedNodes.forEach(function(node){
+                      if(node.nodeType!==1) return;
+                      if(node.tagName==='VIDEO') unlock(node);
+                      if(node.querySelectorAll) node.querySelectorAll('video').forEach(unlock);
+                    });
+                  });
+                }).observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['disablepictureinpicture']});
+              }
+              if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',start,{once:true}); else start();
+            })();
+        """.trimIndent()
         // 指定101リストのyoutube.com/m.youtube.com専用cosmetic規則だけを固定適用する。
         // #player、video、ytm-player、grid/layoutコンテナは意図的に含めない。
         val YOUTUBE_AD_CSS = """
