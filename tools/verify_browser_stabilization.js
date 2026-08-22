@@ -19,6 +19,7 @@ requireText(viewModel, 'if (uiState.selectedTab?.isHome == false) openHome()', '
 requireText(controls, 'onSubmit: (String) -> Unit', 'IME latest input contract');
 requireText(controls, 'onSubmit(textFieldValue.text)', 'IME latest input call');
 requireText(controls, 'reverseLayout = true', 'bottom-up suggestion layout');
+requireText(screen, '@OptIn(ExperimentalLayoutApi::class)', 'IME layout API opt-in');
 requireText(screen, 'val imeVisible = WindowInsets.isImeVisible', 'IME dismissal observer');
 requireText(screen, 'onSubmit = { input -> navigate(input) }', 'IME navigation wiring');
 requireText(sheets, 'label = "広告ブロック"', 'adblock label');
