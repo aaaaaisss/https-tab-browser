@@ -248,14 +248,12 @@ class BrowserWebViewRegistry(
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
             runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
-            runCatching { entry.youtubeColdPlayerReinitScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.youtubeAdSanitizerScriptHandler = null
             entry.youtubeNoAdWarmPlayerScriptHandler = null
-            entry.youtubeColdPlayerReinitScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
@@ -467,11 +465,9 @@ class BrowserWebViewRegistry(
         if (!entry.adBlockingEnabled) {
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
             runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
-            runCatching { entry.youtubeColdPlayerReinitScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.youtubeAdSanitizerScriptHandler = null
             entry.youtubeNoAdWarmPlayerScriptHandler = null
-            entry.youtubeColdPlayerReinitScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
@@ -489,10 +485,8 @@ class BrowserWebViewRegistry(
         // 通常モードでは完全に外し、ユーザーが選ぶ攻めた広告遮断モードだけへ限定する。
         if (!entry.aggressiveAdBlockingEnabled) {
             runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
-            runCatching { entry.youtubeColdPlayerReinitScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.youtubeNoAdWarmPlayerScriptHandler = null
-            entry.youtubeColdPlayerReinitScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
@@ -505,18 +499,6 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("youtube_no_ad_warm_player_ready", "documentStart=true")
             }.onFailure { throwable ->
                 CrashDiagnostics.record("youtube_no_ad_warm_player_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
-            }
-        }
-        // 初期responseに広告slotが確認されたcold VODだけを一度だけ広告なしsessionへ切替える。
-        // warm player request補正は既に登録済みであり、新規requestへisInlinePlaybackNoAdが渡る。
-        if (entry.youtubeColdPlayerReinitScriptHandler == null) {
-            runCatching {
-                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_COLD_PLAYER_REINIT_SCRIPT, originRules)
-            }.onSuccess { handler ->
-                entry.youtubeColdPlayerReinitScriptHandler = handler
-                CrashDiagnostics.record("youtube_cold_player_reinit_ready", "documentStart=true")
-            }.onFailure { throwable ->
-                CrashDiagnostics.record("youtube_cold_player_reinit_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
             }
         }
         if (entry.youtubeSabrPatchOnlyScriptHandler == null) {
@@ -1062,8 +1044,6 @@ class BrowserWebViewRegistry(
         var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
         /** warm navigationのplayer requestへ広告なし指定を入れる組込みscript。攻めたモード限定。 */
         var youtubeNoAdWarmPlayerScriptHandler: ScriptHandler? = null,
-        /** 初期広告slotが確認されたcold VODを一回だけ広告なしplayer requestへ切替える実験script。攻めたモード限定。 */
-        var youtubeColdPlayerReinitScriptHandler: ScriptHandler? = null,
         /** 既存sessionを再取得せずSABR backoffだけを短縮する組込みscript。攻めたモード限定。 */
         var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
@@ -1355,15 +1335,6 @@ class BrowserWebViewRegistry(
               if(window.__nekoBrowserYouTubeAdSanitizer) return;
               window.__nekoBrowserYouTubeAdSanitizer=true;
               var adKeys=['adPlacements','playerAds','adSlots','adBreakHeartbeatParams'];
-              function hasPlayerAds(value){
-                if(!value || typeof value!=='object') return false;
-                var roots=[value,value.playerResponse,value.response];
-                for(var i=0;i<roots.length;i++){
-                  var root=roots[i]; if(!root || typeof root!=='object') continue;
-                  for(var j=0;j<adKeys.length;j++) if(root[adKeys[j]]!=null) return true;
-                }
-                return false;
-              }
               function disablePlayerFields(value){
                 if(!value || typeof value!=='object') return value;
                 var roots=[value,value.playerResponse,value.response];
@@ -1414,10 +1385,7 @@ class BrowserWebViewRegistry(
               function hookInitial(name){
                 try{
                   var value=window[name];
-                  Object.defineProperty(window,name,{configurable:true,get:function(){return value;},set:function(next){
-                    if(name==='ytInitialPlayerResponse'&&hasPlayerAds(next)) window.__nekoBrowserInitialPlayerHadAds=true;
-                    value=disablePlayerFields(next);
-                  }});
+                  Object.defineProperty(window,name,{configurable:true,get:function(){return value;},set:function(next){value=disablePlayerFields(next);}});
                   if(value) window[name]=value;
                 }catch(_e){}
               }
@@ -1478,48 +1446,6 @@ class BrowserWebViewRegistry(
                   return result;
                 }});
               }catch(_e){}
-            })();
-        """.trimIndent()
-
-        /**
-         * server埋込みの初期responseに広告slotが存在したwatch VODだけを一度だけ再初期化する。
-         * player requestは別scriptのisInlinePlaybackNoAd補正を通る。Shorts・live・再生開始後はno-op。
-         */
-        val YOUTUBE_COLD_PLAYER_REINIT_SCRIPT = """
-            (function(){
-              if(window.__nekoBrowserColdPlayerReinit) return;
-              window.__nekoBrowserColdPlayerReinit=true;
-              var attempted=false,checks=0;
-              function candidate(){
-                if(attempted||!window.__nekoBrowserInitialPlayerHadAds) return null;
-                if(location.pathname!=='/watch') return null;
-                var id=new URL(location.href).searchParams.get('v'); if(!id) return null;
-                var player=document.querySelector('#movie_player');
-                if(!player||typeof player.cancelPlayback!=='function'||typeof player.loadVideoById!=='function') return null;
-                var video=document.querySelector('video');
-                if(video&&video.currentTime>0.5) return null;
-                var data=player.getVideoData&&player.getVideoData();
-                if(data&&(data.isLive===true||data.isLiveContent===true)) return null;
-                return {id:id,player:player};
-              }
-              function tryReinit(){
-                checks++;
-                var item=candidate();
-                if(item){
-                  attempted=true;
-                  try{
-                    item.player.cancelPlayback();
-                    setTimeout(function(){
-                      var video=document.querySelector('video');
-                      if(video&&video.currentTime>0.5) return;
-                      try{item.player.loadVideoById(item.id);}catch(_e){}
-                    },75);
-                  }catch(_e){}
-                  return;
-                }
-                if(!attempted&&checks<12) setTimeout(tryReinit,250);
-              }
-              setTimeout(tryReinit,250);
             })();
         """.trimIndent()
 
