@@ -293,9 +293,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 homeBookmarkEditMode = false
                 homeBookmarkSelection = emptySet()
             }
-            selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
-            // 独自ホームから開いたブックマーク等は、WebView履歴が尽きた次の戻るでホームへ戻す。
+            // ホームからURLバー経由で開いたブックマーク等は、Chromiumの内部履歴より先に
+            // 独自ホームへ戻す。リダイレクト等の隠れた履歴でホーム復帰が妨げられないようにする。
             selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()
+            selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
             // 通常ページの履歴が尽きた時は、Android戻るとして終了する。
             else -> activity?.finish()
         }
@@ -384,7 +385,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             onBack = {
                                 viewModel.stopAddressEditing()
                                 if (!selectedTab.isHome) {
-                                    if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
+                                    // URLバー経由のホーム起点遷移は、戻るで常に独自ホームへ復帰する。
+                                    if (selectedTab.returnToHomeOnBack) returnSelectedTabToHome()
+                                    else if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
                                     else returnSelectedTabToHome()
                                 }
                             },

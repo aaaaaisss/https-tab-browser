@@ -90,3 +90,17 @@ sha256sum release/COMMIT/app-release.apk
 ## 変更を小さく保つための規則
 
 単一の不具合修正で、WebView・PiP・広告ブロック・暗色化を同時に再設計しない。まず状態遷移、次にUI接続、最後に動画・広告遮断の順で扱う。YouTubeの実機確認が必要な変更には、どの再生経路へ影響するかをコードコメントとコミットメッセージに記録する。
+
+## サイズ・コード削減の安全境界
+
+Release APKは、広告遮断のRustネイティブライブラリ（arm64-v8aとarmeabi-v7a）、オフライン初期適用用のAdGuardフィルタ、Brave scriptlet resource、Compose/Kotlinコードで構成される。容量削減は可能だが、次の区別を守る。
+
+| 区分 | 対象 | 扱い |
+| --- | --- | --- |
+| 安全候補 | `drawable/ic_browser_cat.png`のような、manifest・XML・Kotlinから未参照と確認済みの重複画像 | 参照検索とReleaseビルド後にのみ削除できる。効果は小さい。 |
+| 要検証候補 | ReleaseのR8最適化（`isMinifyEnabled`）、resource shrink、ABI別APK | 容量効果は期待できるが、WebView/Compose/JS bridge/JNI/署名更新を実機確認する専用フェーズが必要。通常の機能修正と同時に実施しない。 |
+| 削除禁止 | `libhttps_browser_adblock.so`、AdGuard標準フィルタ、Brave resource、YouTube/PiP/全画面の既存安全対策 | 広告遮断、初回オフライン動作、動画再生、PiP、対応端末を直接失うため、容量だけを理由に削除しない。 |
+
+現在のuniversal APKは`arm64-v8a`と`armeabi-v7a`を同梱する。ABI別の配布はAPK単体の容量を減らせるが、誤ったABIのAPKを利用者が選ぶリスクと配布運用の複雑さが増すため、個人利用の単一配布では既定採用しない。
+
+> サイズ・コード削減は、未参照資産の削除を除き、安定化作業と混在させない。必ず専用ブランチ、固定署名の試験APK、横動画・Shorts・PiP・ホーム復帰の実機確認を通してから採用する。
