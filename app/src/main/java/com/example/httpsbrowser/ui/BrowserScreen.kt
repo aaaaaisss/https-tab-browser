@@ -60,6 +60,7 @@ import com.example.httpsbrowser.web.BrowserWebViewRegistry
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import java.io.File
+import java.util.Locale
 import java.io.FileInputStream
 import java.net.URI
 
