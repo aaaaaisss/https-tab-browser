@@ -242,12 +242,6 @@ class AdBlockListRepository(
                 builtIn = true
             ),
             BlockListSource(
-                "adguard_android_101_optimized",
-                "EasyList（AdGuard Android 最適化版）",
-                "https://filters.adtidy.org/android/filters/101_optimized.txt",
-                builtIn = true
-            ),
-            BlockListSource(
                 "adguard_android_7_optimized",
                 "AdGuard 日本語フィルタ（Android 最適化版）",
                 "https://filters.adtidy.org/android/filters/7_optimized.txt",

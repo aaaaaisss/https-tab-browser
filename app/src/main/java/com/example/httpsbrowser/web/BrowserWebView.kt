@@ -1287,37 +1287,63 @@ class BrowserWebViewRegistry(
 
         // uBlock Originの現行YouTube規則（adPlacements/adSlots/playerAds/Shorts）を、
         // WebViewで利用可能なdocument-start JavaScriptへ最小限に翻訳した組込み補助。
+        // 通常動画の応答はJSON全走査をせずキー名だけを無効化し、Shortsだけで広告entryを解析する。
         val YOUTUBE_AD_SANITIZER_SCRIPT = """
             (function(){
               if(window.__nekoBrowserYouTubeAdSanitizer) return;
               window.__nekoBrowserYouTubeAdSanitizer=true;
-              var adKeys={adPlacements:1,playerAds:1,adSlots:1,adBreakHeartbeatParams:1};
-              function isAd(node){
-                return !!(node && typeof node==='object' &&
-                  (node.isAd===true || (node.adClientParams && node.adClientParams.isAd===true)));
+              var adKeys=['adPlacements','playerAds','adSlots','adBreakHeartbeatParams'];
+              function disablePlayerFields(value){
+                if(!value || typeof value!=='object') return value;
+                var roots=[value,value.playerResponse,value.response];
+                roots.forEach(function(root){
+                  if(!root || typeof root!=='object') return;
+                  adKeys.forEach(function(key){try{delete root[key];}catch(_e){root[key]=undefined;}});
+                });
+                return value;
               }
-              function sanitize(node,seen){
-                if(!node || typeof node!=='object') return node;
-                seen=seen||[]; if(seen.indexOf(node)>=0) return node; seen.push(node);
-                if(Array.isArray(node)){
-                  for(var i=node.length-1;i>=0;i--){if(isAd(node[i])) node.splice(i,1); else sanitize(node[i],seen);}
+              function disablePlayerText(text){
+                if(typeof text!=='string' || text.length===0) return text;
+                adKeys.forEach(function(key){
+                  var expression=new RegExp('"'+key+'"','g');
+                  text=text.replace(expression,'"no_ads"');
+                });
+                return text;
+              }
+              function isShortsAd(entry){
+                if(!entry || typeof entry!=='object') return false;
+                var reel=entry.command&&entry.command.reelWatchEndpoint;
+                var params=reel&&reel.adClientParams;
+                return entry.isAd===true || !!entry.adVideoId || !!entry.adBadge ||
+                  !!(params&&(params.isAd===true || params.adVideoId || params.adBadge));
+              }
+              function pruneShorts(value,seen){
+                if(!value || typeof value!=='object') return value;
+                seen=seen||[]; if(seen.indexOf(value)>=0) return value; seen.push(value);
+                if(Array.isArray(value)){
+                  for(var i=value.length-1;i>=0;i--){if(isShortsAd(value[i])) value.splice(i,1); else pruneShorts(value[i],seen);}
                 }else{
-                  Object.keys(node).forEach(function(key){
-                    if(adKeys[key]) { try{delete node[key];}catch(_e){node[key]=undefined;} }
-                    else sanitize(node[key],seen);
+                  Object.keys(value).forEach(function(key){
+                    if(adKeys.indexOf(key)>=0) {try{delete value[key];}catch(_e){value[key]=undefined;}}
+                    else pruneShorts(value[key],seen);
                   });
                 }
-                return node;
+                return value;
               }
-              function sanitizeText(text){
-                if(typeof text!=='string' || text.length===0) return text;
-                try{return JSON.stringify(sanitize(JSON.parse(text)));}catch(_e){return text;}
+              function responseKind(url){
+                url=String(url||'');
+                if(/reel_watch_sequence/.test(url)) return 'shorts';
+                return /(?:youtubei\/v1\/player|get_watch|playlist\?list=)/.test(url)?'player':'';
               }
-              function target(url){return /(?:youtubei\/v1\/player|get_watch|playlist\?list=|reel_watch_sequence)/.test(String(url||''));}
+              function sanitizeText(text,kind){
+                if(kind==='player') return disablePlayerText(text);
+                if(kind!=='shorts' || typeof text!=='string' || text.length===0) return text;
+                try{return JSON.stringify(pruneShorts(JSON.parse(text)));}catch(_e){return text;}
+              }
               function hookInitial(name){
                 try{
                   var value=window[name];
-                  Object.defineProperty(window,name,{configurable:true,get:function(){return value;},set:function(next){value=sanitize(next);}});
+                  Object.defineProperty(window,name,{configurable:true,get:function(){return value;},set:function(next){value=disablePlayerFields(next);}});
                   if(value) window[name]=value;
                 }catch(_e){}
               }
@@ -1325,11 +1351,11 @@ class BrowserWebViewRegistry(
               try{
                 var originalFetch=window.fetch;
                 window.fetch=function(){
-                  var args=arguments,request=args[0],url=typeof request==='string'?request:(request&&request.url);
+                  var args=arguments,request=args[0],url=typeof request==='string'?request:(request&&request.url),kind=responseKind(url);
                   return originalFetch.apply(this,args).then(function(response){
-                    if(!target(url)) return response;
+                    if(!kind) return response;
                     return response.clone().text().then(function(text){
-                      var clean=sanitizeText(text); if(clean===text) return response;
+                      var clean=sanitizeText(text,kind); if(clean===text) return response;
                       return new Response(clean,{status:response.status,statusText:response.statusText,headers:response.headers});
                     }).catch(function(){return response;});
                   });
@@ -1337,10 +1363,10 @@ class BrowserWebViewRegistry(
               }catch(_e){}
               try{
                 var proto=XMLHttpRequest.prototype,open=proto.open;
-                proto.open=function(method,url){this.__nekoYouTubeAdUrl=url;return open.apply(this,arguments);};
+                proto.open=function(method,url){this.__nekoYouTubeAdResponseKind=responseKind(url);return open.apply(this,arguments);};
                 var descriptor=Object.getOwnPropertyDescriptor(proto,'responseText');
                 if(descriptor&&descriptor.get) Object.defineProperty(proto,'responseText',{configurable:true,get:function(){
-                  var value=descriptor.get.call(this); return target(this.__nekoYouTubeAdUrl)?sanitizeText(value):value;
+                  var value=descriptor.get.call(this); return sanitizeText(value,this.__nekoYouTubeAdResponseKind);
                 }});
               }catch(_e){}
             })();
