@@ -2,6 +2,7 @@ const { spawnSync } = require('child_process');
 
 const checks = [
   'tools/verify_browser_stabilization.js',
+  'tools/verify_download_modes.js',
   'tools/verify_youtube_sanitizer.js',
   'tools/verify_youtube_noad_warm_player.js',
   'tools/verify_youtube_sabr_patch_only.js',

@@ -1,11 +1,9 @@
 package com.example.httpsbrowser.web
 
-import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.util.Base64
 import android.view.View
 import android.view.ViewGroup
@@ -30,6 +28,7 @@ import androidx.webkit.WebViewFeature
 import android.content.Intent
 import com.example.httpsbrowser.CrashDiagnostics
 import com.example.httpsbrowser.data.BrowserSettings
+import com.example.httpsbrowser.data.BrowserDownloadRequest
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BraveAdBlockEngine
 import java.io.ByteArrayInputStream
@@ -1011,18 +1010,19 @@ class BrowserWebViewRegistry(
                 entries[tabId]?.callbacks?.onBlockedNavigation(url)
                 return
             }
+            val entry = entries[tabId] ?: return
             val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-            val request = DownloadManager.Request(Uri.parse(url)).apply {
-                setMimeType(mimeType)
-                setTitle(fileName)
-                setDescription("ねこぶらうざからのダウンロード")
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-                addRequestHeader("User-Agent", userAgent)
-                CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
-            }
-            (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
-            entries[tabId]?.callbacks?.onDownloadStarted(fileName, "Downloads/$fileName")
+            entry.callbacks.onDownloadRequested(
+                BrowserDownloadRequest(
+                    url = url,
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    userAgent = userAgent,
+                    cookie = CookieManager.getInstance().getCookie(url),
+                    // 一部の配布サイトはRefererを要求するため、リンクを押したページのHTTPS URLも渡す。
+                    referer = entry.webView.url?.takeIf(::isHttps)
+                )
+            )
         }
     }
 
@@ -1684,7 +1684,7 @@ interface BrowserWebCallbacks {
     fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit)
     fun onPopupRequested(): String?
     fun onLinkLongPressed(url: String)
-    fun onDownloadStarted(fileName: String, destination: String)
+    fun onDownloadRequested(request: BrowserDownloadRequest)
     fun onPageArchiveReady(sourcePath: String, fileName: String)
     fun onExternalAppRequested(url: String)
     fun onPageInteraction()
@@ -1709,7 +1709,7 @@ interface BrowserWebCallbacks {
         override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = reply(false)
         override fun onPopupRequested(): String? = null
         override fun onLinkLongPressed(url: String) = Unit
-        override fun onDownloadStarted(fileName: String, destination: String) = Unit
+        override fun onDownloadRequested(request: BrowserDownloadRequest) = Unit
         override fun onPageArchiveReady(sourcePath: String, fileName: String) = Unit
         override fun onExternalAppRequested(url: String) = Unit
         override fun onPageInteraction() = Unit

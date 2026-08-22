@@ -45,6 +45,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
+import com.example.httpsbrowser.data.BrowserDownloadDispatcher
+import com.example.httpsbrowser.data.BrowserDownloadMode
+import com.example.httpsbrowser.data.BrowserDownloadRequest
 import com.example.httpsbrowser.data.AdBlockUpdateWorker
 import com.example.httpsbrowser.data.SettingsPage
 import com.example.httpsbrowser.web.BrowserWebCallbacks
@@ -93,6 +96,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var homeBookmarkEditMode by remember { mutableStateOf(false) }
     var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
+    var pendingDownload by remember { mutableStateOf<BrowserDownloadRequest?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -264,6 +268,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     rendererVersion++
                     notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
                 },
+                onDownloadRequested = { pendingDownload = it },
                 onPageArchiveReady = { sourcePath, fileName ->
                     pendingPageArchive = File(sourcePath)
                     pageArchiveLauncher.launch(fileName)
@@ -529,6 +534,32 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         )
     }
 
+    pendingDownload?.let { request ->
+        AlertDialog(
+            onDismissRequest = { pendingDownload = null },
+            title = { Text("ダウンロード") },
+            text = {
+                Text(
+                    "${request.fileName} をDownloadsへ保存します。\n\n" +
+                        "通常: Android標準の安定したダウンロード\n" +
+                        "高速: Range対応の大きなファイルを最大4分割で取得。対応しないサイトでは通常へ自動切替"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    notice = BrowserDownloadDispatcher.start(context, request, BrowserDownloadMode.NORMAL)
+                    pendingDownload = null
+                }) { Text("通常") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    notice = BrowserDownloadDispatcher.start(context, request, BrowserDownloadMode.HIGH)
+                    pendingDownload = null
+                }) { Text("高速") }
+            }
+        )
+    }
+
     longPressedLink?.let { url ->
         AlertDialog(
             onDismissRequest = { longPressedLink = null },
@@ -566,6 +597,7 @@ private fun callbacksFor(
     showNotice: (String) -> Unit,
     onExternalApp: (String) -> Unit,
     onRendererGone: () -> Unit,
+    onDownloadRequested: (BrowserDownloadRequest) -> Unit,
     onPageArchiveReady: (String, String) -> Unit
 ) = object : BrowserWebCallbacks {
     override fun onPageStarted(tabId: String, url: String) = viewModel.onPageStarted(tabId, url)
@@ -586,8 +618,7 @@ private fun callbacksFor(
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id
     override fun onLinkLongPressed(url: String) = onLongPress(url)
-    override fun onDownloadStarted(fileName: String, destination: String) =
-        showNotice("ダウンロードを開始しました: $fileName（保存先: $destination）")
+    override fun onDownloadRequested(request: BrowserDownloadRequest) = onDownloadRequested(request)
     override fun onPageArchiveReady(sourcePath: String, fileName: String) = onPageArchiveReady(sourcePath, fileName)
     override fun onExternalAppRequested(url: String) = onExternalApp(url)
     override fun onPageInteraction() = viewModel.stopAddressEditing()
