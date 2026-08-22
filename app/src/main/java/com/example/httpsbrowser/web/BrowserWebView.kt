@@ -109,6 +109,27 @@ class BrowserWebViewRegistry(
         return entry.webView
     }
 
+    /**
+     * 標準フィルタの初回コンパイルまたは更新後に、すでに生成済みのWebViewへ遮断規則を再適用する。
+     * 初期load時にengine未準備だった場合でも、次の遷移を待たずYouTube document-start scriptletを登録する。
+     */
+    fun refreshContentFiltering() {
+        entries.values.forEach { entry ->
+            val url = entry.webView.url ?: entry.loadedUrl ?: entry.activeDocumentUrl.orEmpty()
+            if (url.isBlank()) return@forEach
+            prepareSiteDocumentStartScript(entry, url)
+            prepareYoutubeDocumentStartScript(entry, url)
+            applyBraveCosmeticFilters(
+                entry.webView,
+                url,
+                entry.adBlockingEnabled,
+                includeGeneric = true,
+                aggressive = entry.aggressiveAdBlockingEnabled
+            )
+            CrashDiagnostics.record("adblock_reapplied_after_engine_ready", "url=$url\naggressive=${entry.aggressiveAdBlockingEnabled}")
+        }
+    }
+
     fun load(tabId: String, url: String) {
         entries[tabId]?.let { entry ->
             if (isHttps(url)) {

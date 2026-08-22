@@ -170,6 +170,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         listRepository.ensureStandardLists()
         // Kotlin/JNIの巨大文字列コピーを避けたファイル直読コンパイルで、標準リストを有効化する。
         listRepository.loadAndCompile()
+        // 初期loadがfilter engine準備より先でも、既存タブへscriptlet/cosmetic規則を必ず再適用する。
+        registry.refreshContentFiltering()
         AdBlockUpdateWorker.schedule(context.applicationContext)
     }
     LaunchedEffect(externalUrl) {

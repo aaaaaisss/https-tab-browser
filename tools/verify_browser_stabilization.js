@@ -81,6 +81,9 @@ requireText(webView, 'beginDarkRevealGuard(view, it, url)', 'black reveal guard 
 requireText(webView, 'beginDarkRevealGuard(entry.webView, entry, url)', 'black reveal guard before navigation');
 requireText(webView, 'releaseDarkRevealGuard(view, entry, url)', 'reveal guard release');
 requireText(webView, 'isDarkModeExcluded(settings, url)', 'manual dark exclusion runtime matching');
+requireText(webView, 'fun refreshContentFiltering()', 'post-compile adblock reapplication');
+requireText(webView, 'adblock_reapplied_after_engine_ready', 'engine-ready adblock diagnostic');
+requireText(screen, 'registry.refreshContentFiltering()', 'post-compile existing tab protection');
 requireText(webView, 'entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages', 'existing-dark runtime suppression');
 requireText(webView, 'entry.homeResetInProgress = true', 'home reset callback guard');
 requireText(webView, 'page_finished_ignored_during_home_reset', 'stale callback diagnostics');
