@@ -66,12 +66,11 @@ YouTubeの横動画広告遮断、Shorts広告遮断、PiP、全画面再生が�
 
 ```bash
 cd /home/ubuntu/https-tab-browser-github
-node tools/verify_browser_stabilization.js
-node tools/verify_youtube_sabr_patch_only.js
-node tools/verify_youtube_noad_warm_player.js
-node tools/verify_youtube_sanitizer.js
+node tools/verify_all.js
 git diff --check
 ```
+
+`verify_all.js`は、URLバー・候補・ホーム復帰、YouTube広告response sanitization、warm player request、SABR patch-only、Brave resource登録をまとめて検査する。GitHub ActionsもAPK生成前にこの統合検査を必ず実行する。
 
 変更は機能単位でコミットし、`rebuild/121e47b-four-pillars`へpushする。続けて固定署名Release APKを必ず作成する。
 
@@ -90,6 +89,8 @@ sha256sum release/COMMIT/app-release.apk
 ## 変更を小さく保つための規則
 
 単一の不具合修正で、WebView・PiP・広告ブロック・暗色化を同時に再設計しない。まず状態遷移、次にUI接続、最後に動画・広告遮断の順で扱う。YouTubeの実機確認が必要な変更には、どの再生経路へ影響するかをコードコメントとコミットメッセージに記録する。
+
+ローカルの`analysis/`、`reference/`、`release/`はGit管理外である。後続AIは差分確認にこれらを含めず、再利用すべき結論だけを本書または追跡対象の文書へ移す。
 
 ## サイズ・コード削減の安全境界
 
