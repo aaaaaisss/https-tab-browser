@@ -45,6 +45,8 @@ data class BrowserSettings(
     val forceDarkPages: Boolean = true,
     /** YouTube・Google動画タブも121e47b型暗色化の対象に含める、既定OFFの上書き設定。 */
     val forceDarkVideoPages: Boolean = false,
+    /** ページ自身が暗い背景を明示している場合に、追加の反転・強制暗色化を外す、既定OFFの安全設定。 */
+    val skipDarkeningAlreadyDarkPages: Boolean = false,
     val adBlockingEnabled: Boolean = true,
     /** YouTube等で再生互換性より遮断率を優先する、既定OFFの強い遮断モード。 */
     val aggressiveAdBlockingEnabled: Boolean = false,

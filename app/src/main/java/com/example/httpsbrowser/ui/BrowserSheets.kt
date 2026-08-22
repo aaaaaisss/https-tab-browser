@@ -166,6 +166,12 @@ object BrowserSheets {
                 )
             }
             item {
+                SettingSwitch(
+                    "元から暗いページでは追加暗色化しない",
+                    state.settings.skipDarkeningAlreadyDarkPages
+                ) { enabled -> onSettings { setting -> setting.copy(skipDarkeningAlreadyDarkPages = enabled) } }
+            }
+            item {
                 ModeSetting(
                     label = "広告ブロック",
                     highSelected = state.settings.adBlockingEnabled && state.settings.aggressiveAdBlockingEnabled,

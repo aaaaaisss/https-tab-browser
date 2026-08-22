@@ -4,6 +4,9 @@ const viewModel = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui
 const screen = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt', 'utf8');
 const controls = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt', 'utf8');
 const sheets = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/BrowserSheets.kt', 'utf8');
+const models = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt', 'utf8');
+const repository = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserRepository.kt', 'utf8');
+const webView = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt', 'utf8');
 
 function requireText(source, text, label) {
   if (!source.includes(text)) throw new Error(`${label}: missing ${text}`);
@@ -41,4 +44,23 @@ forbidText(sheets, '広告 URL ルールをブロック', 'renamed adblock setti
 forbidText(sheets, '攻めた広告遮断モード', 'renamed high adblock mode');
 forbidText(sheets, '動画サイトにも暗色化を適用', 'renamed high dark mode');
 
-console.log('Browser stabilization settings, address, suggestions, and home-back behavior: OK');
+requireText(viewModel, 'uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())', 'home clears address and suggestion state');
+const homeStateUpdate = screen.indexOf('viewModel.returnSelectedTabToHome()');
+const homeHistoryReset = screen.indexOf('registry.resetForHome(id)');
+if (homeStateUpdate < 0 || homeHistoryReset < 0 || homeStateUpdate > homeHistoryReset) {
+  throw new Error('home state must clear before native history reset');
+}
+requireText(screen, 'private fun shouldShowRightEdgeScrollRail(url: String): Boolean', 'Google popup scroll protection helper');
+requireText(screen, 'host.startsWith("google.") || host.contains(".google.")', 'Google web surface detection');
+requireText(screen, 'if (!state.isFullscreen && shouldShowRightEdgeScrollRail(selectedTab.url))', 'edge rail suppression on Google web surfaces');
+
+requireText(models, 'skipDarkeningAlreadyDarkPages: Boolean = false', 'already-dark exclusion default');
+requireText(repository, 'skip_darkening_already_dark_pages', 'already-dark DataStore key');
+requireText(sheets, '"元から暗いページでは追加暗色化しない"', 'already-dark setting UI');
+requireText(webView, 'ALREADY_DARK_DOCUMENT_DETECTOR_SCRIPT', 'read-only already-dark detector');
+requireText(webView, 'entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages', 'existing-dark runtime suppression');
+requireText(webView, 'entry.homeResetInProgress = true', 'home reset callback guard');
+requireText(webView, 'page_finished_ignored_during_home_reset', 'stale callback diagnostics');
+requireText(webView, 'isVideoPlaybackDocumentUrl(url)) return', 'video dark path exclusion');
+
+console.log('Browser stabilization settings, address, home reset, Google popup scrolling, and dark-page exclusion: OK');

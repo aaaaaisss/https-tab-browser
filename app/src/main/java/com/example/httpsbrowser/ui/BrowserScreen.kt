@@ -56,6 +56,7 @@ import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import java.io.File
 import java.io.FileInputStream
+import java.net.URI
 
 private data class PendingWebPermission(
     val origin: String,
@@ -68,6 +69,15 @@ private data class FullscreenContent(
     val view: View,
     val callback: WebChromeClient.CustomViewCallback
 )
+
+/**
+ * GoogleアカウントのWebダイアログはページ内の右端をスクロール操作に使う。
+ * DOM・viewport・CSSには触れず、Google系文書でのみ独自レールを外してWebViewへ全てのタッチを渡す。
+ */
+private fun shouldShowRightEdgeScrollRail(url: String): Boolean {
+    val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return true
+    return !(host.startsWith("google.") || host.contains(".google."))
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -278,14 +288,16 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         }
     }
 
-    /** 独自ホームへ戻る時はUI状態とChromium履歴を同じ遷移で初期化する。 */
+    /** 独自ホームへ戻る時は、まずURL入力・候補を含むCompose状態をホームへ確定してからWebView履歴を破棄する。 */
     fun returnSelectedTabToHome() {
-        selectedTab?.takeIf { !it.isHome }?.let { tab ->
-            // Compose更新を待たず先にhostを外すため、ホームがnative WebViewに覆われる瞬間を作らない。
-            (activity as? MainActivity)?.hideNormalWebContent()
-            registry.resetForHome(tab.id)
-        }
+        val tabId = selectedTab?.takeIf { !it.isHome }?.id
+        // AddressBarのTextFieldValueはstate.addressInputの変化に同期するため、先に空文字を流して残留を防ぐ。
         viewModel.returnSelectedTabToHome()
+        tabId?.let { id ->
+            // ホームへ切り替えた直後にnative hostが重ならないよう外し、遅延した旧ページcallbackはregistry側で無視する。
+            (activity as? MainActivity)?.hideNormalWebContent()
+            registry.resetForHome(id)
+        }
     }
 
     BackHandler {
@@ -355,7 +367,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     } else {
                         // 通常WebViewはActivity rootのnative hostへ接続する。Compose内で再親子化しない。
                     }
-                        if (!state.isFullscreen) {
+                        if (!state.isFullscreen && shouldShowRightEdgeScrollRail(selectedTab.url)) {
                             Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
                                 RightEdgeScrollRail(
                                     currentFraction = scrollFraction,

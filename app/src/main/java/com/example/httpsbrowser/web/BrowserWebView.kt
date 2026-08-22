@@ -56,17 +56,29 @@ class BrowserWebViewRegistry(
         ensureYoutubePictureInPictureScript(entry)
         // 121e47bの構成を基準にする。動画文書を対象へ含めるかは明示設定で選択する。
         val darkModeChanged = entry.appliedForceDark != settings.forceDarkPages ||
-            entry.appliedForceDarkVideoPages != settings.forceDarkVideoPages
-        configure(entry.webView, settings, isVideoPlaybackDocumentUrl(tab.lastRequestedUrl))
+            entry.appliedForceDarkVideoPages != settings.forceDarkVideoPages ||
+            entry.appliedSkipDarkeningAlreadyDarkPages != settings.skipDarkeningAlreadyDarkPages
+        configure(
+            entry.webView,
+            settings,
+            isVideoPlaybackDocumentUrl(tab.lastRequestedUrl),
+            entry.documentIsAlreadyDark && settings.skipDarkeningAlreadyDarkPages
+        )
         entry.appliedForceDark = settings.forceDarkPages
         entry.appliedForceDarkVideoPages = settings.forceDarkVideoPages
+        entry.appliedSkipDarkeningAlreadyDarkPages = settings.skipDarkeningAlreadyDarkPages
         if (darkModeChanged && entry.loadedUrl != null) {
             // 暗色化切替だけでWebViewを再読込しない。
             val url = entry.loadedUrl.orEmpty()
             applyDeepDarkCss(
                 entry.webView,
                 enabled = !entry.fullscreenVideoDarkeningSuppressed &&
-                    shouldApplyPageCssDarkening(settings, isVideoPlaybackDocumentUrl(url), url),
+                    shouldApplyPageCssDarkening(
+                        settings,
+                        isVideoPlaybackDocumentUrl(url),
+                        url,
+                        entry.documentIsAlreadyDark && settings.skipDarkeningAlreadyDarkPages
+                    ),
                 youtubePage = isYoutubeDocumentUrl(url)
             )
         }
@@ -95,7 +107,10 @@ class BrowserWebViewRegistry(
     fun load(tabId: String, url: String) {
         entries[tabId]?.let { entry ->
             if (isHttps(url)) {
+                // 独自ホーム待機中にだけ旧文書callbackを遮断する保護を、次の明示遷移で解除する。
+                entry.homeResetInProgress = false
                 entry.loadedUrl = url
+                entry.documentIsAlreadyDark = false
                 entry.rearmPageLifecycle(url)
                 // shouldInterceptRequest はUIスレッド外から呼ばれ得るため、
                 // コールバック内で WebView.url を読む代わりに遷移前に親URLを保持する。
@@ -136,7 +151,12 @@ class BrowserWebViewRegistry(
             val videoPage = isVideoPlaybackDocumentUrl(url)
             applyDeepDarkCss(
                 entry.webView,
-                enabled = !suppressed && shouldApplyPageCssDarkening(entry.settings, videoPage, url),
+                enabled = !suppressed && shouldApplyPageCssDarkening(
+                    entry.settings,
+                    videoPage,
+                    url,
+                    entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
+                ),
                 youtubePage = isYoutubeDocumentUrl(url)
             )
             CrashDiagnostics.record("video_dark_css_suppressed", "tab=$tabId\nsuppressed=$suppressed\nurl=$url")
@@ -151,6 +171,8 @@ class BrowserWebViewRegistry(
         entries[tabId]?.let { entry ->
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
+            entry.homeResetInProgress = true
+            entry.documentIsAlreadyDark = false
             entry.loadedUrl = null
             entry.activeDocumentUrl = null
             entry.rearmPageLifecycle(ABOUT_BLANK_URL)
@@ -376,9 +398,14 @@ class BrowserWebViewRegistry(
      * そのため動画文書では、動画サイト暗色化設定がONでも標準暗色化を常に停止する。ページ本文だけの
      * CSS反転は別途許可し、`video`の二重反転で映像そのものを常に正常色に保つ。切替に伴うreloadはしない。
      */
-    private fun configure(view: WebView, settings: BrowserSettings, videoPage: Boolean) {
+    private fun configure(
+        view: WebView,
+        settings: BrowserSettings,
+        videoPage: Boolean,
+        documentIsAlreadyDark: Boolean = false
+    ) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        val allowPlatformDarkening = shouldApplyPlatformDarkening(settings, videoPage)
+        val allowPlatformDarkening = shouldApplyPlatformDarkening(settings, videoPage, documentIsAlreadyDark)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowPlatformDarkening)
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowPlatformDarkening)
@@ -397,17 +424,50 @@ class BrowserWebViewRegistry(
         }
         CrashDiagnostics.record(
             "dark_mode_configured",
-            "engine=legacy_121e47b\nforceRequested=${settings.forceDarkPages}\nvideoPage=$videoPage\nplatformDarkening=$allowPlatformDarkening\npageCssDarkening=${shouldApplyPageCssDarkening(settings, videoPage)}"
+            "engine=legacy_121e47b\nforceRequested=${settings.forceDarkPages}\nvideoPage=$videoPage\ndocumentIsAlreadyDark=$documentIsAlreadyDark\nplatformDarkening=$allowPlatformDarkening\npageCssDarkening=${shouldApplyPageCssDarkening(settings, videoPage, documentIsAlreadyDark = documentIsAlreadyDark)}"
         )
     }
 
     /** video surfaceの全画面合成を反転しないため、標準暗色化は動画文書では常に無効にする。 */
-    private fun shouldApplyPlatformDarkening(settings: BrowserSettings, videoPage: Boolean): Boolean =
-        settings.forceDarkPages && !videoPage
+    private fun shouldApplyPlatformDarkening(
+        settings: BrowserSettings,
+        videoPage: Boolean,
+        documentIsAlreadyDark: Boolean = false
+    ): Boolean = settings.forceDarkPages && !videoPage && !documentIsAlreadyDark
 
     /** 動画サイト上書きはページ本文のCSS反転だけを有効にする。Shortsは映像面を優先して常に除外する。 */
-    private fun shouldApplyPageCssDarkening(settings: BrowserSettings, videoPage: Boolean, url: String = ""): Boolean =
-        settings.forceDarkPages && (!videoPage || settings.forceDarkVideoPages) && !isYoutubeShortsDocumentUrl(url)
+    private fun shouldApplyPageCssDarkening(
+        settings: BrowserSettings,
+        videoPage: Boolean,
+        url: String = "",
+        documentIsAlreadyDark: Boolean = false
+    ): Boolean = settings.forceDarkPages && (!videoPage || settings.forceDarkVideoPages) &&
+        !isYoutubeShortsDocumentUrl(url) && !documentIsAlreadyDark
+
+    /**
+     * ページの背景・color-scheme・theme-colorを読むだけで、DOMを変更せずに既存暗色ページを判定する。
+     * 背景輝度が0.18以下、またはページ自身がdark color-schemeを明示した場合のみ暗いとみなす。
+     */
+    private fun detectAlreadyDarkDocument(view: WebView, entry: Entry, url: String) {
+        // YouTube・Google動画などは専用CSS/PiP保護経路を維持し、一般文書だけで判定する。
+        if (!entry.settings.skipDarkeningAlreadyDarkPages || !isHttps(url) || isVideoPlaybackDocumentUrl(url)) return
+        view.evaluateJavascript(ALREADY_DARK_DOCUMENT_DETECTOR_SCRIPT) { result ->
+            val isAlreadyDark = result.trim() == "true"
+            // 非同期評価中に遷移・ホーム復帰した場合は、古い文書の結果を採用しない。
+            if (entry.homeResetInProgress || entry.activeDocumentUrl != url) return@evaluateJavascript
+            if (entry.documentIsAlreadyDark == isAlreadyDark) return@evaluateJavascript
+            entry.documentIsAlreadyDark = isAlreadyDark
+            val videoPage = isVideoPlaybackDocumentUrl(url)
+            configure(view, entry.settings, videoPage, isAlreadyDark)
+            applyDeepDarkCss(
+                view,
+                enabled = !entry.fullscreenVideoDarkeningSuppressed &&
+                    shouldApplyPageCssDarkening(entry.settings, videoPage, url, isAlreadyDark),
+                youtubePage = isYoutubeDocumentUrl(url)
+            )
+            CrashDiagnostics.record("already_dark_document_detected", "url=$url\ndark=$isAlreadyDark")
+        }
+    }
 
     /**
      * 一般ページは121e47b型の反転CSSを維持する。一方YouTubeはWeb Componentsが多いため、
@@ -824,17 +884,29 @@ class BrowserWebViewRegistry(
             super.doUpdateVisitedHistory(view, url, isReload)
             if (!isHttps(url)) return
             val entry = entries[tabId] ?: return
+            if (entry.homeResetInProgress) return
             // YouTube等のSPAはmain-frame loadを発生させずURLだけをhistory APIで更新する。
             // 共有・アドレスバー・renderer再作成用のタブURLをここで最新化する。
             entry.loadedUrl = url
             entry.activeDocumentUrl = url
-            configure(view, entry.settings, isVideoPlaybackDocumentUrl(url))
+            configure(
+                view,
+                entry.settings,
+                isVideoPlaybackDocumentUrl(url),
+                entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
+            )
             applyDeepDarkCss(
                 view,
                 enabled = !entry.fullscreenVideoDarkeningSuppressed &&
-                    shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url), url),
+                    shouldApplyPageCssDarkening(
+                        entry.settings,
+                        isVideoPlaybackDocumentUrl(url),
+                        url,
+                        entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
+                    ),
                 youtubePage = isYoutubeDocumentUrl(url)
             )
+            detectAlreadyDarkDocument(view, entry, url)
             entry.callbacks.onVisitedHistory(tabId, url)
             entry.callbacks.onHistoryState(tabId, canGoBack(tabId), view.canGoForward())
         }
@@ -842,6 +914,11 @@ class BrowserWebViewRegistry(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
+            if (entry?.homeResetInProgress == true && url != ABOUT_BLANK_URL) {
+                CrashDiagnostics.record("page_started_ignored_during_home_reset", "url=$url")
+                return
+            }
+            entry?.documentIsAlreadyDark = false
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
             entry?.youtubeCosmeticAppliedUrl = null
@@ -866,6 +943,7 @@ class BrowserWebViewRegistry(
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
+            if (entry?.homeResetInProgress == true && url != ABOUT_BLANK_URL) return
             // 121e47bの暗色化経路を、動画上書き設定を含めて初回可視化時から適用する。
             applyDeepDarkCss(
                 view,
@@ -879,6 +957,11 @@ class BrowserWebViewRegistry(
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId] ?: return
+            if (entry.homeResetInProgress) {
+                // about:blank完了後も、次の明示遷移まで旧HTTPS callbackはすべて無視する。
+                if (url != ABOUT_BLANK_URL) CrashDiagnostics.record("page_finished_ignored_during_home_reset", "url=$url")
+                return
+            }
             // FulgurisがYouTube/キャッシュ復帰で行うのと同じく、progress=100の最初の完了だけを
             // 採用する。重複したonPageFinishedでCSS注入・Cookie flush・履歴通知を繰り返さない。
             if (!entry.tryCompletePageLifecycle(view.progress)) {
@@ -888,10 +971,16 @@ class BrowserWebViewRegistry(
             applyDeepDarkCss(
                 view,
                 enabled = !entry.fullscreenVideoDarkeningSuppressed &&
-                    shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url), url),
+                    shouldApplyPageCssDarkening(
+                        entry.settings,
+                        isVideoPlaybackDocumentUrl(url),
+                        url,
+                        entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
+                    ),
                 youtubePage = isYoutubeDocumentUrl(url)
             )
             applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
+            detectAlreadyDarkDocument(view, entry, url)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             scheduleCookieFlush(view, entry)
             entry.callbacks.onPageFinished(tabId, url, view.title)
@@ -1051,6 +1140,11 @@ class BrowserWebViewRegistry(
         var settings: BrowserSettings = BrowserSettings(),
         var appliedForceDark: Boolean? = null,
         var appliedForceDarkVideoPages: Boolean? = null,
+        var appliedSkipDarkeningAlreadyDarkPages: Boolean? = null,
+        /** PageCommitVisible後に読んだ、ページ自身の暗色テーマ状態。遷移・ホーム復帰では必ずfalseへ戻す。 */
+        @Volatile var documentIsAlreadyDark: Boolean = false,
+        /** about:blank完了まで、停止済みの旧HTTPS文書callbackをUIへ渡さない。 */
+        @Volatile var homeResetInProgress: Boolean = false,
         @Volatile var aggressiveAdBlockingEnabled: Boolean = false,
         @Volatile var fullscreenVideoDarkeningSuppressed: Boolean = false,
         @Volatile var activeDocumentUrl: String? = null,
@@ -1291,6 +1385,47 @@ class BrowserWebViewRegistry(
 
         const val COOKIE_FLUSH_DEBOUNCE_MS = 750L
         const val YOUTUBE_SCRIPTLET_DOCUMENT_URL = "https://www.youtube.com/"
+        /**
+         * 既存ページのDOM・style・viewportを一切変更しない暗色テーマ検出。
+         * 透明背景は親要素を遡り、0.18以下の実背景、または0.35以下かつdark color-schemeを採用する。
+         */
+        val ALREADY_DARK_DOCUMENT_DETECTOR_SCRIPT = """
+            (function(){
+              function parseColor(value){
+                var m=String(value||'').match(/rgba?\(\s*([\d.]+)[,\s]+\s*([\d.]+)[,\s]+\s*([\d.]+)(?:[,\s]+\s*([\d.]+))?\s*\)/i);
+                if(!m){
+                  var hex=String(value||'').match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+                  if(!hex) return null;
+                  var raw=hex[1];
+                  if(raw.length===3) raw=raw.replace(/(.)/g,'$1$1');
+                  return [parseInt(raw.slice(0,2),16),parseInt(raw.slice(2,4),16),parseInt(raw.slice(4,6),16)];
+                }
+                var a=m[4]===undefined?1:parseFloat(m[4]);
+                return a>0.02?[parseFloat(m[1]),parseFloat(m[2]),parseFloat(m[3])]:null;
+              }
+              function luminance(rgb){
+                return (0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2])/255;
+              }
+              function backgroundOf(node){
+                var current=node;
+                for(var i=0; current && i<8; i++,current=current.parentElement){
+                  var color=parseColor(getComputedStyle(current).backgroundColor);
+                  if(color) return luminance(color);
+                }
+                return null;
+              }
+              var bodyBackground=backgroundOf(document.body);
+              var background=bodyBackground===null?backgroundOf(document.documentElement):bodyBackground;
+              var rootStyle=getComputedStyle(document.documentElement);
+              var bodyStyle=document.body?getComputedStyle(document.body):null;
+              var scheme=(rootStyle.colorScheme+' '+(bodyStyle?bodyStyle.colorScheme:'')).toLowerCase();
+              var meta=document.querySelector('meta[name="theme-color"]');
+              var metaColor=meta?parseColor(meta.content):null;
+              if(background!==null) return background<=0.18 || (background<=0.35 && scheme.indexOf('dark')!==-1);
+              return scheme.indexOf('dark')!==-1 || (metaColor!==null && luminance(metaColor)<=0.18);
+            })();
+        """.trimIndent()
+
         // Brave Android PR #28593と同じく、YouTubeのページ側PiP阻害フラグを最小限だけ無効化する。
         // config未生成・対応外構造ではno-opとし、複数回のSPA遷移でも追加の要素を作らない。
         val VIDEO_DIMENSIONS_REPORTER_SCRIPT = """
