@@ -2,7 +2,6 @@ package com.example.httpsbrowser.ui
 
 import android.Manifest
 import android.app.Activity
-import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -20,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -276,7 +276,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onExternalApp = { externalAppUrl = it },
                 onRendererGone = {
                     rendererVersion++
-                    notice = "このページの描画プロセスが終了しました。タブを再作成しています。"
                 },
                 onDownloadRequested = { pendingDownload = it },
                 onPageArchiveReady = { sourcePath, fileName ->
@@ -320,10 +319,14 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
 
     Box(
-        modifier = if (selectedTab?.isHome == true) {
-            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
-        } else {
+        // API 35以降のedge-to-edge環境でも、通常WebViewと下部バー全体の開始位置を
+        // status barの下へ固定する。Page Boxの計測値をnative hostにも同じ座標で渡す。
+        modifier = if (state.isFullscreen) {
             Modifier.fillMaxSize()
+        } else if (selectedTab?.isHome == true) {
+            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).background(MaterialTheme.colorScheme.background)
+        } else {
+            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)
         }
     ) {
         // Chromium WebViewのfullscreenは元のWebViewを残したままcustom viewを上に重ねる。
@@ -340,7 +343,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                     left = position.x.toInt(),
                                     top = position.y.toInt(),
                                     width = coordinates.size.width,
-                                    height = coordinates.size.height
+                                    height = coordinates.size.height,
+                                    reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url)
                                 )
                             }
                         }
@@ -411,7 +415,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
                             onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
                             onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
-                            onDownloads = { viewModel.stopAddressEditing(); runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
+                            onDownloads = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.DOWNLOADS) },
                             onSavePage = {
                                 viewModel.stopAddressEditing()
                                 if (!selectedTab.isHome) registry.savePageArchive(selectedTab.id, selectedTab.title)
@@ -483,7 +487,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onDeleteBookmark = viewModel::removeBookmark,
                 onDeleteHistory = viewModel::removeHistory,
                 onClear = { viewModel.clearBrowsingData { registry.clearAllBrowsingData() }; viewModel.closeSettings() },
-                onDownloads = { runCatching { context.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)) } },
+                onDownloads = { viewModel.showSettingsPage(SettingsPage.DOWNLOADS) },
                 onShareDiagnostics = { runCatching { com.example.httpsbrowser.CrashDiagnostics.share(context) }.onFailure { notice = "診断情報を共有できませんでした。" } },
                 onNotice = { notice = it }
             )
@@ -559,13 +563,13 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             },
             confirmButton = {
                 Button(onClick = {
-                    notice = BrowserDownloadDispatcher.start(context, request, BrowserDownloadMode.NORMAL)
+                    BrowserDownloadDispatcher.start(context, request, BrowserDownloadMode.NORMAL)
                     pendingDownload = null
                 }) { Text("通常") }
             },
             dismissButton = {
                 TextButton(onClick = {
-                    notice = BrowserDownloadDispatcher.start(context, request, BrowserDownloadMode.HIGH)
+                    BrowserDownloadDispatcher.start(context, request, BrowserDownloadMode.HIGH)
                     pendingDownload = null
                 }) { Text("高速") }
             }

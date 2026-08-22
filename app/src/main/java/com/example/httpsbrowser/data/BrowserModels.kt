@@ -4,7 +4,7 @@ import java.util.UUID
 
 enum class AddressDisplayMode { URL, SEARCH }
 
-enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, AD_BLOCK, DATA, DIAGNOSTICS, OPEN_SOURCE_LICENSES }
+enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, DOWNLOADS, AD_BLOCK, DATA, DIAGNOSTICS, OPEN_SOURCE_LICENSES }
 
 data class BrowserTab(
     val id: String = UUID.randomUUID().toString(),

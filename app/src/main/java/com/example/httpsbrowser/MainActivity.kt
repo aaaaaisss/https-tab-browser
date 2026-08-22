@@ -39,6 +39,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var composeOverlayView: ComposeView
     private var normalWebContentBoundsReady = false
     private var forwardingNormalWebTouch = false
+    /** Composeの右端スクロールレールが見える通常ページだけ、レール用のタッチ領域を予約する。 */
+    private var normalWebContentReservesRightTouchRail = false
     @Volatile private var fullscreenVideoView: View? = null
     private var fullscreenVideoTabId: String? = null
     private val videoDimensionsByTab = ConcurrentHashMap<String, VideoDimensions>()
@@ -97,7 +99,9 @@ class MainActivity : ComponentActivity() {
      */
     private fun forwardPageTouchToNativeWebView(event: MotionEvent): Boolean {
         if (::normalWebContentHost.isInitialized.not() || normalWebContentHost.visibility != View.VISIBLE) return false
-        val railWidth = (40 * resources.displayMetrics.density).toInt()
+        val railWidth = if (normalWebContentReservesRightTouchRail) {
+            (40 * resources.displayMetrics.density).toInt()
+        } else 0
         val withinHost = event.x >= normalWebContentHost.left && event.x < normalWebContentHost.right &&
             event.y >= normalWebContentHost.top && event.y < normalWebContentHost.bottom
         when (event.actionMasked) {
@@ -145,8 +149,17 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Composeが計測したページ矩形だけを通常WebViewへ割り当て、下部操作UIと重ねない。 */
-    fun setNormalWebContentBounds(left: Int, top: Int, width: Int, height: Int) {
+    fun setNormalWebContentBounds(
+        left: Int,
+        top: Int,
+        width: Int,
+        height: Int,
+        reserveRightTouchRail: Boolean
+    ) {
         if (::normalWebContentHost.isInitialized.not() || width <= 0 || height <= 0) return
+        // Page boxはComposeがstatus bar下から下部バー上まで測定した値をそのまま使う。
+        // Google系では右端予約を外し、重ねる型Webポップアップの全領域をWebViewへ渡す。
+        normalWebContentReservesRightTouchRail = reserveRightTouchRail
         val current = normalWebContentHost.layoutParams as? FrameLayout.LayoutParams ?: return
         normalWebContentBoundsReady = true
         if (current.leftMargin == left && current.topMargin == top && current.width == width && current.height == height) return

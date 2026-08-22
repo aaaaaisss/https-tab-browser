@@ -26,6 +26,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -49,11 +50,15 @@ import androidx.compose.ui.unit.dp
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.BlockListSource
 import com.example.httpsbrowser.data.Bookmark
+import com.example.httpsbrowser.data.BrowserDownloadDispatcher
+import com.example.httpsbrowser.data.BrowserDownloadStatus
 import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BrowserUiState
 import com.example.httpsbrowser.data.SettingsPage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -139,6 +144,7 @@ object BrowserSheets {
                 SettingsPage.ROOT -> SettingsRoot(state, onSettings, onOpenPage, onDownloads, onDismiss)
                 SettingsPage.BOOKMARKS -> BookmarkPage(state.bookmarks, onOpenUrl, onSaveBookmark, onUpdateBookmark, onDeleteBookmark, onBack, onNotice)
                 SettingsPage.HISTORY -> HistoryPage(state.history, onOpenUrl, onDeleteHistory, onBack)
+                SettingsPage.DOWNLOADS -> DownloadsPage(onBack)
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
                 SettingsPage.DATA -> DataPage(onClear, onBack)
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPage(onBack, onShareDiagnostics)
@@ -269,6 +275,67 @@ object BrowserSheets {
                 )
             }
         }
+    }
+
+    @Composable
+    private fun DownloadsPage(onBack: () -> Unit) {
+        val context = LocalContext.current
+        var downloads by remember { mutableStateOf<List<BrowserDownloadStatus>>(emptyList()) }
+        LaunchedEffect(Unit) {
+            while (isActive) {
+                downloads = BrowserDownloadDispatcher.currentStatuses(context)
+                delay(700)
+            }
+        }
+        PageHeader("ダウンロード", onBack)
+        LazyColumn(Modifier.padding(bottom = 24.dp)) {
+            if (downloads.isEmpty()) {
+                item { EmptyRow("進行中またはこの起動中に開始したダウンロードはここに表示されます。") }
+            }
+            items(downloads, key = { it.id }) { download ->
+                DownloadStatusRow(download)
+            }
+        }
+    }
+
+    @Composable
+    private fun DownloadStatusRow(download: BrowserDownloadStatus) {
+        val fraction = download.progressFraction
+        ListItem(
+            headlineContent = { Text(download.fileName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            supportingContent = {
+                Column {
+                    Text(
+                        "${if (download.mode == com.example.httpsbrowser.data.BrowserDownloadMode.HIGH) "高速" else "通常"}・${download.phase}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (fraction != null) {
+                        LinearProgressIndicator(progress = fraction, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+                        Text(
+                            "${(fraction * 100).toInt()}%  ${formatBytes(download.downloadedBytes)} / ${formatBytes(download.totalBytes ?: 0L)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    } else if (download.downloadedBytes > 0L) {
+                        Text("${formatBytes(download.downloadedBytes)} を取得済み", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            },
+            trailingContent = {
+                Text(
+                    if (download.isSuccessful) "完了" else if (download.isTerminal) "確認" else "進行中",
+                    color = if (download.isTerminal && !download.isSuccessful) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        )
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024L * 1024L -> "%.1f GB".format(bytes / (1024.0 * 1024.0 * 1024.0))
+        bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+        bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0)
+        else -> "$bytes B"
     }
 
     @Composable

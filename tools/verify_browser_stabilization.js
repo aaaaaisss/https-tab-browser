@@ -7,6 +7,7 @@ const sheets = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/Br
 const models = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt', 'utf8');
 const repository = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserRepository.kt', 'utf8');
 const webView = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt', 'utf8');
+const mainActivity = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/MainActivity.kt', 'utf8');
 
 function requireText(source, text, label) {
   if (!source.includes(text)) throw new Error(`${label}: missing ${text}`);
@@ -53,6 +54,11 @@ if (homeStateUpdate < 0 || homeHistoryReset < 0 || homeStateUpdate > homeHistory
 requireText(screen, 'private fun shouldShowRightEdgeScrollRail(url: String): Boolean', 'Google popup scroll protection helper');
 requireText(screen, 'host.startsWith("google.") || host.contains(".google.")', 'Google web surface detection');
 requireText(screen, 'if (!state.isFullscreen && shouldShowRightEdgeScrollRail(selectedTab.url))', 'edge rail suppression on Google web surfaces');
+requireText(screen, 'windowInsetsPadding(WindowInsets.safeDrawing)', 'safe system-bar layout for page and bottom controls');
+requireText(screen, 'reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url)', 'native touch rail follows page type');
+requireText(mainActivity, 'normalWebContentReservesRightTouchRail', 'page-specific native rail reservation');
+requireText(mainActivity, 'else 0', 'Google web surfaces forward the full page width');
+requireText(mainActivity, 'clipChildren = true', 'native host clips popup rendering to page bounds');
 
 requireText(models, 'skipDarkeningAlreadyDarkPages: Boolean = false', 'already-dark exclusion default');
 requireText(repository, 'skip_darkening_already_dark_pages', 'already-dark DataStore key');
@@ -62,5 +68,6 @@ requireText(webView, 'entry.documentIsAlreadyDark && entry.settings.skipDarkenin
 requireText(webView, 'entry.homeResetInProgress = true', 'home reset callback guard');
 requireText(webView, 'page_finished_ignored_during_home_reset', 'stale callback diagnostics');
 requireText(webView, 'isVideoPlaybackDocumentUrl(url)) return', 'video dark path exclusion');
+forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address, home reset, Google popup scrolling, and dark-page exclusion: OK');
+console.log('Browser stabilization settings, address, home reset, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
