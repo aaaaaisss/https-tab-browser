@@ -16,14 +16,19 @@ for (const forbidden of ['cancelPlayback', 'loadVideoById', 'isInlinePlaybackNoA
   class FakeXmlHttpRequest {
     constructor() {
       this.listeners = {};
+      this.readyState = 1;
       this.response = original.buffer.slice(0);
     }
     open() {}
     send() {
-      const listener = this.listeners.loadend;
-      if (listener) listener.call(this);
+      this.readyState = 4;
+      for (const name of ['readystatechange', 'load', 'loadend']) {
+        for (const listener of this.listeners[name] || []) listener.call(this);
+      }
     }
-    addEventListener(name, listener) { this.listeners[name] = listener; }
+    addEventListener(name, listener) {
+      (this.listeners[name] ||= []).push(listener);
+    }
   }
   const window = {
     fetch: () => Promise.resolve(new Response(original)),
@@ -39,8 +44,14 @@ for (const forbidden of ['cancelPlayback', 'loadVideoById', 'isInlinePlaybackNoA
   }
 
   const xhr = new FakeXmlHttpRequest();
+  let xhrLoadSawPatchedResponse = false;
+  xhr.addEventListener('load', function () {
+    const loadBytes = new Uint8Array(this.response);
+    xhrLoadSawPatchedResponse = loadBytes[0] === 0x20 && loadBytes[1] !== original[1];
+  });
   xhr.open('GET', 'https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
   xhr.send();
+  if (!xhrLoadSawPatchedResponse) throw new Error('SABR XHR response must be patched before load listeners read it');
   const xhrBytes = new Uint8Array(xhr.response);
   if (xhrBytes.length !== original.length || xhrBytes[0] !== 0x20 || xhrBytes[1] === original[1]) {
     throw new Error('SABR XHR backoff response was not patched in place');

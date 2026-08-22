@@ -1822,15 +1822,22 @@ class BrowserWebViewRegistry(
                   };
                   xhrProto.send=function(){
                     if(this.__nekoSabrControl&&!isPremium()){
-                      this.addEventListener('loadend',function(){
+                      var responsePatched=false;
+                      var patchResponse=function(){
+                        if(responsePatched) return;
                         try{
                           var original=this.response;
                           if(!(original instanceof ArrayBuffer)) return;
                           var patched=patchArrayBuffer(original);
-                          if(patched===original) return;
+                          if(patched===original){responsePatched=true;return;}
                           Object.defineProperty(this,'response',{configurable:true,get:function(){return patched;}});
+                          if(this.response===patched) responsePatched=true;
                         }catch(_e){}
-                      },{once:true});
+                      };
+                      // playerがloadで先にresponseを読む経路に備え、readyState=4/loadで先にpatchする。
+                      this.addEventListener('readystatechange',function(){if(this.readyState===4) patchResponse.call(this);});
+                      this.addEventListener('load',patchResponse);
+                      this.addEventListener('loadend',patchResponse,{once:true});
                     }
                     return realSend.apply(this,arguments);
                   };
