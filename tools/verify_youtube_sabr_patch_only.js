@@ -23,6 +23,25 @@ for (const forbidden of ['cancelPlayback', 'loadVideoById', 'isInlinePlaybackNoA
   if (bytes.length !== original.length || bytes[0] !== 0x20 || bytes[1] === original[1]) {
     throw new Error('SABR backoff response was not patched in place');
   }
+
+  const failingWindow = {
+    fetch: () => Promise.resolve(new Response(new ReadableStream({
+      start(controller) { controller.error(new Error('simulated SABR read failure')); },
+    }))),
+  };
+  new Function('window', 'document', 'Response', 'Uint8Array', script)(
+    failingWindow,
+    document,
+    Response,
+    Uint8Array,
+  );
+  let rejected = false;
+  try {
+    await failingWindow.fetch('https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
+  } catch (_error) {
+    rejected = true;
+  }
+  if (!rejected) throw new Error('SABR read failure must propagate instead of returning a synthetic success response');
   console.log('YouTube SABR patch-only session-preserving behavior: OK');
 })().catch((error) => {
   console.error(error);

@@ -1453,6 +1453,7 @@ class BrowserWebViewRegistry(
          * Brave公式SABR対策から、既存の再生sessionを再取得する処理を除いた最小版。
          * googlevideoの小さな`sabr=1`制御応答だけをteeして、protobuf field 4のbackoffTimeMsを
          * 同じvarint長で50〜150msへ置き換える。映像chunk（1000 bytes以上）は無加工で返す。
+         * 読取失敗を偽の成功responseへ変換せず、Chromium/YouTube本来の再試行へ委ねて再読込loopを防ぐ。
          */
         val YOUTUBE_SABR_PATCH_ONLY_SCRIPT = """
             (function(){
@@ -1518,7 +1519,7 @@ class BrowserWebViewRegistry(
                     var out=new Response(bytes,reinit);
                     try{Object.defineProperty(out,'url',{value:response.url,configurable:true});Object.defineProperty(out,'type',{value:response.type,configurable:true});}catch(_e){}
                     return out;
-                  }).catch(passThrough);
+                  });
                 });
               };
             })();
