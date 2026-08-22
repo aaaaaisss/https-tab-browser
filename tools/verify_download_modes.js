@@ -7,6 +7,7 @@ const sheets = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/Br
 const models = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt', 'utf8');
 const manifest = fs.readFileSync('app/src/main/AndroidManifest.xml', 'utf8');
 const adblock = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/AdBlocker.kt', 'utf8');
+const easyListSnapshot = fs.readFileSync('app/src/main/assets/adblock/adguard_android_101_optimized.txt', 'utf8');
 
 function requireText(source, text, label) {
   if (!source.includes(text)) throw new Error(`${label}: missing ${text}`);
@@ -49,6 +50,9 @@ requireText(manifest, 'android.permission.FOREGROUND_SERVICE_DATA_SYNC', 'data s
 requireText(manifest, 'android:foregroundServiceType="dataSync"', 'data sync service type');
 requireText(adblock, 'PeriodicWorkRequestBuilder<AdBlockUpdateWorker>(1, TimeUnit.DAYS)', 'daily adblock update cadence');
 requireText(adblock, 'NetworkType.UNMETERED', 'Wi-Fi-only adblock update constraint');
+requireText(adblock, 'adguard_android_101_optimized', 'restored mobile EasyList source');
+requireText(adblock, 'https://filters.adtidy.org/android/filters/101_optimized.txt', 'restored mobile EasyList URL');
+requireText(easyListSnapshot, '! Title: EasyList (Optimized)', 'bundled mobile EasyList snapshot');
 
 if (downloads.includes('return "高速ダウンロードを準備しています')) {
   throw new Error('download start must not show intrusive preparing notice');

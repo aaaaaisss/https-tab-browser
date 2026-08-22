@@ -241,6 +241,14 @@ class AdBlockListRepository(
                 "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-specific.txt",
                 builtIn = true
             ),
+            // a994015以降に外れていたが、広告遮断が強かった構成に含まれていたモバイル最適化EasyList。
+            // Base・Brave Specific・日本語と併用し、YouTube周辺を含む第三者広告要求の照合範囲を戻す。
+            BlockListSource(
+                "adguard_android_101_optimized",
+                "EasyList（AdGuard Android 最適化版）",
+                "https://filters.adtidy.org/android/filters/101_optimized.txt",
+                builtIn = true
+            ),
             BlockListSource(
                 "adguard_android_7_optimized",
                 "AdGuard 日本語フィルタ（Android 最適化版）",
