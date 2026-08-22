@@ -13,15 +13,37 @@ for (const forbidden of ['cancelPlayback', 'loadVideoById', 'isInlinePlaybackNoA
 
 (async () => {
   const original = new Uint8Array([0x20, 0xd8, 0x09]); // field 4: 1240 ms
+  class FakeXmlHttpRequest {
+    constructor() {
+      this.listeners = {};
+      this.response = original.buffer.slice(0);
+    }
+    open() {}
+    send() {
+      const listener = this.listeners.loadend;
+      if (listener) listener.call(this);
+    }
+    addEventListener(name, listener) { this.listeners[name] = listener; }
+  }
   const window = {
     fetch: () => Promise.resolve(new Response(original)),
   };
   const document = { querySelector: () => null };
-  new Function('window', 'document', 'Response', 'Uint8Array', script)(window, document, Response, Uint8Array);
+  new Function('window', 'document', 'Response', 'Uint8Array', 'XMLHttpRequest', script)(
+    window, document, Response, Uint8Array, FakeXmlHttpRequest,
+  );
   const response = await window.fetch('https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.length !== original.length || bytes[0] !== 0x20 || bytes[1] === original[1]) {
-    throw new Error('SABR backoff response was not patched in place');
+    throw new Error('SABR fetch backoff response was not patched in place');
+  }
+
+  const xhr = new FakeXmlHttpRequest();
+  xhr.open('GET', 'https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
+  xhr.send();
+  const xhrBytes = new Uint8Array(xhr.response);
+  if (xhrBytes.length !== original.length || xhrBytes[0] !== 0x20 || xhrBytes[1] === original[1]) {
+    throw new Error('SABR XHR backoff response was not patched in place');
   }
 
   const failingWindow = {

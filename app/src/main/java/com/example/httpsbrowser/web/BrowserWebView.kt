@@ -1775,18 +1775,24 @@ class BrowserWebViewRegistry(
                     shift+=7;end++;
                   }
                   if(value>500&&value<100000){
-                    var target=50+Math.floor(Math.random()*100),pos=i+1,remaining=target;
+                    // 初期sessionの再取得はせず、YouTubeが送った長いSABR待機値だけを25〜74msへ縮める。
+                    // ゼロ固定にはせず僅かなjitterを残し、同時再試行の集中と無限loopを避ける。
+                    var target=25+Math.floor(Math.random()*50),pos=i+1,remaining=target;
                     while(pos<end-1){bytes[pos++]=(remaining&0x7f)|0x80;remaining>>>=7;}
                     bytes[pos]=remaining&0x7f;patched=true;
                   }
                 }
                 return patched;
               }
+              function isSabrControlUrl(url){return url.indexOf('googlevideo.com')>=0&&url.indexOf('sabr=1')>=0;}
+              function patchArrayBuffer(buffer){
+                if(!buffer||!buffer.byteLength||buffer.byteLength>=1000) return buffer;
+                var bytes=new Uint8Array(buffer.slice(0));
+                return patchBackoff(bytes)?bytes.buffer:buffer;
+              }
               window.fetch=function(resource,init){
                 var url=typeof resource==='string'?resource:(resource&&resource.url)||'';
-                if(url.indexOf('googlevideo.com')<0||url.indexOf('sabr=1')<0||isPremium()){
-                  return realFetch.apply(this,arguments);
-                }
+                if(!isSabrControlUrl(url)||isPremium()) return realFetch.apply(this,arguments);
                 return realFetch.apply(this,arguments).then(function(response){
                   if(!response.ok||!response.body) return response;
                   var pass,scan,reinit;
@@ -1804,6 +1810,32 @@ class BrowserWebViewRegistry(
                   });
                 });
               };
+              // 一部のWebView配信経路はfetchでなくXHRを使う。arraybuffer型の小さなSABR制御応答だけを
+              // 読み替え、映像chunk・初期player response・認証情報・network request自体には触れない。
+              try{
+                var xhrProto=typeof XMLHttpRequest==='function'&&XMLHttpRequest.prototype;
+                if(xhrProto){
+                  var realOpen=xhrProto.open,realSend=xhrProto.send;
+                  xhrProto.open=function(method,url){
+                    this.__nekoSabrControl=isSabrControlUrl(String(url||''));
+                    return realOpen.apply(this,arguments);
+                  };
+                  xhrProto.send=function(){
+                    if(this.__nekoSabrControl&&!isPremium()){
+                      this.addEventListener('loadend',function(){
+                        try{
+                          var original=this.response;
+                          if(!(original instanceof ArrayBuffer)) return;
+                          var patched=patchArrayBuffer(original);
+                          if(patched===original) return;
+                          Object.defineProperty(this,'response',{configurable:true,get:function(){return patched;}});
+                        }catch(_e){}
+                      },{once:true});
+                    }
+                    return realSend.apply(this,arguments);
+                  };
+                }
+              }catch(_e){}
             })();
         """.trimIndent()
 
