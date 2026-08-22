@@ -25,10 +25,14 @@ requireText(screen, 'onSubmit = { input -> navigate(input) }', 'IME navigation w
 requireText(screen, 'onOpenBookmark = { bookmark -> navigate(bookmark.url) }', 'bookmark URL-bar navigation');
 const systemBackHome = screen.indexOf('selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()');
 const systemBackHistory = screen.indexOf('selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)');
-if (systemBackHome < 0 || systemBackHistory < 0 || systemBackHome > systemBackHistory) {
-  throw new Error('bookmark home fallback must run before Chromium history back');
+if (systemBackHome < 0 || systemBackHistory < 0 || systemBackHistory > systemBackHome) {
+  throw new Error('Chromium history back must run before bookmark home fallback');
 }
-requireText(screen, 'if (selectedTab.returnToHomeOnBack) returnSelectedTabToHome()', 'navigation-row home fallback');
+const navigationBackHistory = screen.indexOf('if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)');
+const navigationBackHome = screen.indexOf('else if (selectedTab.returnToHomeOnBack) returnSelectedTabToHome()');
+if (navigationBackHistory < 0 || navigationBackHome < 0 || navigationBackHistory > navigationBackHome) {
+  throw new Error('navigation-row must use Chromium history before home fallback');
+}
 requireText(sheets, 'label = "広告ブロック"', 'adblock label');
 requireText(sheets, 'label = "暗色化"', 'dark mode label');
 requireText(sheets, 'Text(if (highSelected) "normal" else "✓ normal")', 'normal mode selection');
