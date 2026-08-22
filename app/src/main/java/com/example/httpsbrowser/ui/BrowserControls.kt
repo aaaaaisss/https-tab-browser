@@ -108,7 +108,7 @@ fun AddressBar(
     progress: Int,
     isEditing: Boolean,
     onValueChange: (String) -> Unit,
-    onSubmit: () -> Unit,
+    onSubmit: (String) -> Unit,
     onTranslate: () -> Unit,
     onRefresh: () -> Unit,
     onEditingStarted: () -> Unit
@@ -150,7 +150,7 @@ fun AddressBar(
                     // 残らないよう先に明示的に閉じる。ViewModel側も候補・編集状態を同時に終了する。
                     keyboardController?.hide()
                     focusManager.clearFocus(force = true)
-                    onSubmit()
+                    onSubmit(textFieldValue.text)
                 }),
                 decorationBox = { innerTextField ->
                     Row(
@@ -199,7 +199,8 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         LazyColumn(
-            // ViewModelは合計6件までに制限する。優先候補が下端で隠れないよう6行分を確保する。
+            // ViewModelは合計6件までに制限する。reverseLayoutでは先頭要素が下端に置かれるため、
+            // ViewModelの優先順（最初=最優先）が画面の下から上へ確実に並ぶ。
             modifier = Modifier.height((suggestions.size * 48).coerceAtMost(288).dp),
             reverseLayout = true
         ) {

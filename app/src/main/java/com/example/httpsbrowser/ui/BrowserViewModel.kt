@@ -126,12 +126,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun startAddressEditing() {
         val tab = uiState.selectedTab ?: return
-        uiState = uiState.copy(
-            addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
-            isAddressFocused = true,
-            isSuggestionPanelVisible = false,
-            suggestions = emptyList()
-        )
+        // Google検索ページではdisplayTextに検索語を保持している。URLバーを開いた直後から
+        // その語を候補生成へ渡し、入力し直さなくても履歴・Google候補を表示する。
+        beginAddressEditing(if (tab.isHome) "" else tab.displayText.ifBlank { tab.url })
     }
 
     fun stopAddressEditing() {
@@ -145,14 +142,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
-    fun setAddressInput(value: String) {
+    fun setAddressInput(value: String) = beginAddressEditing(value)
+
+    /**
+     * URLバーをタップした場合と文字を入力した場合で、候補の生成・非同期取得・表示条件を共通化する。
+     * これによりGoogle検索ページを編集した直後も、表示中の検索語から候補を開始できる。
+     */
+    private fun beginAddressEditing(value: String) {
         val query = value.trim()
-        // 候補パネルは入力中だけ専用状態で表示し、ページ遷移後に残らないようにする。
         val localSuggestions = createSuggestions(value)
         uiState = uiState.copy(
             addressInput = value,
             isAddressFocused = true,
-            // 端末内候補がゼロでも 2 文字以上なら Google 候補の到着を待って表示する。
+            // 端末内候補がゼロでも2文字以上ならGoogle候補の到着を待ってパネルを開く。
             isSuggestionPanelVisible = query.length >= 2 || (query.isNotBlank() && localSuggestions.isNotEmpty()),
             suggestions = localSuggestions
         )
@@ -301,9 +303,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun setFullscreen(value: Boolean) { uiState = uiState.copy(isFullscreen = value) }
 
-    /** WebView履歴が尽きたホーム起点ページを、独自ホームへ戻す。 */
+    /** WebView履歴が尽きたホーム起点ページを、独自ホームへ確実に戻す。 */
     fun returnSelectedTabToHome() {
-        if (uiState.selectedTab?.returnToHomeOnBack == true) openHome()
+        if (uiState.selectedTab?.isHome == false) openHome()
     }
 
     fun updateSettings(transform: (BrowserSettings) -> BrowserSettings) {

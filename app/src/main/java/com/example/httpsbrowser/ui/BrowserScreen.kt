@@ -14,8 +14,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -108,9 +110,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
 
     /** 新規URL入力だけをWebViewへ命令し、戻る・進む・ページ内遷移ではWebView履歴を再読込しない。 */
-    fun navigate(input: String = state.addressInput) {
+    fun navigate(input: String? = null) {
+        // IME callbackはCompose再構成前のstateを参照し得るため、入力部品から渡された最新値を優先する。
+        val navigationInput = input ?: viewModel.uiState.addressInput
         endAddressEditing()
-        val prepared = viewModel.prepareNavigation(input) ?: return
+        val prepared = viewModel.prepareNavigation(navigationInput) ?: return
         selectedTab?.let { tab -> registry.load(tab.id, prepared.url) }
     }
 
@@ -147,6 +151,19 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         if (!state.isAddressFocused) {
             keyboardController?.hide()
             focusManager.clearFocus(force = true)
+        }
+    }
+    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。
+    var addressImeWasVisible by remember { mutableStateOf(false) }
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(state.isAddressFocused, imeVisible) {
+        when {
+            !state.isAddressFocused -> addressImeWasVisible = false
+            imeVisible -> addressImeWasVisible = true
+            addressImeWasVisible -> {
+                focusManager.clearFocus(force = true)
+                viewModel.stopAddressEditing()
+            }
         }
     }
     LaunchedEffect(state.bookmarks) {
@@ -350,7 +367,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         isEditing = state.isAddressFocused,
                         onValueChange = viewModel::setAddressInput,
                         // 新規入力時だけURLを読み込む。WebViewの戻る・進むではloadUrlを呼ばない。
-                        onSubmit = { navigate() },
+                        onSubmit = { input -> navigate(input) },
                         onTranslate = { if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
                         onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
                         onEditingStarted = viewModel::startAddressEditing

@@ -157,32 +157,20 @@ object BrowserSheets {
     ) {
         LazyColumn(Modifier.padding(bottom = 24.dp)) {
             item { SheetTitle("設定") }
-            item { SettingSwitch("ページを強制的に暗色化", state.settings.forceDarkPages) { onSettings { setting -> setting.copy(forceDarkPages = it) } } }
             item {
-                SettingSwitch(
-                    "動画サイトにも暗色化を適用",
-                    state.settings.forceDarkVideoPages
-                ) { enabled -> onSettings { setting -> setting.copy(forceDarkVideoPages = enabled) } }
-            }
-            item {
-                Text(
-                    "YouTube・Google動画タブの映像表示が崩れる場合は、この設定をOFFのままにしてください。",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                ModeSetting(
+                    label = "暗色化",
+                    highSelected = state.settings.forceDarkPages && state.settings.forceDarkVideoPages,
+                    onNormal = { onSettings { setting -> setting.copy(forceDarkPages = true, forceDarkVideoPages = false) } },
+                    onHigh = { onSettings { setting -> setting.copy(forceDarkPages = true, forceDarkVideoPages = true) } }
                 )
             }
-            item { SettingSwitch("広告 URL ルールをブロック", state.settings.adBlockingEnabled) { onSettings { setting -> setting.copy(adBlockingEnabled = it) } } }
             item {
-                SettingSwitch(
-                    "攻めた広告遮断モード",
-                    state.settings.aggressiveAdBlockingEnabled
-                ) { enabled -> onSettings { setting -> setting.copy(aggressiveAdBlockingEnabled = enabled) } }
-            }
-            item {
-                Text(
-                    "YouTubeを含む動画サイトで再生保護を外し、ネットワーク・広告要素の遮断を最優先します。動画が止まる・画面が崩れる場合はOFFにしてください。",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                ModeSetting(
+                    label = "広告ブロック",
+                    highSelected = state.settings.adBlockingEnabled && state.settings.aggressiveAdBlockingEnabled,
+                    onNormal = { onSettings { setting -> setting.copy(adBlockingEnabled = true, aggressiveAdBlockingEnabled = false) } },
+                    onHigh = { onSettings { setting -> setting.copy(adBlockingEnabled = true, aggressiveAdBlockingEnabled = true) } }
                 )
             }
             item { SettingSwitch("JavaScript を有効化", state.settings.javascriptEnabled) { onSettings { setting -> setting.copy(javascriptEnabled = it) } } }
@@ -516,6 +504,28 @@ object BrowserSheets {
 
     @Composable private fun EmptyRow(text: String) {
         Text(text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
+    }
+
+    @Composable
+    private fun ModeSetting(
+        label: String,
+        highSelected: Boolean,
+        onNormal: () -> Unit,
+        onHigh: () -> Unit
+    ) {
+        ListItem(
+            headlineContent = { Text(label) },
+            trailingContent = {
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = onNormal) {
+                        Text(if (highSelected) "normal" else "✓ normal")
+                    }
+                    TextButton(onClick = onHigh) {
+                        Text(if (highSelected) "✓ high" else "high")
+                    }
+                }
+            }
+        )
     }
 
     @Composable private fun SettingSwitch(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
