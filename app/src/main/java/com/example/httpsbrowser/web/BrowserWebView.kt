@@ -247,11 +247,13 @@ class BrowserWebViewRegistry(
             runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
@@ -462,8 +464,10 @@ class BrowserWebViewRegistry(
         }
         if (!entry.adBlockingEnabled) {
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
@@ -480,9 +484,22 @@ class BrowserWebViewRegistry(
         // 広告を消せた安定sessionを作り直さず、SABR制御応答の待機値だけを短縮する。
         // 通常モードでは完全に外し、ユーザーが選ぶ攻めた広告遮断モードだけへ限定する。
         if (!entry.aggressiveAdBlockingEnabled) {
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
+        }
+        // client側player requestが生じるSPA遷移だけへ作用し、初期responseや現在のsessionは変更しない。
+        if (entry.youtubeNoAdWarmPlayerScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_NO_AD_WARM_PLAYER_SCRIPT, originRules)
+            }.onSuccess { handler ->
+                entry.youtubeNoAdWarmPlayerScriptHandler = handler
+                CrashDiagnostics.record("youtube_no_ad_warm_player_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_no_ad_warm_player_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
         }
         if (entry.youtubeSabrPatchOnlyScriptHandler == null) {
             runCatching {
@@ -1025,6 +1042,8 @@ class BrowserWebViewRegistry(
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         /** 組込みYouTube広告メタデータ除去script。外部リストには実行権限を与えない。 */
         var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
+        /** warm navigationのplayer requestへ広告なし指定を入れる組込みscript。攻めたモード限定。 */
+        var youtubeNoAdWarmPlayerScriptHandler: ScriptHandler? = null,
         /** 既存sessionを再取得せずSABR backoffだけを短縮する組込みscript。攻めたモード限定。 */
         var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
@@ -1390,6 +1409,41 @@ class BrowserWebViewRegistry(
                 var descriptor=Object.getOwnPropertyDescriptor(proto,'responseText');
                 if(descriptor&&descriptor.get) Object.defineProperty(proto,'responseText',{configurable:true,get:function(){
                   var value=descriptor.get.call(this); return sanitizeText(value,this.__nekoYouTubeAdResponseKind);
+                }});
+              }catch(_e){}
+            })();
+        """.trimIndent()
+
+        /**
+         * warm navigationでクライアントが生成するplayer requestだけを補正する。
+         * sessionのcancel/reloadや初期responseの削除を行わず、JSON.stringifyを先にhookして
+         * YouTubeのlocker scriptより前に広告なしplayer contextを渡す。Object.assignは補助経路。
+         */
+        val YOUTUBE_NO_AD_WARM_PLAYER_SCRIPT = """
+            (function(){
+              if(window.__nekoBrowserNoAdWarmPlayer) return;
+              window.__nekoBrowserNoAdWarmPlayer=true;
+              function patchText(text){
+                if(typeof text!=='string'||text.indexOf('contentPlaybackContext')<0||text.indexOf('isInlinePlaybackNoAd')>=0) return text;
+                return text.replace(/"contentPlaybackContext"\s*:\s*\{(?!\s*"isInlinePlaybackNoAd"\s*:\s*true)/,'"contentPlaybackContext":{"isInlinePlaybackNoAd":true,');
+              }
+              function patchCarrier(value){
+                try{
+                  if(value&&typeof value.body==='string') value.body=patchText(value.body);
+                }catch(_e){}
+                return value;
+              }
+              try{
+                var realStringify=JSON.stringify;
+                JSON.stringify=function(){return patchText(realStringify.apply(this,arguments));};
+              }catch(_e){}
+              try{
+                var realAssign=Object.assign;
+                Object.assign=new Proxy(realAssign,{apply:function(target,thisArg,args){
+                  var result=Reflect.apply(target,thisArg,args);
+                  patchCarrier(result);
+                  if(args&&args.length>0) patchCarrier(args[0]);
+                  return result;
                 }});
               }catch(_e){}
             })();
