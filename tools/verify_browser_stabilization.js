@@ -57,7 +57,7 @@ if (homeStateUpdate < 0 || homeHistoryReset < 0 || homeStateUpdate > homeHistory
 requireText(screen, 'private fun shouldShowRightEdgeScrollRail(url: String): Boolean', 'Google popup scroll protection helper');
 requireText(screen, 'host.startsWith("google.") || host.contains(".google.")', 'Google web surface detection');
 requireText(screen, 'if (!state.isFullscreen && shouldShowRightEdgeScrollRail(selectedTab.url))', 'edge rail suppression on Google web surfaces');
-requireText(screen, 'windowInsetsPadding(WindowInsets.safeDrawing)', 'safe system-bar layout for page and bottom controls');
+requireText(screen, 'statusBarsPadding().navigationBarsPadding()', 'safe system-bar layout for page and bottom controls');
 requireText(screen, 'reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url)', 'native touch rail follows page type');
 requireText(mainActivity, 'normalWebContentReservesRightTouchRail', 'page-specific native rail reservation');
 requireText(mainActivity, 'else 0', 'Google web surfaces forward the full page width');

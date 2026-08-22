@@ -18,8 +18,9 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -324,9 +325,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         modifier = if (state.isFullscreen) {
             Modifier.fillMaxSize()
         } else if (selectedTab?.isHome == true) {
-            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).background(MaterialTheme.colorScheme.background)
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().background(MaterialTheme.colorScheme.background)
         } else {
-            Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
         }
     ) {
         // Chromium WebViewのfullscreenは元のWebViewを残したままcustom viewを上に重ねる。
