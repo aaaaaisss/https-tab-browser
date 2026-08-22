@@ -47,6 +47,27 @@ class BrowserWebViewRegistry(
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
 
+    /** Brave公式resource。広告を遮断した後にSABR制御応答へ残る待機だけを縮める。 */
+    private val youtubeSabrDelayFixScript: String by lazy {
+        loadBundledBraveResource("brave-yt-sabr-fix.js")
+    }
+
+    private fun loadBundledBraveResource(name: String): String = runCatching {
+        context.assets.open("adblock_resources/brave_resources.json").bufferedReader().use { reader ->
+            val resources = JSONArray(reader.readText())
+            val encoded = (0 until resources.length())
+                .asSequence()
+                .map { resources.getJSONObject(it) }
+                .firstOrNull { it.optString("name") == name }
+                ?.optString("content")
+                .orEmpty()
+            if (encoded.isBlank()) "" else String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8)
+        }
+    }.getOrElse { throwable ->
+        CrashDiagnostics.record("brave_resource_unavailable", "$name: ${throwable.javaClass.simpleName}")
+        ""
+    }
+
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
@@ -247,10 +268,12 @@ class BrowserWebViewRegistry(
             runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeSabrDelayFixScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeSabrDelayFixScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             (entry.webView.parent as? ViewGroup)?.removeView(entry.webView)
@@ -460,7 +483,9 @@ class BrowserWebViewRegistry(
         }
         if (!entry.adBlockingEnabled) {
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeSabrDelayFixScriptHandler?.remove() }
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeSabrDelayFixScriptHandler = null
             return
         }
         if (entry.youtubeAdSanitizerScriptHandler == null) {
@@ -471,6 +496,23 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("youtube_ad_sanitizer_ready", "documentStart=true")
             }.onFailure { throwable ->
                 CrashDiagnostics.record("youtube_ad_sanitizer_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
+        }
+        // Brave Specificでは標準でコメントアウトされている実験的なSABR対策を、
+        // ユーザーが選んだ攻めた広告遮断モードにだけ適用する。通常モードの再生保護は維持する。
+        if (!entry.aggressiveAdBlockingEnabled) {
+            runCatching { entry.youtubeSabrDelayFixScriptHandler?.remove() }
+            entry.youtubeSabrDelayFixScriptHandler = null
+            return
+        }
+        if (entry.youtubeSabrDelayFixScriptHandler == null && youtubeSabrDelayFixScript.isNotBlank()) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, youtubeSabrDelayFixScript, originRules)
+            }.onSuccess { handler ->
+                entry.youtubeSabrDelayFixScriptHandler = handler
+                CrashDiagnostics.record("youtube_sabr_delay_fix_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_sabr_delay_fix_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
             }
         }
     }
@@ -1004,6 +1046,8 @@ class BrowserWebViewRegistry(
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         /** 組込みYouTube広告メタデータ除去script。外部リストには実行権限を与えない。 */
         var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
+        /** Brave公式SABR待機回避script。攻めた広告遮断モードだけで有効化する。 */
+        var youtubeSabrDelayFixScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
