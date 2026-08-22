@@ -111,7 +111,8 @@ fun AddressBar(
     onSubmit: (String) -> Unit,
     onTranslate: () -> Unit,
     onRefresh: () -> Unit,
-    onEditingStarted: () -> Unit
+    onEditingStarted: () -> Unit,
+    onEditingStopped: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
@@ -140,6 +141,9 @@ fun AddressBar(
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
                         if (focus.isFocused && !isEditing) onEditingStarted()
+                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
+                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
+                        if (!focus.isFocused && isEditing) onEditingStopped()
                     },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
                 cursorBrush = SolidColor(Color.White),

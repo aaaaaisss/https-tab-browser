@@ -22,6 +22,9 @@ requireText(viewModel, 'return results.values.take(MAX_SUGGESTIONS)', 'suggestio
 requireText(viewModel, 'if (uiState.selectedTab?.isHome == false) openHome()', 'home back fallback');
 requireText(controls, 'onSubmit: (String) -> Unit', 'IME latest input contract');
 requireText(controls, 'onSubmit(textFieldValue.text)', 'IME latest input call');
+requireText(controls, 'onEditingStopped: () -> Unit', 'address focus loss contract');
+requireText(controls, 'if (!focus.isFocused && isEditing) onEditingStopped()', 'address focus loss ends edit mode');
+requireText(screen, 'onEditingStopped = viewModel::stopAddressEditing', 'screen restores controls on address focus loss');
 requireText(controls, 'reverseLayout = true', 'bottom-up suggestion layout');
 requireText(screen, '@OptIn(ExperimentalLayoutApi::class)', 'IME layout API opt-in');
 requireText(screen, 'val imeVisible = WindowInsets.isImeVisible', 'IME dismissal observer');
@@ -61,13 +64,21 @@ requireText(mainActivity, 'else 0', 'Google web surfaces forward the full page w
 requireText(mainActivity, 'clipChildren = true', 'native host clips popup rendering to page bounds');
 
 requireText(models, 'skipDarkeningAlreadyDarkPages: Boolean = false', 'already-dark exclusion default');
+requireText(models, 'darkModeExcludedHosts: List<String> = emptyList()', 'manual dark exclusion model');
 requireText(repository, 'skip_darkening_already_dark_pages', 'already-dark DataStore key');
+requireText(repository, 'dark_mode_excluded_hosts', 'manual dark exclusion DataStore key');
 requireText(sheets, '"元から暗いページでは追加暗色化しない"', 'already-dark setting UI');
-requireText(webView, 'ALREADY_DARK_DOCUMENT_DETECTOR_SCRIPT', 'read-only already-dark detector');
+requireText(sheets, 'SettingsPage.DARK_EXCLUSIONS -> DarkExclusionsPage', 'manual dark exclusion page routing');
+requireText(sheets, '"暗色化の例外"', 'manual dark exclusion setting UI');
+requireText(webView, 'DARK_DETECTOR_WITHOUT_OVERRIDE_SCRIPT', 'unmodified-style dark detector');
+requireText(webView, 'prepareDarkDocumentStartScript(entry, url)', 'document-start dark CSS preparation');
+requireText(webView, 'beginDarkRevealGuard(view, it, url)', 'black reveal guard on page start');
+requireText(webView, 'releaseDarkRevealGuard(view, entry, url)', 'reveal guard release');
+requireText(webView, 'isDarkModeExcluded(settings, url)', 'manual dark exclusion runtime matching');
 requireText(webView, 'entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages', 'existing-dark runtime suppression');
 requireText(webView, 'entry.homeResetInProgress = true', 'home reset callback guard');
 requireText(webView, 'page_finished_ignored_during_home_reset', 'stale callback diagnostics');
-requireText(webView, 'isVideoPlaybackDocumentUrl(url)) return', 'video dark path exclusion');
+requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address, home reset, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization settings, address focus recovery, home reset, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');

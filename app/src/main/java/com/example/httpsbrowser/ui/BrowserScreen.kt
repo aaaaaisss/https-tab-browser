@@ -394,7 +394,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         onSubmit = { input -> navigate(input) },
                         onTranslate = { if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
                         onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
-                        onEditingStarted = viewModel::startAddressEditing
+                        onEditingStarted = viewModel::startAddressEditing,
+                        onEditingStopped = viewModel::stopAddressEditing
                     )
                     // IME表示中はURLバーと横の翻訳・更新ボタンだけをキーボード直上に固定する。
                     // 操作列とタブバーを同時に再計測しないため、キーボードにめり込んだり戻ったりしない。

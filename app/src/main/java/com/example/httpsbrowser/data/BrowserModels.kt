@@ -4,7 +4,7 @@ import java.util.UUID
 
 enum class AddressDisplayMode { URL, SEARCH }
 
-enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, DOWNLOADS, AD_BLOCK, DATA, DIAGNOSTICS, OPEN_SOURCE_LICENSES }
+enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, DOWNLOADS, DARK_EXCLUSIONS, AD_BLOCK, DATA, DIAGNOSTICS, OPEN_SOURCE_LICENSES }
 
 data class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
@@ -47,6 +47,8 @@ data class BrowserSettings(
     val forceDarkVideoPages: Boolean = false,
     /** ページ自身が暗い背景を明示している場合に、追加の反転・強制暗色化を外す、既定OFFの安全設定。 */
     val skipDarkeningAlreadyDarkPages: Boolean = false,
+    /** 自動判定に関わらず追加暗色化を行わないホスト名。例: example.com はサブドメインも対象。 */
+    val darkModeExcludedHosts: List<String> = emptyList(),
     val adBlockingEnabled: Boolean = true,
     /** YouTube等で再生互換性より遮断率を優先する、既定OFFの強い遮断モード。 */
     val aggressiveAdBlockingEnabled: Boolean = false,

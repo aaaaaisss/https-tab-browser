@@ -22,6 +22,7 @@ class BrowserRepository(private val context: Context) {
         val forceDarkInitialized = booleanPreferencesKey("force_dark_initialized")
         val forceDarkVideoPages = booleanPreferencesKey("force_dark_video_pages")
         val skipDarkeningAlreadyDarkPages = booleanPreferencesKey("skip_darkening_already_dark_pages")
+        val darkModeExcludedHosts = stringPreferencesKey("dark_mode_excluded_hosts")
         val adBlock = booleanPreferencesKey("ad_block")
         val aggressiveAdBlock = booleanPreferencesKey("aggressive_ad_block")
         val javascript = booleanPreferencesKey("javascript")
@@ -48,6 +49,7 @@ class BrowserRepository(private val context: Context) {
                 forceDarkPages = forceDarkPages,
                 forceDarkVideoPages = preferences[Keys.forceDarkVideoPages] ?: false,
                 skipDarkeningAlreadyDarkPages = preferences[Keys.skipDarkeningAlreadyDarkPages] ?: false,
+                darkModeExcludedHosts = decodeStringList(preferences[Keys.darkModeExcludedHosts]),
                 adBlockingEnabled = preferences[Keys.adBlock] ?: true,
                 aggressiveAdBlockingEnabled = preferences[Keys.aggressiveAdBlock] ?: false,
                 javascriptEnabled = preferences[Keys.javascript] ?: true
@@ -70,6 +72,7 @@ class BrowserRepository(private val context: Context) {
             preferences[Keys.forceDarkInitialized] = true
             preferences[Keys.forceDarkVideoPages] = state.settings.forceDarkVideoPages
             preferences[Keys.skipDarkeningAlreadyDarkPages] = state.settings.skipDarkeningAlreadyDarkPages
+            preferences[Keys.darkModeExcludedHosts] = encodeStringList(state.settings.darkModeExcludedHosts).toString()
             preferences[Keys.adBlock] = state.settings.adBlockingEnabled
             preferences[Keys.aggressiveAdBlock] = state.settings.aggressiveAdBlockingEnabled
             preferences[Keys.javascript] = state.settings.javascriptEnabled
@@ -127,6 +130,17 @@ class BrowserRepository(private val context: Context) {
         val array = JSONArray(raw ?: "[]")
         List(array.length()) { index -> map(array.getJSONObject(index)) }
     }.getOrDefault(emptyList())
+
+    private fun decodeStringList(raw: String?): List<String> = runCatching {
+        val array = JSONArray(raw ?: "[]")
+        List(array.length()) { index -> array.optString(index).trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .distinct()
+    }.getOrDefault(emptyList())
+
+    private fun encodeStringList(values: List<String>) = JSONArray().apply {
+        values.map { it.trim().lowercase() }.filter { it.isNotBlank() }.distinct().forEach(::put)
+    }
 
     private fun encodeTabs(tabs: List<BrowserTab>) = JSONArray().apply {
         tabs.forEach { tab -> put(JSONObject().apply {

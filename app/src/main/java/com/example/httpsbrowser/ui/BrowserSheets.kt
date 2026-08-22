@@ -61,6 +61,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.net.URI
 
 object BrowserSheets {
     @OptIn(ExperimentalMaterial3Api::class)
@@ -145,6 +146,7 @@ object BrowserSheets {
                 SettingsPage.BOOKMARKS -> BookmarkPage(state.bookmarks, onOpenUrl, onSaveBookmark, onUpdateBookmark, onDeleteBookmark, onBack, onNotice)
                 SettingsPage.HISTORY -> HistoryPage(state.history, onOpenUrl, onDeleteHistory, onBack)
                 SettingsPage.DOWNLOADS -> DownloadsPage(onBack)
+                SettingsPage.DARK_EXCLUSIONS -> DarkExclusionsPage(state.settings, onSettings, onBack)
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
                 SettingsPage.DATA -> DataPage(onClear, onBack)
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPage(onBack, onShareDiagnostics)
@@ -185,6 +187,7 @@ object BrowserSheets {
                     onHigh = { onSettings { setting -> setting.copy(adBlockingEnabled = true, aggressiveAdBlockingEnabled = true) } }
                 )
             }
+            item { NavigationItem("暗色化の例外", Icons.Default.Security) { onOpenPage(SettingsPage.DARK_EXCLUSIONS) } }
             item { SettingSwitch("JavaScript を有効化", state.settings.javascriptEnabled) { onSettings { setting -> setting.copy(javascriptEnabled = it) } } }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             item { SheetTitle("管理") }
@@ -276,6 +279,54 @@ object BrowserSheets {
             }
         }
     }
+
+    @Composable
+    private fun DarkExclusionsPage(
+        settings: BrowserSettings,
+        onSettings: ((BrowserSettings) -> BrowserSettings) -> Unit,
+        onBack: () -> Unit
+    ) {
+        var hostInput by remember { mutableStateOf("") }
+        PageHeader("暗色化の例外", onBack)
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+            Text("ここに追加したサイトでは、highを含む追加暗色化を行いません。example.com を追加するとサブドメインも対象です。", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = hostInput,
+                    onValueChange = { hostInput = it },
+                    label = { Text("サイトURL またはホスト名") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    normalizeDarkExclusionHost(hostInput)?.let { host ->
+                        onSettings { current -> current.copy(darkModeExcludedHosts = (current.darkModeExcludedHosts + host).distinct()) }
+                        hostInput = ""
+                    }
+                }) { Text("追加") }
+            }
+        }
+        LazyColumn(Modifier.padding(bottom = 24.dp)) {
+            if (settings.darkModeExcludedHosts.isEmpty()) item { EmptyRow("暗色化の例外はまだありません。") }
+            items(settings.darkModeExcludedHosts, key = { it }) { host ->
+                ListItem(
+                    headlineContent = { Text(host) },
+                    supportingContent = { Text("このサイトとサブドメインでは追加暗色化をしない", style = MaterialTheme.typography.bodySmall) },
+                    trailingContent = {
+                        IconButton(onClick = {
+                            onSettings { current -> current.copy(darkModeExcludedHosts = current.darkModeExcludedHosts - host) }
+                        }) { Icon(Icons.Default.Delete, "$host を除外リストから削除") }
+                    }
+                )
+            }
+        }
+    }
+
+    private fun normalizeDarkExclusionHost(input: String): String? = runCatching {
+        val normalized = input.trim().lowercase()
+        val uri = URI(if ("://" in normalized) normalized else "https://$normalized")
+        uri.host?.removePrefix("www.")?.takeIf { host -> host.matches(Regex("[a-z0-9.-]+")) }
+    }.getOrNull()
 
     @Composable
     private fun DownloadsPage(onBack: () -> Unit) {
