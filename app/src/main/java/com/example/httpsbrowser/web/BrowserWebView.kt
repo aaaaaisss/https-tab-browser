@@ -247,10 +247,12 @@ class BrowserWebViewRegistry(
             runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeSabrPatchOnlyScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             (entry.webView.parent as? ViewGroup)?.removeView(entry.webView)
@@ -460,7 +462,9 @@ class BrowserWebViewRegistry(
         }
         if (!entry.adBlockingEnabled) {
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
         if (entry.youtubeAdSanitizerScriptHandler == null) {
@@ -471,6 +475,23 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("youtube_ad_sanitizer_ready", "documentStart=true")
             }.onFailure { throwable ->
                 CrashDiagnostics.record("youtube_ad_sanitizer_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
+        }
+        // 広告を消せた安定sessionを作り直さず、SABR制御応答の待機値だけを短縮する。
+        // 通常モードでは完全に外し、ユーザーが選ぶ攻めた広告遮断モードだけへ限定する。
+        if (!entry.aggressiveAdBlockingEnabled) {
+            runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
+            entry.youtubeSabrPatchOnlyScriptHandler = null
+            return
+        }
+        if (entry.youtubeSabrPatchOnlyScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_SABR_PATCH_ONLY_SCRIPT, originRules)
+            }.onSuccess { handler ->
+                entry.youtubeSabrPatchOnlyScriptHandler = handler
+                CrashDiagnostics.record("youtube_sabr_patch_only_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_sabr_patch_only_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
             }
         }
     }
@@ -1004,6 +1025,8 @@ class BrowserWebViewRegistry(
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         /** 組込みYouTube広告メタデータ除去script。外部リストには実行権限を与えない。 */
         var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
+        /** 既存sessionを再取得せずSABR backoffだけを短縮する組込みscript。攻めたモード限定。 */
+        var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
@@ -1369,6 +1392,81 @@ class BrowserWebViewRegistry(
                   var value=descriptor.get.call(this); return sanitizeText(value,this.__nekoYouTubeAdResponseKind);
                 }});
               }catch(_e){}
+            })();
+        """.trimIndent()
+
+        /**
+         * Brave公式SABR対策から、既存の再生sessionを再取得する処理を除いた最小版。
+         * googlevideoの小さな`sabr=1`制御応答だけをteeして、protobuf field 4のbackoffTimeMsを
+         * 同じvarint長で50〜150msへ置き換える。映像chunk（1000 bytes以上）は無加工で返す。
+         */
+        val YOUTUBE_SABR_PATCH_ONLY_SCRIPT = """
+            (function(){
+              if(window.__nekoBrowserSabrPatchOnly) return;
+              window.__nekoBrowserSabrPatchOnly=true;
+              var realFetch=window.fetch;
+              if(typeof realFetch!=='function') return;
+              var premiumCached=null;
+              function isPremium(){
+                if(premiumCached!==null) return premiumCached;
+                var logo=document.querySelector('a#logo[title]');
+                if(!logo) return false;
+                premiumCached=/premium/i.test(logo.getAttribute('title')||'');
+                return premiumCached;
+              }
+              function readSmall(reader){
+                var chunks=[],total=0;
+                return reader.read().then(function pump(result){
+                  if(result.done){
+                    var merged=new Uint8Array(total),offset=0;
+                    for(var i=0;i<chunks.length;i++){merged.set(chunks[i],offset);offset+=chunks[i].length;}
+                    return merged;
+                  }
+                  chunks.push(result.value);total+=result.value.length;
+                  if(total>=1000){try{reader.cancel();}catch(_e){}return null;}
+                  return reader.read().then(pump);
+                });
+              }
+              function patchBackoff(bytes){
+                var patched=false;
+                for(var i=0;i<bytes.length-2;i++){
+                  if(bytes[i]!==0x20) continue;
+                  var value=0,shift=0,end=i+1;
+                  while(end<bytes.length&&shift<35){
+                    value|=(bytes[end]&0x7f)<<shift;
+                    if(!(bytes[end]&0x80)){end++;break;}
+                    shift+=7;end++;
+                  }
+                  if(value>500&&value<100000){
+                    var target=50+Math.floor(Math.random()*100),pos=i+1,remaining=target;
+                    while(pos<end-1){bytes[pos++]=(remaining&0x7f)|0x80;remaining>>>=7;}
+                    bytes[pos]=remaining&0x7f;patched=true;
+                  }
+                }
+                return patched;
+              }
+              window.fetch=function(resource,init){
+                var url=typeof resource==='string'?resource:(resource&&resource.url)||'';
+                if(url.indexOf('googlevideo.com')<0||url.indexOf('sabr=1')<0||isPremium()){
+                  return realFetch.apply(this,arguments);
+                }
+                return realFetch.apply(this,arguments).then(function(response){
+                  if(!response.ok||!response.body) return response;
+                  var pass,scan,reinit;
+                  try{
+                    var streams=response.body.tee();pass=streams[0];scan=streams[1];
+                    reinit={status:response.status,statusText:response.statusText,headers:response.headers};
+                  }catch(_e){return response;}
+                  function passThrough(){return new Response(pass,reinit);}
+                  return readSmall(scan.getReader()).then(function(bytes){
+                    if(bytes===null) return passThrough();
+                    patchBackoff(bytes);
+                    var out=new Response(bytes,reinit);
+                    try{Object.defineProperty(out,'url',{value:response.url,configurable:true});Object.defineProperty(out,'type',{value:response.type,configurable:true});}catch(_e){}
+                    return out;
+                  }).catch(passThrough);
+                });
+              };
             })();
         """.trimIndent()
 
