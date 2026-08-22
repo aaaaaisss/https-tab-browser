@@ -47,27 +47,6 @@ class BrowserWebViewRegistry(
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
 
-    /** Brave公式resource。広告を遮断した後にSABR制御応答へ残る待機だけを縮める。 */
-    private val youtubeSabrDelayFixScript: String by lazy {
-        loadBundledBraveResource("brave-yt-sabr-fix.js")
-    }
-
-    private fun loadBundledBraveResource(name: String): String = runCatching {
-        context.assets.open("adblock_resources/brave_resources.json").bufferedReader().use { reader ->
-            val resources = JSONArray(reader.readText())
-            val encoded = (0 until resources.length())
-                .asSequence()
-                .map { resources.getJSONObject(it) }
-                .firstOrNull { it.optString("name") == name }
-                ?.optString("content")
-                .orEmpty()
-            if (encoded.isBlank()) "" else String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8)
-        }
-    }.getOrElse { throwable ->
-        CrashDiagnostics.record("brave_resource_unavailable", "$name: ${throwable.javaClass.simpleName}")
-        ""
-    }
-
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
         entry.callbacks = callbacks
@@ -268,14 +247,10 @@ class BrowserWebViewRegistry(
             runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
-            runCatching { entry.youtubeNoAdPlayerRequestScriptHandler?.remove() }
-            runCatching { entry.youtubeSabrDelayFixScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.youtubeAdSanitizerScriptHandler = null
-            entry.youtubeNoAdPlayerRequestScriptHandler = null
-            entry.youtubeSabrDelayFixScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             (entry.webView.parent as? ViewGroup)?.removeView(entry.webView)
@@ -485,11 +460,7 @@ class BrowserWebViewRegistry(
         }
         if (!entry.adBlockingEnabled) {
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
-            runCatching { entry.youtubeNoAdPlayerRequestScriptHandler?.remove() }
-            runCatching { entry.youtubeSabrDelayFixScriptHandler?.remove() }
             entry.youtubeAdSanitizerScriptHandler = null
-            entry.youtubeNoAdPlayerRequestScriptHandler = null
-            entry.youtubeSabrDelayFixScriptHandler = null
             return
         }
         if (entry.youtubeAdSanitizerScriptHandler == null) {
@@ -500,37 +471,6 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("youtube_ad_sanitizer_ready", "documentStart=true")
             }.onFailure { throwable ->
                 CrashDiagnostics.record("youtube_ad_sanitizer_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
-            }
-        }
-        // Brave Specificでは標準でコメントアウトされている実験的なSABR対策を、
-        // ユーザーが選んだ攻めた広告遮断モードにだけ適用する。通常モードの再生保護は維持する。
-        if (!entry.aggressiveAdBlockingEnabled) {
-            runCatching { entry.youtubeNoAdPlayerRequestScriptHandler?.remove() }
-            runCatching { entry.youtubeSabrDelayFixScriptHandler?.remove() }
-            entry.youtubeNoAdPlayerRequestScriptHandler = null
-            entry.youtubeSabrDelayFixScriptHandler = null
-            return
-        }
-        // SABR scriptletによる再生session再取得の前に、player request bodyへ広告なし指定を挿入する。
-        // JSON.stringifyはYouTubeのlocker scriptで固定される場合があるため、Object.assignだけを限定してwrapする。
-        if (entry.youtubeNoAdPlayerRequestScriptHandler == null) {
-            runCatching {
-                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_NO_AD_PLAYER_REQUEST_SCRIPT, originRules)
-            }.onSuccess { handler ->
-                entry.youtubeNoAdPlayerRequestScriptHandler = handler
-                CrashDiagnostics.record("youtube_no_ad_player_request_ready", "documentStart=true")
-            }.onFailure { throwable ->
-                CrashDiagnostics.record("youtube_no_ad_player_request_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
-            }
-        }
-        if (entry.youtubeSabrDelayFixScriptHandler == null && youtubeSabrDelayFixScript.isNotBlank()) {
-            runCatching {
-                WebViewCompat.addDocumentStartJavaScript(entry.webView, youtubeSabrDelayFixScript, originRules)
-            }.onSuccess { handler ->
-                entry.youtubeSabrDelayFixScriptHandler = handler
-                CrashDiagnostics.record("youtube_sabr_delay_fix_ready", "documentStart=true")
-            }.onFailure { throwable ->
-                CrashDiagnostics.record("youtube_sabr_delay_fix_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
             }
         }
     }
@@ -1064,10 +1004,6 @@ class BrowserWebViewRegistry(
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         /** 組込みYouTube広告メタデータ除去script。外部リストには実行権限を与えない。 */
         var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
-        /** player requestへ広告なし指定を追加する組込みscript。攻めた広告遮断モードだけで有効化する。 */
-        var youtubeNoAdPlayerRequestScriptHandler: ScriptHandler? = null,
-        /** Brave公式SABR待機回避script。攻めた広告遮断モードだけで有効化する。 */
-        var youtubeSabrDelayFixScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
@@ -1433,34 +1369,6 @@ class BrowserWebViewRegistry(
                   var value=descriptor.get.call(this); return sanitizeText(value,this.__nekoYouTubeAdResponseKind);
                 }});
               }catch(_e){}
-            })();
-        """.trimIndent()
-
-        /**
-         * YouTubeのplayer request生成に使われるObject.assignだけをdocument-startで補正する。
-         * `contentPlaybackContext`を持つrequest bodyだけへisInlinePlaybackNoAdを一度だけ追加するため、
-         * SABR session再取得時にも広告スロットが返されないようにする。
-         */
-        val YOUTUBE_NO_AD_PLAYER_REQUEST_SCRIPT = """
-            (function(){
-              if(window.__nekoBrowserNoAdPlayerRequest) return;
-              window.__nekoBrowserNoAdPlayerRequest=true;
-              var realAssign=Object.assign;
-              if(typeof realAssign!=='function') return;
-              function patch(candidate){
-                try{
-                  if(!candidate || typeof candidate.body!=='string') return;
-                  var needle='"contentPlaybackContext":{';
-                  if(candidate.body.indexOf('"isInlinePlaybackNoAd":true')>=0 || candidate.body.indexOf(needle)<0) return;
-                  candidate.body=candidate.body.replace(needle,'"contentPlaybackContext":{"isInlinePlaybackNoAd":true,');
-                }catch(_e){}
-              }
-              Object.assign=function(){
-                var result=realAssign.apply(this,arguments);
-                for(var i=0;i<arguments.length;i++) patch(arguments[i]);
-                patch(result);
-                return result;
-              };
             })();
         """.trimIndent()
 
