@@ -64,6 +64,8 @@ data class BrowserDownloadStatus(
     val totalBytes: Long? = null,
     val isTerminal: Boolean = false,
     val isSuccessful: Boolean = false,
+    /** 完了済み高速ダウンロードのMediaStore URI。通常モードはDownloadManagerが削除する。 */
+    val contentUri: String? = null,
     val startedAt: Long = System.currentTimeMillis()
 ) {
     val progressFraction: Float?
@@ -85,7 +87,10 @@ object BrowserDownloadDispatcher {
         val startedAt: Long,
         @Volatile var downloadManagerId: Long? = null,
         @Volatile var workId: UUID? = null,
-        @Volatile var fallbackToNormal: Boolean = false
+        @Volatile var fallbackToNormal: Boolean = false,
+        @Volatile var contentUri: String? = null,
+        @Volatile var cancelled: Boolean = false,
+        @Volatile var deleted: Boolean = false
     )
 
     fun start(context: Context, request: BrowserDownloadRequest, mode: BrowserDownloadMode): BrowserDownloadStatus {
@@ -128,6 +133,25 @@ object BrowserDownloadDispatcher {
         }.sortedByDescending { it.startedAt }
     }
 
+    /** 進行中の通常・高速ダウンロードを中止する。公開Downloadsの完了済みファイルは削除しない。 */
+    fun cancel(context: Context, trackingId: String) {
+        val tracked = trackedDownloads[trackingId] ?: return
+        tracked.cancelled = true
+        tracked.downloadManagerId?.let { id ->
+            (context.applicationContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).remove(id)
+        }
+        tracked.workId?.let { id -> WorkManager.getInstance(context.applicationContext).cancelWorkById(id) }
+    }
+
+    /** 中止または完了済みの項目と公開Downloads上のファイルを削除する。 */
+    fun delete(context: Context, trackingId: String) {
+        val tracked = trackedDownloads[trackingId] ?: return
+        cancel(context, trackingId)
+        tracked.contentUri?.let { raw -> runCatching { context.applicationContext.contentResolver.delete(Uri.parse(raw), null, null) } }
+        tracked.deleted = true
+        trackedDownloads.remove(trackingId)
+    }
+
     fun clearFinished() {
         trackedDownloads.entries.removeIf { (_, tracked) ->
             val managerId = tracked.downloadManagerId
@@ -161,6 +185,8 @@ object BrowserDownloadDispatcher {
     }
 
     private fun readDownloadManagerStatus(context: Context, tracked: TrackedDownload, managerId: Long): BrowserDownloadStatus {
+        if (tracked.deleted) return BrowserDownloadStatus(tracked.id, tracked.request.fileName, tracked.requestedMode, "削除済み", isTerminal = true, startedAt = tracked.startedAt)
+        if (tracked.cancelled) return BrowserDownloadStatus(tracked.id, tracked.request.fileName, tracked.requestedMode, "中止", isTerminal = true, startedAt = tracked.startedAt)
         val manager = context.applicationContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val cursor = manager.query(DownloadManager.Query().setFilterById(managerId))
         cursor.use {
@@ -176,6 +202,8 @@ object BrowserDownloadDispatcher {
             val status = it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
             val downloaded = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
             val total = it.getLong(it.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)).takeIf { bytes -> bytes > 0L }
+            val contentUri = runCatching { manager.getUriForDownloadedFile(managerId)?.toString() }.getOrNull()
+            if (contentUri != null) tracked.contentUri = contentUri
             val phase = when (status) {
                 DownloadManager.STATUS_PENDING -> "待機中"
                 DownloadManager.STATUS_RUNNING -> if (tracked.fallbackToNormal) "通常へ自動切替中" else "ダウンロード中"
@@ -193,16 +221,20 @@ object BrowserDownloadDispatcher {
                 totalBytes = total,
                 isTerminal = status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED,
                 isSuccessful = status == DownloadManager.STATUS_SUCCESSFUL,
+                contentUri = contentUri,
                 startedAt = tracked.startedAt
             )
         }
     }
 
     private fun readFastWorkStatus(context: Context, tracked: TrackedDownload): BrowserDownloadStatus {
+        if (tracked.deleted) return BrowserDownloadStatus(tracked.id, tracked.request.fileName, tracked.requestedMode, "削除済み", isTerminal = true, startedAt = tracked.startedAt)
+        if (tracked.cancelled) return BrowserDownloadStatus(tracked.id, tracked.request.fileName, tracked.requestedMode, "中止", isTerminal = true, startedAt = tracked.startedAt)
         val info = runCatching {
             WorkManager.getInstance(context.applicationContext).getWorkInfoById(tracked.workId!!).get()
         }.getOrNull()
         if (info == null) return BrowserDownloadStatus(tracked.id, tracked.request.fileName, tracked.requestedMode, "開始待ち", startedAt = tracked.startedAt)
+        tracked.contentUri = info.outputData.getString(FastDownloadWorker.OUTPUT_CONTENT_URI) ?: tracked.contentUri
         val progress = info.progress
         val downloaded = progress.getLong(FastDownloadWorker.PROGRESS_DOWNLOADED, 0L)
         val total = progress.getLong(FastDownloadWorker.PROGRESS_TOTAL, -1L).takeIf { it > 0L }
@@ -223,6 +255,7 @@ object BrowserDownloadDispatcher {
             totalBytes = total,
             isTerminal = info.state.isFinished,
             isSuccessful = info.state == WorkInfo.State.SUCCEEDED,
+            contentUri = tracked.contentUri,
             startedAt = tracked.startedAt
         )
     }
@@ -314,9 +347,9 @@ class FastDownloadWorker(
             }
             if (parts.size != PARALLEL_CONNECTIONS) error("高速ダウンロードの分割結果が不足しています。")
             setProgress(progressData("保存中", probe.totalBytes, probe.totalBytes))
-            publishToDownloads(request, parts.sortedBy { it.name })
+            val destination = publishToDownloads(request, parts.sortedBy { it.name })
             setProgress(progressData("完了", probe.totalBytes, probe.totalBytes))
-            Result.success()
+            Result.success(Data.Builder().putString(OUTPUT_CONTENT_URI, destination.toString()).build())
         } catch (_: Throwable) {
             parts.forEach { runCatching { it.delete() } }
             setProgress(progressData("再試行中"))
@@ -372,7 +405,7 @@ class FastDownloadWorker(
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    private fun publishToDownloads(request: BrowserDownloadRequest, parts: List<File>) {
+    private fun publishToDownloads(request: BrowserDownloadRequest, parts: List<File>): Uri {
         val resolver = applicationContext.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, request.fileName)
@@ -395,6 +428,7 @@ class FastDownloadWorker(
         } finally {
             parts.forEach { runCatching { it.delete() } }
         }
+        return destination
     }
 
     private fun openConnection(request: BrowserDownloadRequest, range: String): HttpURLConnection =
@@ -454,6 +488,7 @@ class FastDownloadWorker(
         const val PROGRESS_PHASE = "phase"
         const val PROGRESS_DOWNLOADED = "downloaded"
         const val PROGRESS_TOTAL = "total"
+        const val OUTPUT_CONTENT_URI = "contentUri"
 
         fun inputData(request: BrowserDownloadRequest, trackingId: String): Data = Data.Builder()
             .putString(KEY_URL, request.url)

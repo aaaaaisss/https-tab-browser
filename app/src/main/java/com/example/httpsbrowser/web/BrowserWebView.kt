@@ -120,6 +120,9 @@ class BrowserWebViewRegistry(
                 // shouldInterceptRequest はUIスレッド外から呼ばれ得るため、
                 // コールバック内で WebView.url を読む代わりに遷移前に親URLを保持する。
                 entry.activeDocumentUrl = url
+                // onPageStartedより前に旧文書の白い最終フレームを隠す。暗色化除外サイトから
+                // 通常サイトへ連続遷移しても、白いページが先に見える状態を作らない。
+                beginDarkRevealGuard(entry.webView, entry, url)
                 CrashDiagnostics.recordWebViewNavigation(url)
                 prepareDarkDocumentStartScript(entry, url)
                 prepareSiteDocumentStartScript(entry, url)
@@ -130,14 +133,21 @@ class BrowserWebViewRegistry(
     }
 
     fun reload(tabId: String) = entries[tabId]?.let { entry ->
-        entry.rearmPageLifecycle(entry.webView.url.orEmpty())
+        val url = entry.webView.url.orEmpty()
+        entry.activeDocumentUrl = url
+        beginDarkRevealGuard(entry.webView, entry, url)
+        entry.rearmPageLifecycle(url)
         entry.webView.reload()
     }
 
     /** Fulgurisと同様、キャッシュからの履歴遷移でも完了処理が再実行できるよう先に再armする。 */
     fun goBack(tabId: String) = entries[tabId]?.let { entry ->
         entry.webView.takeIf { canGoBack(tabId) }?.let { view ->
-            entry.rearmPageLifecycle(view.url.orEmpty())
+            val history = view.copyBackForwardList()
+            val targetUrl = history.getItemAtIndex(history.currentIndex - 1).url
+            entry.activeDocumentUrl = targetUrl
+            beginDarkRevealGuard(view, entry, targetUrl)
+            entry.rearmPageLifecycle(targetUrl)
             view.goBack()
         }
     }
@@ -252,7 +262,11 @@ class BrowserWebViewRegistry(
     }
     fun goForward(tabId: String) = entries[tabId]?.let { entry ->
         entry.webView.takeIf { it.canGoForward() }?.let { view ->
-            entry.rearmPageLifecycle(view.url.orEmpty())
+            val history = view.copyBackForwardList()
+            val targetUrl = history.getItemAtIndex(history.currentIndex + 1).url
+            entry.activeDocumentUrl = targetUrl
+            beginDarkRevealGuard(view, entry, targetUrl)
+            entry.rearmPageLifecycle(targetUrl)
             view.goForward()
         }
     }

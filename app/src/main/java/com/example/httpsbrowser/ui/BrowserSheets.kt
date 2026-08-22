@@ -344,13 +344,21 @@ object BrowserSheets {
                 item { EmptyRow("進行中またはこの起動中に開始したダウンロードはここに表示されます。") }
             }
             items(downloads, key = { it.id }) { download ->
-                DownloadStatusRow(download)
+                DownloadStatusRow(
+                    download = download,
+                    onCancel = { BrowserDownloadDispatcher.cancel(context, download.id) },
+                    onDelete = { BrowserDownloadDispatcher.delete(context, download.id) }
+                )
             }
         }
     }
 
     @Composable
-    private fun DownloadStatusRow(download: BrowserDownloadStatus) {
+    private fun DownloadStatusRow(
+        download: BrowserDownloadStatus,
+        onCancel: () -> Unit,
+        onDelete: () -> Unit
+    ) {
         val fraction = download.progressFraction
         ListItem(
             headlineContent = { Text(download.fileName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -373,11 +381,18 @@ object BrowserSheets {
                 }
             },
             trailingContent = {
-                Text(
-                    if (download.isSuccessful) "完了" else if (download.isTerminal) "確認" else "進行中",
-                    color = if (download.isTerminal && !download.isSuccessful) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium
-                )
+                Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
+                    Text(
+                        if (download.isSuccessful) "完了" else if (download.isTerminal) "確認" else "進行中",
+                        color = if (download.isTerminal && !download.isSuccessful) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    if (download.isTerminal) {
+                        TextButton(onClick = onDelete) { Text("削除") }
+                    } else {
+                        TextButton(onClick = onCancel) { Text("停止") }
+                    }
+                }
             }
         )
     }

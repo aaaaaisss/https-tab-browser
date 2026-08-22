@@ -83,7 +83,7 @@ class AdBlockListRepository(
         sources
         }
 
-    /** 7 日以上更新されていない標準リストだけを更新する。失敗時は直前の正常ファイルを維持する。 */
+    /** 1 日以上更新されていない標準リストだけを更新する。失敗時は直前の正常ファイルを維持する。 */
     suspend fun updateDueStandardLists(): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
             val now = System.currentTimeMillis()
@@ -225,7 +225,7 @@ class AdBlockListRepository(
     }
 
     companion object {
-        private const val UPDATE_INTERVAL_MS = 7L * 24L * 60L * 60L * 1000L
+        private const val UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L
         private const val MAX_LIST_BYTES = 12 * 1024 * 1024
 
         val STANDARD_LISTS = listOf(
@@ -272,8 +272,9 @@ class AdBlockUpdateWorker(appContext: Context, params: WorkerParameters) : Corou
         private const val WORK_NAME = "https_tab_browser_adblock_update"
 
         fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<AdBlockUpdateWorker>(7, TimeUnit.DAYS)
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            val request = PeriodicWorkRequestBuilder<AdBlockUpdateWorker>(1, TimeUnit.DAYS)
+                // 携帯回線を消費せず、Wi‑Fi等の非従量ネットワークでだけ日次更新する。
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,

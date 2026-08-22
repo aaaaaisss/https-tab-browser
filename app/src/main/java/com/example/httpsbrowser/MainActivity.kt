@@ -110,6 +110,7 @@ class MainActivity : ComponentActivity() {
             }
             MotionEvent.ACTION_CANCEL -> Unit
         }
+        // GoogleページではhostをComposeより前面に置くため、ここへ届く場合は中継しない。
         if (!forwardingNormalWebTouch) return false
         val forwarded = MotionEvent.obtain(event)
         forwarded.offsetLocation(-normalWebContentHost.left.toFloat(), -normalWebContentHost.top.toFloat())
@@ -154,12 +155,16 @@ class MainActivity : ComponentActivity() {
         top: Int,
         width: Int,
         height: Int,
-        reserveRightTouchRail: Boolean
+        reserveRightTouchRail: Boolean,
+        placeAboveCompose: Boolean
     ) {
         if (::normalWebContentHost.isInitialized.not() || width <= 0 || height <= 0) return
         // Page boxはComposeがstatus bar下から下部バー上まで測定した値をそのまま使う。
         // Google系では右端予約を外し、重ねる型Webポップアップの全領域をWebViewへ渡す。
         normalWebContentReservesRightTouchRail = reserveRightTouchRail
+        // Googleのページ内モーダルはComposeのタッチ中継を経由させず、ページ矩形だけnative WebViewを前面にする。
+        // Host自体は下部バーより上の高さへclip済みのため、下部バー・シートは覆わない。
+        if (placeAboveCompose) normalWebContentHost.bringToFront() else composeOverlayView.bringToFront()
         val current = normalWebContentHost.layoutParams as? FrameLayout.LayoutParams ?: return
         normalWebContentBoundsReady = true
         if (current.leftMargin == left && current.topMargin == top && current.width == width && current.height == height) return

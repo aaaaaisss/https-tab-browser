@@ -6,6 +6,7 @@ const screen = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/Br
 const sheets = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/BrowserSheets.kt', 'utf8');
 const models = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt', 'utf8');
 const manifest = fs.readFileSync('app/src/main/AndroidManifest.xml', 'utf8');
+const adblock = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/AdBlocker.kt', 'utf8');
 
 function requireText(source, text, label) {
   if (!source.includes(text)) throw new Error(`${label}: missing ${text}`);
@@ -24,7 +25,11 @@ for (const required of [
   'data class BrowserDownloadStatus(',
   'suspend fun currentStatuses(context: Context)',
   'DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR',
-  'setProgress(progressData("ダウンロード中"'
+  'setProgress(progressData("ダウンロード中"',
+  'fun cancel(context: Context, trackingId: String)',
+  'fun delete(context: Context, trackingId: String)',
+  'WorkManager.getInstance(context.applicationContext).cancelWorkById(id)',
+  'OUTPUT_CONTENT_URI'
 ]) requireText(downloads, required, 'download dispatch safety');
 
 requireText(web, 'entry.callbacks.onDownloadRequested(', 'WebView download handoff');
@@ -37,9 +42,13 @@ requireText(screen, 'BrowserDownloadDispatcher.start(context, request, BrowserDo
 requireText(sheets, 'SettingsPage.DOWNLOADS -> DownloadsPage(onBack)', 'downloads settings page routing');
 requireText(sheets, 'BrowserDownloadDispatcher.currentStatuses(context)', 'in-app download progress polling');
 requireText(sheets, 'LinearProgressIndicator(progress = fraction', 'download progress indicator');
+requireText(sheets, 'Text("停止")', 'in-app download cancel action');
+requireText(sheets, 'Text("削除")', 'in-app download delete action');
 requireText(models, 'DOWNLOADS', 'downloads page type');
 requireText(manifest, 'android.permission.FOREGROUND_SERVICE_DATA_SYNC', 'data sync permission');
 requireText(manifest, 'android:foregroundServiceType="dataSync"', 'data sync service type');
+requireText(adblock, 'PeriodicWorkRequestBuilder<AdBlockUpdateWorker>(1, TimeUnit.DAYS)', 'daily adblock update cadence');
+requireText(adblock, 'NetworkType.UNMETERED', 'Wi-Fi-only adblock update constraint');
 
 if (downloads.includes('return "高速ダウンロードを準備しています')) {
   throw new Error('download start must not show intrusive preparing notice');

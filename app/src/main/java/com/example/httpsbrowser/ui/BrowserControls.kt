@@ -445,21 +445,23 @@ fun HomeScreen(
     onAddBookmark: () -> Unit,
     onEnterEditMode: (String) -> Unit,
     onToggleSelection: (String) -> Unit,
-    onExitEditMode: () -> Unit
+    onExitEditMode: () -> Unit,
+    onBackgroundTap: () -> Unit
 ) {
     val bookmarkCells: List<HomeCell> = bookmarks.take(24).map { HomeCell.BookmarkCell(it) }
     val cells: List<HomeCell> = if (editMode) bookmarkCells else bookmarkCells + HomeCell.AddCell
     val rows = cells.chunked(4)
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
-        // グリッド外の背景をタップした場合だけ編集モードを終了する。
-        if (editMode) {
-            Box(
-                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                    detectTapGestures(onTap = { onExitEditMode() })
-                }
-            )
-        }
+        // グリッド外の背景をタップしたらURL編集を終了する。編集モード中は同時に選択も終了する。
+        Box(
+            modifier = Modifier.fillMaxSize().pointerInput(editMode) {
+                detectTapGestures(onTap = {
+                    onBackgroundTap()
+                    if (editMode) onExitEditMode()
+                })
+            }
+        )
         Column(
             modifier = Modifier.align(Alignment.BottomEnd),
             verticalArrangement = Arrangement.spacedBy(14.dp),

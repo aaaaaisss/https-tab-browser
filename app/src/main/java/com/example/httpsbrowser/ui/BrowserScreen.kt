@@ -6,7 +6,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
+import android.net.Uri
 import android.view.View
+import android.view.ViewTreeObserver
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
@@ -75,6 +79,11 @@ private data class FullscreenContent(
  * GoogleアカウントのWebダイアログはページ内の右端をスクロール操作に使う。
  * DOM・viewport・CSSには触れず、Google系文書でのみ独自レールを外してWebViewへ全てのタッチを渡す。
  */
+private fun isGoogleWebSurface(url: String): Boolean {
+    val host = runCatching { Uri.parse(url).host?.lowercase(Locale.ROOT) }.getOrNull().orEmpty()
+    return host == "google.com" || host.endsWith(".google.com") || host.startsWith("google.") || host.contains(".google.")
+}
+
 private fun shouldShowRightEdgeScrollRail(url: String): Boolean {
     val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return true
     return !(host.startsWith("google.") || host.contains(".google."))
@@ -87,6 +96,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val activity = context as? Activity
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val rootView = LocalView.current
     val blocker = remember { com.example.httpsbrowser.data.BraveAdBlockEngine(context.applicationContext) }
     // WebViewはActivity contextで生成する。application contextではWindow/表示設定に紐づかず、
     // 動画surface・全画面・autofillの描画経路が不安定になり得る。
@@ -181,6 +191,24 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 focusManager.clearFocus(force = true)
                 viewModel.stopAddressEditing()
             }
+        }
+    }
+    DisposableEffect(rootView) {
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener
+            val visibleFrame = Rect()
+            rootView.getWindowVisibleDisplayFrame(visibleFrame)
+            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f
+            if (keyboardVisible) {
+                addressImeWasVisible = true
+            } else if (addressImeWasVisible) {
+                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。
+                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }
+            }
+        }
+        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        onDispose {
+            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)
         }
     }
     LaunchedEffect(state.bookmarks) {
@@ -345,7 +373,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                     top = position.y.toInt(),
                                     width = coordinates.size.width,
                                     height = coordinates.size.height,
-                                    reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url)
+                                    reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url),
+                                    placeAboveCompose = isGoogleWebSurface(selectedTab.url)
                                 )
                             }
                         }
@@ -367,7 +396,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             onExitEditMode = {
                                 homeBookmarkEditMode = false
                                 homeBookmarkSelection = emptySet()
-                            }
+                            },
+                            onBackgroundTap = ::endAddressEditing
                         )
                     } else {
                         // 通常WebViewはActivity rootのnative hostへ接続する。Compose内で再親子化しない。
