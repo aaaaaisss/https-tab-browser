@@ -22,17 +22,24 @@ requireText(viewModel, 'return results.values.take(MAX_SUGGESTIONS)', 'suggestio
 requireText(viewModel, 'if (uiState.selectedTab?.isHome == false) openHome()', 'home back fallback');
 requireText(controls, 'onSubmit: (String) -> Unit', 'IME latest input contract');
 requireText(controls, 'onSubmit(textFieldValue.text)', 'IME latest input call');
-requireText(controls, 'onEditingStopped: () -> Unit', 'address focus loss contract');
-requireText(controls, 'if (!focus.isFocused && isEditing) onEditingStopped()', 'address focus loss ends edit mode');
-requireText(screen, 'onEditingStopped = viewModel::stopAddressEditing', 'screen restores controls on address focus loss');
-requireText(screen, 'OnGlobalLayoutListener', 'IME layout fallback for Android back');
+requireText(controls, 'onEditingStopped: () -> Unit', 'address editing callback contract');
+requireText(screen, 'onEditingStopped = viewModel::stopAddressEditing', 'screen restores controls on address editing end');
 requireText(screen, 'onBackgroundTap = ::endAddressEditing', 'home background ends address editing');
 requireText(controls, 'onBackgroundTap: () -> Unit', 'home background tap contract');
 requireText(controls, 'reverseLayout = true', 'bottom-up suggestion layout');
-requireText(screen, '@OptIn(ExperimentalLayoutApi::class)', 'IME layout API opt-in');
-requireText(screen, 'val imeVisible = WindowInsets.isImeVisible', 'IME dismissal observer');
 requireText(screen, 'onSubmit = { input -> navigate(input) }', 'IME navigation wiring');
 requireText(screen, 'onOpenBookmark = { bookmark -> navigate(bookmark.url) }', 'bookmark URL-bar navigation');
+
+// Focus and IME ownership: Android focus/keyboard effects stay in Compose UI, not ViewModel state.
+forbidText(viewModel, 'isAddressFocused', 'legacy ViewModel focus state');
+requireText(controls, 'val keyboardController = LocalSoftwareKeyboardController.current', 'X button keyboard controller');
+requireText(controls, 'val imeVisible = WindowInsets.isImeVisible', 'X button IME visibility check');
+requireText(controls, 'if (!imeVisible) {', 'X opens keyboard only when closed');
+requireText(controls, 'focusRequester.requestFocus()', 'X restores address-bar focus');
+requireText(controls, 'keyboardController?.show()', 'X opens keyboard when needed');
+requireText(controls, 'textFieldValue = TextFieldValue("", TextRange(0))', 'X clears all address text');
+forbidText(controls, 'LaunchedEffect(isEditing)', 'focus-driven IME side effect loop');
+
 const systemBackHome = screen.indexOf('selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()');
 const systemBackHistory = screen.indexOf('selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)');
 if (systemBackHome < 0 || systemBackHistory < 0 || systemBackHistory > systemBackHome) {
@@ -51,7 +58,7 @@ forbidText(sheets, '広告 URL ルールをブロック', 'renamed adblock setti
 forbidText(sheets, '攻めた広告遮断モード', 'renamed high adblock mode');
 forbidText(sheets, '動画サイトにも暗色化を適用', 'renamed high dark mode');
 
-requireText(viewModel, 'uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())', 'home clears address and suggestion state');
+requireText(viewModel, 'uiState = uiState.copy(addressInput = "", isAddressEditing = false, isSuggestionPanelVisible = false, suggestions = emptyList())', 'home clears address and suggestion state');
 const homeStateUpdate = screen.indexOf('viewModel.returnSelectedTabToHome()');
 const homeHistoryReset = screen.indexOf('registry.resetForHome(id)');
 if (homeStateUpdate < 0 || homeHistoryReset < 0 || homeStateUpdate > homeHistoryReset) {
@@ -90,4 +97,4 @@ requireText(webView, 'page_finished_ignored_during_home_reset', 'stale callback 
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address focus recovery, home reset, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization, address editing, X/IME behavior, home reset, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
