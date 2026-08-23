@@ -1,0 +1,110 @@
+name: One-shot address bar IME fix v2
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          fetch-depth: 0
+      - name: Apply focused IME fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
+          s = p.read_text()
+          old = '''.focusRequester(focusRequester).onFocusChanged { focus ->
+                        if (focus.isFocused && !isEditing) onEditingStarted()
+                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
+                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
+                        if (!focus.isFocused && isEditing) onEditingStopped()
+                    },'''
+          new = '''.focusRequester(focusRequester).onFocusChanged { focus ->
+                        // フォーカス喪失だけでは編集状態を終了しない。
+                        // XボタンやIMEの一時的なフォーカス遷移でstopAddressEditing()が走ると、
+                        // IMEが一瞬だけ表示されて閉じ、その後の再フォーカスまで遅延する。
+                        if (focus.isFocused && !isEditing) onEditingStarted()
+                    },'''
+          if old not in s: raise SystemExit('focus block not found')
+          s = s.replace(old, new, 1)
+          old = '''IconButton(onClick = {
+                                onValueChange("")
+                                onEditingStarted()
+                            }, modifier = Modifier.size(32.dp)) {'''
+          new = '''IconButton(onClick = {
+                                // Xは編集状態を維持したまま文字だけを消す。
+                                onEditingStarted()
+                                onValueChange("")
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
+                            }, modifier = Modifier.size(32.dp)) {'''
+          if old not in s: raise SystemExit('clear button block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt')
+          s = p.read_text()
+          old = '''    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。
+    var addressImeWasVisible by remember { mutableStateOf(false) }
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(state.isAddressFocused, imeVisible) {
+        when {
+            !state.isAddressFocused -> addressImeWasVisible = false
+            imeVisible -> addressImeWasVisible = true
+            addressImeWasVisible -> {
+                focusManager.clearFocus(force = true)
+                viewModel.stopAddressEditing()
+            }
+        }
+    }
+    DisposableEffect(rootView) {
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener
+            val visibleFrame = Rect()
+            rootView.getWindowVisibleDisplayFrame(visibleFrame)
+            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f
+            if (keyboardVisible) {
+                addressImeWasVisible = true
+            } else if (addressImeWasVisible) {
+                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。
+                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }
+            }
+        }
+        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        onDispose {
+            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+        }
+    }
+'''
+          if old not in s: raise SystemExit('IME observer block not found')
+          s = s.replace(old, '', 1)
+          p.write_text(s)
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt
+          git commit -m "fix(address-bar): decouple IME visibility from editing state"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+      - name: Remove one-shot runner from main
+        if: always()
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+          git rm .github/workflows/one-shot-ime-v2.yml
+          git commit -m "chore: remove one-shot IME fix runner" || true
+          git push origin main || true
