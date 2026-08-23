@@ -33,7 +33,7 @@ requireText(screen, 'onOpenBookmark = { bookmark -> navigate(bookmark.url) }', '
 // Focus and IME ownership: Android focus/keyboard effects stay in Compose UI, not ViewModel focus state.
 forbidText(viewModel, 'isAddressFocused', 'legacy ViewModel focus state');
 requireText(controls, 'val keyboardController = LocalSoftwareKeyboardController.current', 'X button keyboard controller');
-requireText(controls, 'val imeVisible = WindowInsets.ime.getBottom(density) > 0', 'X button IME visibility check');
+requireText(controls, 'val imeVisible = WindowInsets.isImeVisible', 'X button IME visibility check');
 requireText(controls, 'if (!imeVisible) {', 'X opens keyboard only when closed');
 requireText(controls, 'focusRequester.requestFocus()', 'X restores address-bar focus');
 requireText(controls, 'keyboardController?.show()', 'X opens keyboard when needed');
