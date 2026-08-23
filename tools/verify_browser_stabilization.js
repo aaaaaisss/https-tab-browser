@@ -23,14 +23,14 @@ requireText(viewModel, 'if (uiState.selectedTab?.isHome == false) openHome()', '
 requireText(controls, 'onSubmit: (String) -> Unit', 'IME latest input contract');
 requireText(controls, 'onSubmit(textFieldValue.text)', 'IME latest input call');
 requireText(controls, 'onEditingStopped: () -> Unit', 'address editing callback contract');
-requireText(screen, 'onEditingStopped = viewModel::stopAddressEditing', 'screen restores controls on address editing end');
+requireText(screen, 'onEditingStopped = { addressBarEditing = false; viewModel.stopAddressEditing() }', 'screen restores controls on address editing end');
 requireText(screen, 'onBackgroundTap = ::endAddressEditing', 'home background ends address editing');
 requireText(controls, 'onBackgroundTap: () -> Unit', 'home background tap contract');
 requireText(controls, 'reverseLayout = true', 'bottom-up suggestion layout');
 requireText(screen, 'onSubmit = { input -> navigate(input) }', 'IME navigation wiring');
 requireText(screen, 'onOpenBookmark = { bookmark -> navigate(bookmark.url) }', 'bookmark URL-bar navigation');
 
-// Focus and IME ownership: Android focus/keyboard effects stay in Compose UI, not ViewModel state.
+// Focus and IME ownership: Android focus/keyboard effects stay in Compose UI, not ViewModel focus state.
 forbidText(viewModel, 'isAddressFocused', 'legacy ViewModel focus state');
 requireText(controls, 'val keyboardController = LocalSoftwareKeyboardController.current', 'X button keyboard controller');
 requireText(controls, 'val imeVisible = WindowInsets.isImeVisible', 'X button IME visibility check');
