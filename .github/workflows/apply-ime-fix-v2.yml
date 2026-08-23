@@ -1,9 +1,10 @@
 name: Apply targeted address bar IME fix v2
 
 on:
-  push:
+  pull_request:
+    types: [opened, synchronize]
     branches:
-      - fix/address-bar-clear-ime-v2
+      - main
 
 permissions:
   contents: write
@@ -103,7 +104,7 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot].users.noreply.github.com
-          git rm .github/workflows/apply-ime-fix-v2.yml
+          git rm .github/workflows/apply-ime-fix-v2.yml .ime-fix-v2-trigger
           git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt
           git commit -m "fix(address-bar): decouple IME visibility from editing state"
           git push origin fix/address-bar-clear-ime-v2
