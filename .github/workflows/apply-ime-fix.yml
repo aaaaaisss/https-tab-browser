@@ -1,16 +1,16 @@
 name: Apply address bar IME race fix
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/address-bar-clear-ime-race
+      - main
+      - master
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
@@ -58,11 +58,11 @@ jobs:
           p.write_text(s)
           PY
 
-      - name: Commit fix and remove one-shot workflow
+      - name: Commit fix and remove one-shot workflow and trigger
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt .github/workflows/apply-ime-fix.yml
-          git rm .github/workflows/apply-ime-fix.yml
+          git rm .github/workflows/apply-ime-fix.yml .ime-fix-trigger
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt
           git commit -m "fix(address-bar): prevent IME dismissal race when clearing input"
           git push origin fix/address-bar-clear-ime-race
