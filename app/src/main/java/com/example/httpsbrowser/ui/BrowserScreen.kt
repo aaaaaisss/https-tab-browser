@@ -6,10 +6,8 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Rect
 import android.net.Uri
 import android.view.View
-import android.view.ViewTreeObserver
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,7 +18,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -39,13 +36,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
@@ -97,7 +94,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val activity = context as? Activity
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val rootView = LocalView.current
     val blocker = remember { com.example.httpsbrowser.data.BraveAdBlockEngine(context.applicationContext) }
     // WebViewはActivity contextで生成する。application contextではWindow/表示設定に紐づかず、
     // 動画surface・全画面・autofillの描画経路が不安定になり得る。
@@ -119,6 +115,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
     var pendingDownload by remember { mutableStateOf<BrowserDownloadRequest?>(null) }
+    var addressBarEditing by remember { mutableStateOf(false) }
+    val addressBarFocusRequester = remember { FocusRequester() }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -134,6 +132,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     fun endAddressEditing() {
         keyboardController?.hide()
         focusManager.clearFocus(force = true)
+        addressBarEditing = false
         viewModel.stopAddressEditing()
     }
 
@@ -176,43 +175,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     }
     LaunchedEffect(externalUrl) {
         externalUrl?.let(::navigate)
-    }
-    LaunchedEffect(state.isAddressFocused) {
-        if (!state.isAddressFocused) {
-            keyboardController?.hide()
-            focusManager.clearFocus(force = true)
-        }
-    }
-    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。
-    var addressImeWasVisible by remember { mutableStateOf(false) }
-    val imeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(state.isAddressFocused, imeVisible) {
-        when {
-            !state.isAddressFocused -> addressImeWasVisible = false
-            imeVisible -> addressImeWasVisible = true
-            addressImeWasVisible -> {
-                focusManager.clearFocus(force = true)
-                viewModel.stopAddressEditing()
-            }
-        }
-    }
-    DisposableEffect(rootView) {
-        val listener = ViewTreeObserver.OnGlobalLayoutListener {
-            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener
-            val visibleFrame = Rect()
-            rootView.getWindowVisibleDisplayFrame(visibleFrame)
-            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f
-            if (keyboardVisible) {
-                addressImeWasVisible = true
-            } else if (addressImeWasVisible) {
-                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。
-                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }
-            }
-        }
-        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
-        onDispose {
-            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)
-        }
     }
     LaunchedEffect(state.bookmarks) {
         homeBookmarkSelection = homeBookmarkSelection.intersect(state.bookmarks.map { it.id }.toSet())
@@ -313,7 +275,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onPageArchiveReady = { sourcePath, fileName ->
                     pendingPageArchive = File(sourcePath)
                     pageArchiveLauncher.launch(fileName)
-                }
+                },
+                onPageInteraction = ::endAddressEditing
             ))
             hostActivity.showNormalWebContent(registry, tab.id)
         }
@@ -334,7 +297,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     BackHandler {
         when {
             state.isFullscreen -> finishFullscreen(true)
-            state.isAddressFocused -> viewModel.stopAddressEditing()
+            addressBarEditing -> endAddressEditing()
             state.isTabSheetVisible -> viewModel.toggleTabSheet()
             state.isSettingsSheetVisible -> viewModel.backFromSettingsPage()
             homeBookmarkEditMode -> {
@@ -422,48 +385,48 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     AddressBar(
                         value = state.addressInput,
                         progress = progress,
-                        isEditing = state.isAddressFocused,
+                        isEditing = addressBarEditing,
+                        focusRequester = addressBarFocusRequester,
                         onValueChange = viewModel::setAddressInput,
-                        // 新規入力時だけURLを読み込む。WebViewの戻る・進むではloadUrlを呼ばない。
                         onSubmit = { input -> navigate(input) },
-                        onTranslate = { if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
-                        onRefresh = { if (!selectedTab.isHome) registry.reload(selectedTab.id) },
-                        onEditingStarted = viewModel::startAddressEditing,
-                        onEditingStopped = viewModel::stopAddressEditing
+                        onTranslate = { endAddressEditing(); if (!selectedTab.isHome) registry.translateToJapanese(selectedTab.id) },
+                        onRefresh = { endAddressEditing(); if (!selectedTab.isHome) registry.reload(selectedTab.id) },
+                        onEditingStarted = { addressBarEditing = true; viewModel.startAddressEditing() },
+                        onEditingStopped = { addressBarEditing = false; viewModel.stopAddressEditing() }
                     )
                     // IME表示中はURLバーと横の翻訳・更新ボタンだけをキーボード直上に固定する。
                     // 操作列とタブバーを同時に再計測しないため、キーボードにめり込んだり戻ったりしない。
-                    if (!state.isAddressFocused) {
+                    if (!addressBarEditing) {
                         NavigationRow(
                             canGoBack = (selectedTab.canGoBack || selectedTab.returnToHomeOnBack) && !selectedTab.isHome,
                             canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
                             onTabs = { endAddressEditing(); viewModel.toggleTabSheet() },
                             onBack = {
-                                viewModel.stopAddressEditing()
+                                endAddressEditing()
                                 if (!selectedTab.isHome) {
                                     // 履歴があればWebViewの復元を使い、履歴を使い切ったホーム起点遷移だけホームへ戻す。
                                     if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
                                     else if (selectedTab.returnToHomeOnBack) returnSelectedTabToHome()
                                 }
                             },
-                            onSearch = viewModel::startAddressEditing,
-                            onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
-                            onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
-                            onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
-                            onDownloads = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.DOWNLOADS) },
+                            onSearch = { addressBarFocusRequester.requestFocus() },
+                            onForward = { endAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
+                            onBookmark = { endAddressEditing(); addBookmarkDialog = true },
+                            onHistory = { endAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
+                            onDownloads = { endAddressEditing(); viewModel.openSettings(SettingsPage.DOWNLOADS) },
                             onSavePage = {
-                                viewModel.stopAddressEditing()
+                                endAddressEditing()
                                 if (!selectedTab.isHome) registry.savePageArchive(selectedTab.id, selectedTab.title)
                             },
-                            onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, registry.currentUrl(selectedTab.id) ?: selectedTab.url) },
-                            onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
+                            onShare = { endAddressEditing(); if (!selectedTab.isHome) shareUrl(context, registry.currentUrl(selectedTab.id) ?: selectedTab.url) },
+                            onSettings = { endAddressEditing(); viewModel.openSettings() }
                         )
                         TabBar(
                             tabs = state.tabs,
                             selectedTabId = state.selectedTabId,
-                            onSelect = { id -> viewModel.stopAddressEditing(); viewModel.selectTab(id) },
-                            onClose = { id -> viewModel.stopAddressEditing(); registry.remove(id); viewModel.closeTab(id) },
-                            onAdd = { viewModel.stopAddressEditing(); viewModel.addTab() }
+                            onSelect = { id -> endAddressEditing(); viewModel.selectTab(id) },
+                            onClose = { id -> endAddressEditing(); registry.remove(id); viewModel.closeTab(id) },
+                            onAdd = { endAddressEditing(); viewModel.addTab() }
                         )
                     }
                     }
@@ -649,7 +612,8 @@ private fun callbacksFor(
     onExternalApp: (String) -> Unit,
     onRendererGone: () -> Unit,
     onDownloadRequested: (BrowserDownloadRequest) -> Unit,
-    onPageArchiveReady: (String, String) -> Unit
+    onPageArchiveReady: (String, String) -> Unit,
+    onPageInteraction: () -> Unit
 ) = object : BrowserWebCallbacks {
     override fun onPageStarted(tabId: String, url: String) = viewModel.onPageStarted(tabId, url)
     override fun onPageFinished(tabId: String, url: String, title: String?) = viewModel.onPageFinished(tabId, url, title)
@@ -672,7 +636,7 @@ private fun callbacksFor(
     override fun onDownloadRequested(request: BrowserDownloadRequest) = onDownloadRequested(request)
     override fun onPageArchiveReady(sourcePath: String, fileName: String) = onPageArchiveReady(sourcePath, fileName)
     override fun onExternalAppRequested(url: String) = onExternalApp(url)
-    override fun onPageInteraction() = viewModel.stopAddressEditing()
+    override fun onPageInteraction() = onPageInteraction()
     override fun onNotice(message: String) = showNotice(message)
 }
 
