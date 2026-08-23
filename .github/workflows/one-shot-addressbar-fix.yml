@@ -1,0 +1,62 @@
+name: One-shot address bar fix
+
+on:
+  push:
+    branches:
+      - rebuild/121e47b-four-pillars
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: ${{ !contains(github.event.head_commit.message, 'address bar IME refactor') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rebuild/121e47b-four-pillars
+          fetch-depth: 0
+      - name: Apply narrowly scoped patch
+        shell: python
+        run: |
+          from pathlib import Path
+          bc = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
+          text = bc.read_text(encoding='utf-8')
+          old_import = 'import androidx.compose.ui.focus.focusRequester\n'
+          new_import = old_import + 'import androidx.compose.ui.focus.focusProperties\nimport androidx.compose.ui.input.pointer.pointerInput\nimport androidx.compose.foundation.gestures.detectTapGestures\n'
+          assert text.count(old_import) == 1
+          text = text.replace(old_import, new_import, 1)
+          old_effect = '''    LaunchedEffect(isEditing) {\n        if (isEditing) {\n            textFieldValue = TextFieldValue(value, TextRange(0, value.length))\n            focusRequester.requestFocus()\n        } else {\n            focusManager.clearFocus(force = true)\n        }\n    }\n'''
+          new_effect = '''    LaunchedEffect(isEditing) {\n        if (isEditing) {\n            textFieldValue = TextFieldValue(value, TextRange(0, value.length))\n            focusRequester.requestFocus()\n        }\n    }\n'''
+          assert text.count(old_effect) == 1
+          text = text.replace(old_effect, new_effect, 1)
+          old_trailing = '''                trailingIcon = {\n                    if (textFieldValue.text.isNotBlank()) IconButton(onClick = { onValueChange(\"\") }, modifier = Modifier.size(34.dp)) {\n                        Icon(Icons.Default.Close, contentDescription = \"入力を消去\")\n                    }\n                },\n'''
+          new_trailing = '''                trailingIcon = {\n                    if (textFieldValue.text.isNotBlank()) {\n                        Box(\n                            modifier = Modifier\n                                .size(34.dp)\n                                .focusProperties { canFocus = false }\n                                .pointerInput(Unit) {\n                                    detectTapGestures(onTap = { onValueChange(\"\") })\n                                },\n                            contentAlignment = Alignment.Center\n                        ) {\n                            Icon(Icons.Default.Close, contentDescription = \"入力を消去\")\n                        }\n                    }\n                },\n'''
+          assert text.count(old_trailing) == 1
+          text = text.replace(old_trailing, new_trailing, 1)
+          bc.write_text(text, encoding='utf-8')
+          bs = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt')
+          text = bs.read_text(encoding='utf-8')
+          old_effect = '''    LaunchedEffect(state.isAddressFocused) {\n        if (!state.isAddressFocused) {\n            keyboardController?.hide()\n            focusManager.clearFocus(force = true)\n        }\n    }\n'''
+          assert text.count(old_effect) == 1
+          text = text.replace(old_effect, '', 1)
+          old_ime = '''    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。\n    var addressImeWasVisible by remember { mutableStateOf(false) }\n    val imeVisible = WindowInsets.isImeVisible\n    LaunchedEffect(state.isAddressFocused, imeVisible) {\n        when {\n            !state.isAddressFocused -> addressImeWasVisible = false\n            imeVisible -> addressImeWasVisible = true\n            addressImeWasVisible -> {\n                focusManager.clearFocus(force = true)\n                viewModel.stopAddressEditing()\n            }\n        }\n    }\n    DisposableEffect(rootView) {\n        val listener = ViewTreeObserver.OnGlobalLayoutListener {\n            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener\n            val visibleFrame = Rect()\n            rootView.getWindowVisibleDisplayFrame(visibleFrame)\n            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f\n            if (keyboardVisible) {\n                addressImeWasVisible = true\n            } else if (addressImeWasVisible) {\n                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。\n                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }\n            }\n        }\n        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)\n        onDispose {\n            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)\n        }\n    }\n'''
+          assert text.count(old_ime) == 1
+          text = text.replace(old_ime, '', 1)
+          bs.write_text(text, encoding='utf-8')
+      - name: Compile
+        run: ./gradlew :app:compileDebugKotlin --no-daemon
+      - name: Verify scope
+        run: |
+          git diff --check
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt "
+          test -z "$(git diff --name-only -- app/src/main/java/com/example/httpsbrowser/web app/src/main/java/com/example/httpsbrowser/data)"
+      - name: Commit verified patch and remove helper
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm .github/workflows/one-shot-addressbar-fix.yml
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt .github/workflows/one-shot-addressbar-fix.yml
+          git commit -m 'refactor: address bar IME refactor'
+          git push origin HEAD:rebuild/121e47b-four-pillars
