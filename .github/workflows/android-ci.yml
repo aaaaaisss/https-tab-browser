@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, rebuild/addressbar-96-clean ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
