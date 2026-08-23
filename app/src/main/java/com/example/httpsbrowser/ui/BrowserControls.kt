@@ -141,9 +141,9 @@ fun AddressBar(
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
                         if (focus.isFocused && !isEditing) onEditingStarted()
-                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
-                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
-                        if (!focus.isFocused && isEditing) onEditingStopped()
+                        // フォーカス喪失だけでは編集状態を終了しない。
+                        // XボタンやIMEの一時的なフォーカス遷移でstopAddressEditing()が走ると、
+                        // IMEが一瞬だけ表示されて消えるため、明示的な編集終了だけで閉じる。
                     },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
                 cursorBrush = SolidColor(Color.White),
@@ -168,9 +168,11 @@ fun AddressBar(
                         }
                         if (textFieldValue.text.isNotBlank()) {
                             IconButton(onClick = {
-                                onValueChange("")
-                                onEditingStarted()
-                            }, modifier = Modifier.size(32.dp)) {
+                      onEditingStarted()
+                      onValueChange("")
+                      focusRequester.requestFocus()
+                      keyboardController?.show()
+                  }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }

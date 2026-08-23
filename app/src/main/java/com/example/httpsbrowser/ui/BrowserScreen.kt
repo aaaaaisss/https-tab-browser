@@ -183,37 +183,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             focusManager.clearFocus(force = true)
         }
     }
-    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。
-    var addressImeWasVisible by remember { mutableStateOf(false) }
-    val imeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(state.isAddressFocused, imeVisible) {
-        when {
-            !state.isAddressFocused -> addressImeWasVisible = false
-            imeVisible -> addressImeWasVisible = true
-            addressImeWasVisible -> {
-                focusManager.clearFocus(force = true)
-                viewModel.stopAddressEditing()
-            }
-        }
-    }
-    DisposableEffect(rootView) {
-        val listener = ViewTreeObserver.OnGlobalLayoutListener {
-            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener
-            val visibleFrame = Rect()
-            rootView.getWindowVisibleDisplayFrame(visibleFrame)
-            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f
-            if (keyboardVisible) {
-                addressImeWasVisible = true
-            } else if (addressImeWasVisible) {
-                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。
-                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }
-            }
-        }
-        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
-        onDispose {
-            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)
-        }
-    }
     LaunchedEffect(state.bookmarks) {
         homeBookmarkSelection = homeBookmarkSelection.intersect(state.bookmarks.map { it.id }.toSet())
     }
