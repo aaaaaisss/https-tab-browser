@@ -11,58 +11,57 @@ permissions:
 
 jobs:
   patch:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: fix/address-bar-clear-ime-race
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
 
-      - name: Patch address bar focus/IME handling
+      - name: Patch address bar focus and IME handling
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
           s = p.read_text()
-          old = '''.focusRequester(focusRequester).onFocusChanged { focus ->
-                        if (focus.isFocused && !isEditing) onEditingStarted()
-                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
-                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
-                        if (!focus.isFocused && isEditing) onEditingStopped()
-                    },'''
-          new = '''.focusRequester(focusRequester).onFocusChanged { focus ->
-                        // フォーカス喪失からstopAddressEditing()を自動発火しない。
-                        // Xボタン等のタップでは一時的なフォーカス遷移が起きるため、
-                        // ここで編集状態を閉じるとIMEが一瞬だけ表示されて消える。
-                        if (focus.isFocused && !isEditing) onEditingStarted()
-                    },'''
-          if old not in s:
-              raise SystemExit('focus block not found')
-          s = s.replace(old, new, 1)
-          old = '''IconButton(onClick = {
-                                onValueChange("")
-                                onEditingStarted()
-                            }, modifier = Modifier.size(32.dp)) {'''
-          new = '''IconButton(onClick = {
-                                // 編集状態を先に確定してから文字列を消す。
-                                // これにより「Xを押す→focus変更→stop」の競合を避ける。
+          pattern = re.compile(r'''(?P<prefix>\.focusRequester\(focusRequester\)\.onFocusChanged \{ focus ->\n\s*if \(focus\.isFocused && !isEditing\) onEditingStarted\(\)\n)(?P<old>\s*//.*?\n\s*//.*?\n\s*if \(!focus\.isFocused && isEditing\) onEditingStopped\(\)\n)(?P<suffix>\s*\},)''', re.S)
+          s, count = pattern.subn(r'''\g<prefix>                        // フォーカス喪失だけでは編集状態を終了しない。\n                        // XボタンやIMEの一時的なフォーカス遷移でstopAddressEditing()が走ると、\n                        // IMEが一瞬だけ表示されて消えるため、明示的な編集終了だけで閉じる。\n\g<suffix>''', s, count=1)
+          if count != 1:
+              raise SystemExit(f'focus block replacement count={count}')
+
+          clear = re.compile(r'''IconButton\(onClick = \{\s*onValueChange\(""\)\s*onEditingStarted\(\)\s*\}, modifier = Modifier\.size\(32\.dp\)\) \{''')
+          replacement = '''IconButton(onClick = {
                                 onEditingStarted()
                                 onValueChange("")
                                 focusRequester.requestFocus()
                                 keyboardController?.show()
                             }, modifier = Modifier.size(32.dp)) {'''
-          if old not in s:
-              raise SystemExit('clear button block not found')
-          s = s.replace(old, new, 1)
+          s, count = clear.subn(replacement, s, count=1)
+          if count != 1:
+              raise SystemExit(f'clear button replacement count={count}')
+          p.write_text(s)
+
+          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt')
+          s = p.read_text()
+          start = s.find('    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。')
+          if start < 0:
+              raise SystemExit('BrowserScreen IME observer start not found')
+          end = s.find('    LaunchedEffect(state.bookmarks) {', start)
+          if end < 0:
+              raise SystemExit('BrowserScreen IME observer end not found')
+          s = s[:start] + s[end:]
           p.write_text(s)
           PY
 
-      - name: Commit fix and remove one-shot workflow and trigger
+      - name: Commit fix
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git rm .github/workflows/apply-ime-fix.yml .ime-fix-trigger
-          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt
-          git commit -m "fix(address-bar): prevent IME dismissal race when clearing input"
-          git push origin fix/address-bar-clear-ime-race
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt
+          git commit -m "fix(address-bar): decouple IME visibility from editing state"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
