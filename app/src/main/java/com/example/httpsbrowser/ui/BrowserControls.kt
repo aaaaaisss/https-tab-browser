@@ -167,7 +167,10 @@ fun AddressBar(
                             innerTextField()
                         }
                         if (textFieldValue.text.isNotBlank()) {
-                            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {
+                            IconButton(onClick = {
+                                onValueChange("")
+                                onEditingStarted()
+                            }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }
