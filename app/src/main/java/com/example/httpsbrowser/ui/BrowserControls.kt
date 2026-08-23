@@ -118,14 +118,24 @@ fun AddressBar(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    var clearPending by remember { mutableStateOf(false) }
 
     LaunchedEffect(value) {
-        if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
+        if (clearPending) {
+            // Xを未選択状態で押した直後は、編集状態へ遷移させず表示だけを空にする。
+            // 外部状態が別の値へ更新された場合だけ通常の同期へ戻す。
+            if (value.isNotBlank()) {
+                clearPending = false
+                textFieldValue = TextFieldValue(value, TextRange(value.length))
+            }
+        } else if (textFieldValue.text != value) {
+            textFieldValue = TextFieldValue(value, TextRange(value.length))
+        }
     }
     LaunchedEffect(isEditing) {
         if (isEditing) {
             // URL バーをタップしても全選択せず、カーソルを末尾に置く。
-            if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
+            if (!clearPending && textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
             focusRequester.requestFocus()
         } else {
             focusManager.clearFocus(force = true)
@@ -137,10 +147,21 @@ fun AddressBar(
         Row(verticalAlignment = Alignment.CenterVertically) {
             BasicTextField(
                 value = textFieldValue,
-                onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
+                onValueChange = { updated ->
+                    textFieldValue = updated
+                    clearPending = false
+                    onValueChange(updated.text)
+                },
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
-                        if (focus.isFocused && !isEditing) onEditingStarted()
+                        if (focus.isFocused && !isEditing) {
+                            onEditingStarted()
+                            if (clearPending) {
+                                clearPending = false
+                                // Xで表示だけを先に消したケースでは、実際の状態もここで空にする。
+                                onValueChange("")
+                            }
+                        }
                         // フォーカス喪失だけでは編集状態を終了しない。
                         // XボタンやIMEの一時的なフォーカス遷移でstopAddressEditing()が走ると、
                         // IMEが一瞬だけ表示されて消えるため、明示的な編集終了だけで閉じる。
@@ -168,11 +189,17 @@ fun AddressBar(
                         }
                         if (textFieldValue.text.isNotBlank()) {
                             IconButton(onClick = {
-                      onEditingStarted()
-                      onValueChange("")
-                      focusRequester.requestFocus()
-                      keyboardController?.show()
-                  }, modifier = Modifier.size(32.dp)) {
+                                if (isEditing) {
+                                    // 既に編集中なら、フォーカスもIMEも触らず入力だけを消す。
+                                    // BasicTextFieldが保持している入力接続を再利用できるため、IMEの点滅を避けられる。
+                                    onValueChange("")
+                                } else {
+                                    // 未選択状態ではVMの編集状態を変更しない。表示だけを空にして、
+                                    // ユーザーが次にURLバーを選択した時点で実状態へ反映する。
+                                    clearPending = true
+                                    textFieldValue = TextFieldValue("")
+                                }
+                            }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }
@@ -413,8 +440,6 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
             Image(
                 bitmap = favicon!!,
                 contentDescription = "$title のサイトアイコン",
-                // タブでは画像そのものを優先し、favicon内の余白を残さない。
-                // 正方形でない画像や端の意匠は円形クリップで少し切れてもよい。
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
@@ -458,7 +483,6 @@ fun HomeScreen(
     val rows = cells.chunked(4)
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
-        // グリッド外の背景をタップしたらURL編集を終了する。編集モード中は同時に選択も終了する。
         Box(
             modifier = Modifier.fillMaxSize().pointerInput(editMode) {
                 detectTapGestures(onTap = {
