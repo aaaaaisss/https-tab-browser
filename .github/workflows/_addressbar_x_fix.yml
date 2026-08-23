@@ -1,0 +1,54 @@
+name: addressbar-x-fix-once
+
+on:
+  push:
+    branches:
+      - rebuild/addressbar-96-clean
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, '[addressbar-x-fix]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rebuild/addressbar-96-clean
+          fetch-depth: 0
+
+      - name: Fix X button IME behavior
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
+          text = p.read_text()
+          text = text.replace('import androidx.compose.foundation.layout.Box\n', 'import androidx.compose.foundation.layout.Box\nimport androidx.compose.foundation.layout.ExperimentalLayoutApi\nimport androidx.compose.foundation.layout.WindowInsets\n')
+          text = text.replace('import androidx.compose.ui.platform.LocalDensity\n', 'import androidx.compose.ui.platform.LocalDensity\nimport androidx.compose.ui.platform.LocalSoftwareKeyboardController\n')
+          old_sig = '@Composable\nfun AddressBar('
+          new_sig = '@OptIn(ExperimentalLayoutApi::class)\n@Composable\nfun AddressBar('
+          if old_sig not in text:
+              raise SystemExit('AddressBar signature not found')
+          text = text.replace(old_sig, new_sig, 1)
+          old_state = '    var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }\n\n    LaunchedEffect(value) {'
+          new_state = '    var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }\n    val keyboardController = LocalSoftwareKeyboardController.current\n    val imeVisible = WindowInsets.isImeVisible\n\n    LaunchedEffect(value) {'
+          if old_state not in text:
+              raise SystemExit('AddressBar state block not found')
+          text = text.replace(old_state, new_state, 1)
+          old_button = '''                            IconButton(onClick = {\n                                textFieldValue = TextFieldValue("")\n                                onValueChange("")\n                            }, modifier = Modifier.size(32.dp)) {'''
+          new_button = '''                            IconButton(onClick = {\n                                if (!isEditing) onEditingStarted()\n                                textFieldValue = TextFieldValue("", TextRange(0))\n                                onValueChange("")\n                                if (!imeVisible) {\n                                    focusRequester.requestFocus()\n                                    keyboardController?.show()\n                                }\n                            }, modifier = Modifier.size(32.dp)) {'''
+          if old_button not in text:
+              raise SystemExit('AddressBar clear button block not found')
+          text = text.replace(old_button, new_button, 1)
+          p.write_text(text)
+
+      - name: Commit and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/_addressbar_x_fix.yml
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt
+          git commit -m 'Fix address bar clear button IME behavior [addressbar-x-fix]'
+          git push origin HEAD:rebuild/addressbar-96-clean
