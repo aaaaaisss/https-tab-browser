@@ -18,6 +18,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -78,6 +80,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
@@ -100,6 +103,7 @@ private val BottomBarButton = Color(0xFF1C2531)
 private val BottomBarButtonEmphasis = Color(0xFF2C5C92)
 private val BottomBarText = Color(0xFFF2F6FC)
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AddressBar(
     value: String,
@@ -114,6 +118,8 @@ fun AddressBar(
     onEditingStopped: () -> Unit
 ) {
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val imeVisible = WindowInsets.isImeVisible
 
     LaunchedEffect(value) {
         if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
@@ -148,8 +154,13 @@ fun AddressBar(
                         }
                         if (textFieldValue.text.isNotBlank()) {
                             IconButton(onClick = {
-                                textFieldValue = TextFieldValue("")
+                                if (!isEditing) onEditingStarted()
+                                textFieldValue = TextFieldValue("", TextRange(0))
                                 onValueChange("")
+                                if (!imeVisible) {
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                }
                             }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
