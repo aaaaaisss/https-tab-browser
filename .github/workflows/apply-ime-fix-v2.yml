@@ -1,4 +1,4 @@
-name: Apply targeted address bar IME fix v2
+name: Apply targeted address bar clear fix
 
 on:
   pull_request:
@@ -17,94 +17,84 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: fix/address-bar-clear-ime-v2
-      - name: Apply focused address bar fix
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+      - name: Patch address bar clear semantics
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
-          s = p.read_text()
-
-          old = '''.focusRequester(focusRequester).onFocusChanged { focus ->
-                        if (focus.isFocused && !isEditing) onEditingStarted()
-                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
-                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
-                        if (!focus.isFocused && isEditing) onEditingStopped()
-                    },'''
-          new = '''.focusRequester(focusRequester).onFocusChanged { focus ->
-                        // フォーカス喪失だけでは編集状態を終了しない。
-                        // XボタンやIMEの一時的なフォーカス遷移でstopAddressEditing()が走ると、
-                        // IMEが一瞬だけ表示されて閉じ、その後の再フォーカスまで遅延する。
-                        if (focus.isFocused && !isEditing) onEditingStarted()
-                    },'''
+          controls = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
+          s = controls.read_text()
+          s = s.replace(
+              '    onValueChange: (String) -> Unit,\n    onSubmit: () -> Unit,',
+              '    onValueChange: (String) -> Unit,\n    onClear: () -> Unit,\n    onSubmit: () -> Unit,',
+              1,
+          )
+          old = 'IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {'
+          new = 'IconButton(onClick = onClear, modifier = Modifier.size(32.dp)) {'
           if old not in s:
-              raise SystemExit('BrowserControls focus block not found')
+              raise SystemExit('AddressBar clear button not found')
           s = s.replace(old, new, 1)
+          controls.write_text(s)
 
-          old = '''IconButton(onClick = {
-                                onValueChange("")
-                                onEditingStarted()
-                            }, modifier = Modifier.size(32.dp)) {'''
-          new = '''IconButton(onClick = {
-                                // Xは編集状態を維持したまま文字だけを消す。
-                                // 状態変更後の再構成を待たず、現在のTextFieldへ明示的にフォーカスを戻す。
-                                onEditingStarted()
-                                onValueChange("")
-                                focusRequester.requestFocus()
-                                keyboardController?.show()
-                            }, modifier = Modifier.size(32.dp)) {'''
-          if old not in s:
-              raise SystemExit('BrowserControls clear button block not found')
-          s = s.replace(old, new, 1)
-          p.write_text(s)
-
-          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt')
-          s = p.read_text()
-
-          old = '''    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。
-    var addressImeWasVisible by remember { mutableStateOf(false) }
-    val imeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(state.isAddressFocused, imeVisible) {
-        when {
-            !state.isAddressFocused -> addressImeWasVisible = false
-            imeVisible -> addressImeWasVisible = true
-            addressImeWasVisible -> {
-                focusManager.clearFocus(force = true)
-                viewModel.stopAddressEditing()
-            }
-        }
-    }
-    DisposableEffect(rootView) {
-        val listener = ViewTreeObserver.OnGlobalLayoutListener {
-            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener
-            val visibleFrame = Rect()
-            rootView.getWindowVisibleDisplayFrame(visibleFrame)
-            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f
-            if (keyboardVisible) {
-                addressImeWasVisible = true
-            } else if (addressImeWasVisible) {
-                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。
-                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }
-            }
-        }
-        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
-        onDispose {
-            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)
-        }
+          vm = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt')
+          s = vm.read_text()
+          marker = '''    fun stopAddressEditing() {
+        suggestionJob?.cancel()
+        val tab = uiState.selectedTab ?: return
+        uiState = uiState.copy(
+            addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
+            isAddressFocused = false,
+            isSuggestionPanelVisible = false,
+            suggestions = emptyList()
+        )
     }
 '''
+          method = marker + '''
+    /** Clear the address bar without changing whether the user is currently editing it. */
+    fun clearAddressInput() {
+        suggestionJob?.cancel()
+        uiState = uiState.copy(
+            addressInput = "",
+            isSuggestionPanelVisible = false,
+            suggestions = emptyList()
+        )
+    }
+'''
+          if marker not in s:
+              raise SystemExit('stopAddressEditing marker not found')
+          s = s.replace(marker, method, 1)
+          vm.write_text(s)
+
+          screen = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt')
+          s = screen.read_text()
+          old = '''                        onValueChange = viewModel::setAddressInput,
+                        // 新規入力時だけURLを読み込む。WebViewの戻る・進むではloadUrlを呼ばない。
+'''
+          new = '''                        onValueChange = viewModel::setAddressInput,
+                        // Xは「入力を消す」だけ。未選択時に編集状態へ遷移させない。
+                        onClear = viewModel::clearAddressInput,
+                        // 新規入力時だけURLを読み込む。WebViewの戻る・進むではloadUrlを呼ばない。
+'''
           if old not in s:
-              raise SystemExit('BrowserScreen IME observer block not found')
-          s = s.replace(old, '', 1)
-          p.write_text(s)
+              raise SystemExit('BrowserScreen AddressBar call not found')
+          s = s.replace(old, new, 1)
+          screen.write_text(s)
           PY
 
-      - name: Remove one-shot workflow and commit
+      - name: Verify targeted state transition
+        run: |
+          grep -n "onClear = viewModel::clearAddressInput" app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt
+          grep -n "fun clearAddressInput" app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt
+          grep -n "IconButton(onClick = onClear" app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt
+
+      - name: Commit and remove one-shot workflow
         run: |
           git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot].users.noreply.github.com
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git rm .github/workflows/apply-ime-fix-v2.yml .ime-fix-v2-trigger
-          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt
-          git commit -m "fix(address-bar): decouple IME visibility from editing state"
-          git push origin fix/address-bar-clear-ime-v2
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt
+          git commit -m "fix(address-bar): clear input without stealing focus"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
