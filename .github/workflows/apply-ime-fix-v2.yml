@@ -1,0 +1,109 @@
+name: Apply targeted address bar IME fix v2
+
+on:
+  push:
+    branches:
+      - fix/address-bar-clear-ime-v2
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/address-bar-clear-ime-v2
+      - name: Apply focused address bar fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
+          s = p.read_text()
+
+          old = '''.focusRequester(focusRequester).onFocusChanged { focus ->
+                        if (focus.isFocused && !isEditing) onEditingStarted()
+                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
+                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
+                        if (!focus.isFocused && isEditing) onEditingStopped()
+                    },'''
+          new = '''.focusRequester(focusRequester).onFocusChanged { focus ->
+                        // フォーカス喪失だけでは編集状態を終了しない。
+                        // XボタンやIMEの一時的なフォーカス遷移でstopAddressEditing()が走ると、
+                        // IMEが一瞬だけ表示されて閉じ、その後の再フォーカスまで遅延する。
+                        if (focus.isFocused && !isEditing) onEditingStarted()
+                    },'''
+          if old not in s:
+              raise SystemExit('BrowserControls focus block not found')
+          s = s.replace(old, new, 1)
+
+          old = '''IconButton(onClick = {
+                                onValueChange("")
+                                onEditingStarted()
+                            }, modifier = Modifier.size(32.dp)) {'''
+          new = '''IconButton(onClick = {
+                                // Xは編集状態を維持したまま文字だけを消す。
+                                // 状態変更後の再構成を待たず、現在のTextFieldへ明示的にフォーカスを戻す。
+                                onEditingStarted()
+                                onValueChange("")
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
+                            }, modifier = Modifier.size(32.dp)) {'''
+          if old not in s:
+              raise SystemExit('BrowserControls clear button block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt')
+          s = p.read_text()
+
+          old = '''    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。
+    var addressImeWasVisible by remember { mutableStateOf(false) }
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(state.isAddressFocused, imeVisible) {
+        when {
+            !state.isAddressFocused -> addressImeWasVisible = false
+            imeVisible -> addressImeWasVisible = true
+            addressImeWasVisible -> {
+                focusManager.clearFocus(force = true)
+                viewModel.stopAddressEditing()
+            }
+        }
+    }
+    DisposableEffect(rootView) {
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener
+            val visibleFrame = Rect()
+            rootView.getWindowVisibleDisplayFrame(visibleFrame)
+            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f
+            if (keyboardVisible) {
+                addressImeWasVisible = true
+            } else if (addressImeWasVisible) {
+                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。
+                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }
+            }
+        }
+        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        onDispose {
+            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+        }
+    }
+'''
+          if old not in s:
+              raise SystemExit('BrowserScreen IME observer block not found')
+          s = s.replace(old, '', 1)
+          p.write_text(s)
+          PY
+
+      - name: Remove one-shot workflow and commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot].users.noreply.github.com
+          git rm .github/workflows/apply-ime-fix-v2.yml
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt
+          git commit -m "fix(address-bar): decouple IME visibility from editing state"
+          git push origin fix/address-bar-clear-ime-v2
