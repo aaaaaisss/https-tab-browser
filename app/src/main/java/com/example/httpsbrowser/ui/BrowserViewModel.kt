@@ -63,7 +63,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         uiState = uiState.copy(
             selectedTabId = id,
             addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
-            isAddressFocused = false,
+            isAddressEditing = false,
             isSuggestionPanelVisible = false,
             suggestions = emptyList(),
             isTabSheetVisible = false
@@ -86,7 +86,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             tabs = uiState.tabs + tab,
             selectedTabId = tab.id,
             addressInput = tab.displayText,
-            isAddressFocused = false,
+            isAddressEditing = false,
             isSuggestionPanelVisible = false,
             suggestions = emptyList()
         )
@@ -105,7 +105,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 tabs = listOf(newTab),
                 selectedTabId = newTab.id,
                 addressInput = "",
-                isAddressFocused = false,
+                isAddressEditing = false,
                 isSuggestionPanelVisible = false,
                 suggestions = emptyList()
             )
@@ -115,7 +115,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 tabs = remaining,
                 selectedTabId = next.id,
                 addressInput = if (next.isHome) "" else next.displayText.ifBlank { next.url },
-                isAddressFocused = false,
+                isAddressEditing = false,
                 isSuggestionPanelVisible = false,
                 suggestions = emptyList()
             )
@@ -136,7 +136,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val tab = uiState.selectedTab ?: return
         uiState = uiState.copy(
             addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
-            isAddressFocused = false,
+            isAddressEditing = false,
             isSuggestionPanelVisible = false,
             suggestions = emptyList()
         )
@@ -153,7 +153,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val localSuggestions = createSuggestions(value)
         uiState = uiState.copy(
             addressInput = value,
-            isAddressFocused = true,
+            isAddressEditing = true,
             // 端末内候補がゼロでも2文字以上ならGoogle候補の到着を待ってパネルを開く。
             isSuggestionPanelVisible = query.length >= 2 || (query.isNotBlank() && localSuggestions.isNotEmpty()),
             suggestions = localSuggestions
@@ -164,7 +164,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             delay(180)
             val googleQueries = withContext(Dispatchers.IO) { fetchGoogleSuggestions(query) }
             // 古い入力に対する応答や、編集終了後の応答では画面を上書きしない。
-            if (uiState.isAddressFocused && uiState.isSuggestionPanelVisible && uiState.addressInput == value) {
+            if (uiState.isAddressEditing && uiState.isSuggestionPanelVisible && uiState.addressInput == value) {
                 val refreshed = createSuggestions(value, googleQueries)
                 uiState = uiState.copy(suggestions = refreshed, isSuggestionPanelVisible = refreshed.isNotEmpty())
             }
@@ -187,7 +187,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         suggestionJob?.cancel()
         uiState = uiState.copy(
             addressInput = prepared.displayText,
-            isAddressFocused = false,
+            isAddressEditing = false,
             isSuggestionPanelVisible = false,
             suggestions = emptyList()
         )
@@ -200,7 +200,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, returnToHomeOnBack = false, canGoBack = false, canGoForward = false)
         }
         suggestionJob?.cancel()
-        uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
+        uiState = uiState.copy(addressInput = "", isAddressEditing = false, isSuggestionPanelVisible = false, suggestions = emptyList())
         persistSoon()
     }
 
@@ -210,7 +210,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         // リンク、戻る、キーボード検索を含むすべての遷移で候補とキーボードを閉じる。
         if (uiState.selectedTabId == tabId) {
             suggestionJob?.cancel()
-            uiState = uiState.copy(isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
+            uiState = uiState.copy(isAddressEditing = false, isSuggestionPanelVisible = false, suggestions = emptyList())
         }
     }
 
@@ -231,7 +231,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val entry = HistoryEntry(title = tab.title, url = url, query = tab.displayText.takeIf { tab.displayMode == AddressDisplayMode.SEARCH })
             uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
         }
-        if (uiState.selectedTabId == tabId && !uiState.isAddressFocused) uiState = uiState.copy(addressInput = tab.displayText)
+        if (uiState.selectedTabId == tabId && !uiState.isAddressEditing) uiState = uiState.copy(addressInput = tab.displayText)
         persistSoon()
     }
 
@@ -256,7 +256,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val entry = HistoryEntry(title = tab.title, url = url, query = tab.displayText.takeIf { tab.displayMode == AddressDisplayMode.SEARCH })
             uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
         }
-        if (uiState.selectedTabId == tabId && !uiState.isAddressFocused) {
+        if (uiState.selectedTabId == tabId && !uiState.isAddressEditing) {
             uiState = uiState.copy(addressInput = tab.displayText)
         }
         persistSoon()
@@ -291,7 +291,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun openSettings(page: SettingsPage = SettingsPage.ROOT) {
         suggestionJob?.cancel()
-        uiState = uiState.copy(isSettingsSheetVisible = true, settingsPage = page, isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
+        uiState = uiState.copy(isSettingsSheetVisible = true, settingsPage = page, isAddressEditing = false, isSuggestionPanelVisible = false, suggestions = emptyList())
     }
 
     fun closeSettings() { uiState = uiState.copy(isSettingsSheetVisible = false, settingsPage = SettingsPage.ROOT) }
@@ -360,7 +360,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             withContext(Dispatchers.IO) { repository.clearBrowsingData(keepBookmarks = true) }
             val newTab = homeTab()
-            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "", history = emptyList(), isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
+            uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "", history = emptyList(), isAddressEditing = false, isSuggestionPanelVisible = false, suggestions = emptyList())
             onDone()
         }
     }
