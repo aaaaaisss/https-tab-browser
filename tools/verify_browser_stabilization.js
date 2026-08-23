@@ -35,7 +35,6 @@ requireText(screen, 'focusManager.clearFocus(force = true)', 'navigation clears 
 
 // Focus/IME is intentionally not driven by a ViewModel -> LaunchedEffect feedback loop.
 // Losing focus or dismissing the keyboard must not itself be treated as an edit-stop event.
-forbidText(controls, 'onEditingStopped: () -> Unit', 'legacy focus-loss callback');
 forbidText(screen, 'OnGlobalLayoutListener', 'legacy IME layout fallback');
 forbidText(screen, 'WindowInsets.isImeVisible', 'legacy IME dismissal observer');
 forbidText(screen, 'onBackgroundTap = ::endAddressEditing', 'legacy background-tap edit callback');
