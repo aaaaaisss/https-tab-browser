@@ -78,8 +78,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
@@ -109,28 +107,16 @@ fun AddressBar(
     isEditing: Boolean,
     onValueChange: (String) -> Unit,
     onSubmit: (String) -> Unit,
+    focusRequester: FocusRequester,
     onTranslate: () -> Unit,
     onRefresh: () -> Unit,
     onEditingStarted: () -> Unit,
     onEditingStopped: () -> Unit
 ) {
-    val focusRequester = remember { FocusRequester() }
-    val focusManager = LocalFocusManager.current
-    val keyboardController = LocalSoftwareKeyboardController.current
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
 
     LaunchedEffect(value) {
         if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
-    }
-    LaunchedEffect(isEditing) {
-        if (isEditing) {
-            // URL バーをタップしても全選択せず、カーソルを末尾に置く。
-            if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
-            focusRequester.requestFocus()
-        } else {
-            focusManager.clearFocus(force = true)
-            keyboardController?.hide()
-        }
     }
 
     Column(Modifier.fillMaxWidth().background(BottomBarBlack).padding(horizontal = 6.dp, vertical = 2.dp)) {
@@ -140,22 +126,16 @@ fun AddressBar(
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
-                        if (focus.isFocused && !isEditing) onEditingStarted()
-                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
-                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
-                        if (!focus.isFocused && isEditing) onEditingStopped()
+                        if (focus.isFocused) {
+                            textFieldValue = textFieldValue.copy(selection = TextRange(textFieldValue.text.length), composition = null)
+                            if (!isEditing) onEditingStarted()
+                        }
                     },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
                 cursorBrush = SolidColor(Color.White),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = {
-                    // IMEの検索確定直後にWebViewへフォーカスが移っても、端末差でキーボードが
-                    // 残らないよう先に明示的に閉じる。ViewModel側も候補・編集状態を同時に終了する。
-                    keyboardController?.hide()
-                    focusManager.clearFocus(force = true)
-                    onSubmit(textFieldValue.text)
-                }),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit(textFieldValue.text) }),
                 decorationBox = { innerTextField ->
                     Row(
                         modifier = Modifier.fillMaxSize().padding(start = 10.dp, end = 3.dp),
@@ -168,8 +148,8 @@ fun AddressBar(
                         }
                         if (textFieldValue.text.isNotBlank()) {
                             IconButton(onClick = {
+                                textFieldValue = TextFieldValue("")
                                 onValueChange("")
-                                onEditingStarted()
                             }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }

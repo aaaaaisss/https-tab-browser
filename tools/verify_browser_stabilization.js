@@ -22,17 +22,24 @@ requireText(viewModel, 'return results.values.take(MAX_SUGGESTIONS)', 'suggestio
 requireText(viewModel, 'if (uiState.selectedTab?.isHome == false) openHome()', 'home back fallback');
 requireText(controls, 'onSubmit: (String) -> Unit', 'IME latest input contract');
 requireText(controls, 'onSubmit(textFieldValue.text)', 'IME latest input call');
-requireText(controls, 'onEditingStopped: () -> Unit', 'address focus loss contract');
-requireText(controls, 'if (!focus.isFocused && isEditing) onEditingStopped()', 'address focus loss ends edit mode');
-requireText(screen, 'onEditingStopped = viewModel::stopAddressEditing', 'screen restores controls on address focus loss');
-requireText(screen, 'OnGlobalLayoutListener', 'IME layout fallback for Android back');
-requireText(screen, 'onBackgroundTap = ::endAddressEditing', 'home background ends address editing');
-requireText(controls, 'onBackgroundTap: () -> Unit', 'home background tap contract');
-requireText(controls, 'reverseLayout = true', 'bottom-up suggestion layout');
-requireText(screen, '@OptIn(ExperimentalLayoutApi::class)', 'IME layout API opt-in');
-requireText(screen, 'val imeVisible = WindowInsets.isImeVisible', 'IME dismissal observer');
+requireText(controls, 'focusRequester(focusRequester).onFocusChanged', 'address focus is owned by UI');
+requireText(controls, 'if (focus.isFocused)', 'address focus starts editing');
+requireText(controls, 'TextFieldValue("")', 'clear button clears the local text field');
+requireText(controls, 'onValueChange("")', 'clear button updates address input');
+requireText(screen, 'val addressBarFocusRequester = remember { FocusRequester() }', 'screen owns address focus requester');
 requireText(screen, 'onSubmit = { input -> navigate(input) }', 'IME navigation wiring');
 requireText(screen, 'onOpenBookmark = { bookmark -> navigate(bookmark.url) }', 'bookmark URL-bar navigation');
+requireText(screen, 'fun endAddressEditing()', 'navigation owns explicit edit termination');
+requireText(screen, 'keyboardController?.hide()', 'navigation hides IME explicitly');
+requireText(screen, 'focusManager.clearFocus(force = true)', 'navigation clears focus explicitly');
+
+// Focus/IME is intentionally not driven by a ViewModel -> LaunchedEffect feedback loop.
+// Losing focus or dismissing the keyboard must not itself be treated as an edit-stop event.
+forbidText(screen, 'OnGlobalLayoutListener', 'legacy IME layout fallback');
+forbidText(screen, 'WindowInsets.isImeVisible', 'legacy IME dismissal observer');
+forbidText(screen, 'onBackgroundTap = ::endAddressEditing', 'legacy background-tap edit callback');
+
+requireText(controls, 'reverseLayout = true', 'bottom-up suggestion layout');
 const systemBackHome = screen.indexOf('selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()');
 const systemBackHistory = screen.indexOf('selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)');
 if (systemBackHome < 0 || systemBackHistory < 0 || systemBackHistory > systemBackHome) {
