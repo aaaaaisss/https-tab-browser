@@ -1,0 +1,53 @@
+name: vm-state-cleanup-once
+
+on:
+  push:
+    branches:
+      - rebuild/addressbar-96-clean
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: ${{ !contains(github.event.head_commit.message, '[vm-state-cleanup]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rebuild/addressbar-96-clean
+          fetch-depth: 0
+
+      - name: Remove ViewModel focus state
+        shell: python
+        run: |
+          from pathlib import Path
+          models = Path('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt')
+          vm = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt')
+          m = models.read_text()
+          if 'val isAddressEditing: Boolean = false,' not in m:
+              raise SystemExit('editing state field missing')
+          models.write_text(m.replace('    val isAddressEditing: Boolean = false,\n', '', 1))
+          v = vm.read_text()
+          before = v
+          v = v.replace('            isAddressEditing = false,\n', '')
+          v = v.replace('            isAddressEditing = true,\n', '')
+          old = 'if (uiState.isAddressEditing && uiState.isSuggestionPanelVisible && uiState.addressInput == value) {'
+          if old not in v:
+              raise SystemExit('async guard missing')
+          v = v.replace(old, 'if (uiState.isSuggestionPanelVisible && uiState.addressInput == value)', 1)
+          if 'isAddressEditing' in v:
+              raise SystemExit('stale state remains')
+          if v == before:
+              raise SystemExit('ViewModel was not changed')
+          vm.write_text(v)
+
+      - name: Commit and remove helper
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/_vm_state_cleanup.yml
+          git add app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt
+          git commit -m 'Remove ViewModel focus state [vm-state-cleanup]'
+          git push origin HEAD:rebuild/addressbar-96-clean
