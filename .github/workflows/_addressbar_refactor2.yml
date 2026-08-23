@@ -1,0 +1,56 @@
+name: addressbar-refactor2-once
+
+on:
+  push:
+    branches:
+      - rebuild/addressbar-96-clean
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: ${{ !contains(github.event.head_commit.message, '[addressbar-refactor2]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rebuild/addressbar-96-clean
+          fetch-depth: 0
+
+      - name: Remove ViewModel focus/editing state
+        shell: python
+        run: |
+          from pathlib import Path
+
+          models = Path('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt')
+          vm = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt')
+
+          text = models.read_text()
+          old = '    val isAddressEditing: Boolean = false,\n'
+          if old not in text:
+              raise SystemExit('BrowserModels: editing state field not found')
+          models.write_text(text.replace(old, '', 1))
+
+          text = vm.read_text()
+          text = text.replace('            isAddressEditing = false,\n', '')
+          text = text.replace('            isAddressEditing = true,\n', '')
+          old_check = '            if (uiState.isAddressEditing && uiState.isSuggestionPanelVisible && uiState.addressInput == value) {'
+          new_check = '            if (uiState.isSuggestionPanelVisible && uiState.addressInput == value) {'
+          if old_check not in text:
+              raise SystemExit('BrowserViewModel: async editing-state guard not found')
+          text = text.replace(old_check, new_check, 1)
+          if 'isAddressEditing' in text:
+              raise SystemExit('BrowserViewModel: stale isAddressEditing reference remains')
+          vm.write_text(text)
+
+      - name: Commit and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/_addressbar_refactor2.yml
+          git add app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt \
+                  app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt
+          git commit -m 'Remove ViewModel address focus state [addressbar-refactor2]'
+          git push origin HEAD:rebuild/addressbar-96-clean
