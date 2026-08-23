@@ -1,0 +1,72 @@
+name: Apply exact address bar fix
+
+on:
+  push:
+    branches:
+      - fix/address-bar-exact-behavior
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/address-bar-exact-behavior
+
+      - name: Apply only address bar behavior fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path("app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt")
+          s = p.read_text()
+
+          s = s.replace(
+              "import androidx.compose.ui.platform.LocalFocusManager\n",
+              "import androidx.compose.ui.platform.LocalFocusManager\nimport androidx.compose.ui.platform.LocalSoftwareKeyboardController\n",
+              1,
+          )
+
+          s = s.replace(
+              """    val focusRequester = remember { FocusRequester() }\n    val focusManager = LocalFocusManager.current\n    var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }\n""",
+              """    val focusRequester = remember { FocusRequester() }\n    val focusManager = LocalFocusManager.current\n    val keyboardController = LocalSoftwareKeyboardController.current\n    var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }\n""",
+              1,
+          )
+
+          old_effect = """    LaunchedEffect(isEditing) {\n        if (isEditing) {\n            // URL バーをタップしても全選択せず、カーソルを末尾に置く。\n            if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))\n            focusRequester.requestFocus()\n        } else {\n            focusManager.clearFocus(force = true)\n        }\n    }\n"""
+          new_effect = """    LaunchedEffect(isEditing) {\n        if (isEditing) {\n            // 編集開始時は現在文字列の末尾にカーソルを置く。\n            if (textFieldValue.text != value) {\n                textFieldValue = TextFieldValue(value, TextRange(value.length))\n            } else {\n                textFieldValue = textFieldValue.copy(selection = TextRange(textFieldValue.text.length), composition = null)\n            }\n            focusRequester.requestFocus()\n        }\n    }\n"""
+          if old_effect not in s:
+              raise SystemExit("expected isEditing effect was not found")
+          s = s.replace(old_effect, new_effect, 1)
+
+          old_focus = """                    .focusRequester(focusRequester).onFocusChanged { focus ->\n                        if (focus.isFocused && !isEditing) onEditingStarted()\n                    },\n"""
+          new_focus = """                    .focusRequester(focusRequester).onFocusChanged { focus ->\n                        if (focus.isFocused && !isEditing) {\n                            textFieldValue = textFieldValue.copy(\n                                selection = TextRange(textFieldValue.text.length),\n                                composition = null\n                            )\n                            onEditingStarted()\n                        }\n                    },\n"""
+          if old_focus not in s:
+              raise SystemExit("expected focus handler was not found")
+          s = s.replace(old_focus, new_focus, 1)
+
+          old_x = """                        if (textFieldValue.text.isNotBlank()) {\n                            IconButton(onClick = { onValueChange(\"\") }, modifier = Modifier.size(32.dp)) {\n                                Icon(Icons.Default.Close, contentDescription = \"入力を消去\", modifier = Modifier.size(18.dp), tint = Color.White)\n                            }\n                        }\n"""
+          new_x = """                        if (textFieldValue.text.isNotBlank()) {\n                            IconButton(\n                                onClick = {\n                                    // Xは「入力を全消去して編集状態にする」だけ。\n                                    // キーボードが閉じていれば明示的に開き、既に開いていればそのまま維持する。\n                                    textFieldValue = TextFieldValue(\"\", TextRange.Zero)\n                                    onValueChange(\"\")\n                                    onEditingStarted()\n                                    focusRequester.requestFocus()\n                                    keyboardController?.show()\n                                },\n                                modifier = Modifier.size(32.dp)\n                            ) {\n                                Icon(Icons.Default.Close, contentDescription = \"入力を消去\", modifier = Modifier.size(18.dp), tint = Color.White)\n                            }\n                        }\n"""
+          if old_x not in s:
+              raise SystemExit("expected X button was not found")
+          s = s.replace(old_x, new_x, 1)
+
+          p.write_text(s)
+
+      - name: Verify only the intended file changed
+        run: |
+          test "$(git diff --name-only)" = "app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt"
+          git diff --check
+          git diff -- app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt
+
+      - name: Commit exact fix and remove one-shot workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt
+          git rm .github/workflows/apply-address-bar-exact-fix.yml
+          git commit -m "fix: make address bar and clear button behavior deterministic"
+          git push origin HEAD:fix/address-bar-exact-behavior
