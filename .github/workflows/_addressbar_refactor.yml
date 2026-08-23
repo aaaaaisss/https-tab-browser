@@ -1,0 +1,64 @@
+name: addressbar-refactor-once
+
+on:
+  push:
+    branches:
+      - rebuild/addressbar-96-clean
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: ${{ !contains(github.event.head_commit.message, '[addressbar-refactor]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: rebuild/addressbar-96-clean
+          fetch-depth: 0
+
+      - name: Refactor address editing state
+        shell: python
+        run: |
+          from pathlib import Path
+
+          models = Path('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt')
+          vm = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt')
+          screen = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt')
+
+          text = models.read_text()
+          old = 'val isAddressFocused: Boolean = false,'
+          new = 'val isAddressEditing: Boolean = false,'
+          if old not in text:
+              raise SystemExit('BrowserModels: expected focus state declaration not found')
+          models.write_text(text.replace(old, new, 1))
+
+          text = vm.read_text()
+          count = text.count('isAddressFocused')
+          if count == 0:
+              raise SystemExit('BrowserViewModel: no isAddressFocused references found')
+          vm.write_text(text.replace('isAddressFocused', 'isAddressEditing'))
+
+          text = screen.read_text()
+          count = text.count('state.isAddressFocused')
+          if count:
+              text = text.replace('state.isAddressFocused', 'state.isAddressEditing')
+          screen.write_text(text)
+
+      - name: Commit refactor
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt \
+                  app/src/main/java/com/example/httpsbrowser/ui/BrowserViewModel.kt \
+                  app/src/main/java/com/example/httpsbrowser/ui/BrowserScreen.kt \
+                  .github/workflows/_addressbar_refactor.yml
+          git rm .github/workflows/_addressbar_refactor.yml
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git commit -m 'Refactor address editing state [addressbar-refactor]'
+          git push origin HEAD:rebuild/addressbar-96-clean
