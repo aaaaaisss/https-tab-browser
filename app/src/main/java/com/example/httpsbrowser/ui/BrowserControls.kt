@@ -141,10 +141,7 @@ fun AddressBar(
                 keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSubmit(textFieldValue.text) }),
                 decorationBox = { innerTextField ->
-                    Row(
-                        modifier = Modifier.fillMaxSize().padding(start = 10.dp, end = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Row(modifier = Modifier.fillMaxSize().padding(start = 10.dp, end = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Search, contentDescription = "Google 検索または HTTPS URL を入力", modifier = Modifier.size(18.dp), tint = Color.White)
                         Box(modifier = Modifier.weight(1f).padding(horizontal = 7.dp)) {
                             if (textFieldValue.text.isBlank()) Text("Google 検索または HTTPS URL", color = Color(0xFFD0D0D0), fontSize = 13.sp, maxLines = 1)
@@ -166,22 +163,11 @@ fun AddressBar(
                     }
                 }
             )
-            IconButton(
-                onClick = onTranslate,
-                modifier = Modifier.size(40.dp),
-                colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)
-            ) { Icon(Icons.Default.Translate, contentDescription = "このページを日本語へ翻訳") }
-            IconButton(
-                onClick = onRefresh,
-                modifier = Modifier.size(40.dp),
-                colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)
-            ) { Icon(Icons.Default.Refresh, contentDescription = "再読み込み") }
+            IconButton(onClick = onTranslate, modifier = Modifier.size(40.dp), colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)) { Icon(Icons.Default.Translate, contentDescription = "このページを日本語へ翻訳") }
+            IconButton(onClick = onRefresh, modifier = Modifier.size(40.dp), colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)) { Icon(Icons.Default.Refresh, contentDescription = "再読み込み") }
         }
         if (progress in 1..99) {
-            androidx.compose.material3.LinearProgressIndicator(
-                progress = { progress / 100f },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 1.dp)
-            )
+            androidx.compose.material3.LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 1.dp))
         }
     }
 }
@@ -189,38 +175,157 @@ fun AddressBar(
 @Composable
 fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit) {
     if (suggestions.isEmpty()) return
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-        shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        LazyColumn(
-            modifier = Modifier.height((suggestions.size * 48).coerceAtMost(288).dp),
-            reverseLayout = true
-        ) {
+    Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp), shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        LazyColumn(modifier = Modifier.height((suggestions.size * 48).coerceAtMost(288).dp), reverseLayout = true) {
             items(suggestions, key = { "${it.type}:${it.url}" }) { suggestion ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable { onClick(suggestion) }.padding(horizontal = 14.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = when (suggestion.type) {
-                            SuggestionType.HISTORY -> Icons.Default.History
-                            SuggestionType.BOOKMARK -> Icons.Default.Bookmark
-                            SuggestionType.SEARCH -> Icons.Default.Search
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
+                Row(modifier = Modifier.fillMaxWidth().clickable { onClick(suggestion) }.padding(horizontal = 14.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = when (suggestion.type) {
+                        SuggestionType.OPEN_TAB -> Icons.Default.Tab
+                        SuggestionType.BOOKMARK -> Icons.Default.Bookmark
+                        SuggestionType.HISTORY -> Icons.Default.History
+                        SuggestionType.GOOGLE_SEARCH -> Icons.Default.Search
+                    }, contentDescription = null)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(suggestion.title.ifBlank { suggestion.url }, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (suggestion.title.isNotBlank() && suggestion.url.isNotBlank()) {
-                            Text(suggestion.url, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                        Text(suggestion.primary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (suggestion.secondary.isNotBlank()) Text(suggestion.secondary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun NavigationRow(canGoBack: Boolean, canGoForward: Boolean, onTabs: () -> Unit, onBack: () -> Unit, onSearch: () -> Unit, onForward: () -> Unit, onBookmark: () -> Unit, onHistory: () -> Unit, onDownloads: () -> Unit, onSavePage: () -> Unit, onShare: () -> Unit, onSettings: () -> Unit) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Row(modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(horizontal = 8.dp, vertical = 1.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
+        NavButton(Icons.Default.Tab, "タブ一覧", onTabs)
+        NavButton(Icons.Default.ArrowBack, "戻る", onBack, enabled = canGoBack)
+        NavButton(Icons.Default.Search, "アドレスバーを編集", onSearch, emphasized = true)
+        NavButton(Icons.Default.ArrowForward, "進む", onForward, enabled = canGoForward)
+        Box {
+            NavButton(Icons.Default.Menu, "メニュー", { menuExpanded = true })
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(text = { Text("ホームに追加") }, leadingIcon = { Icon(Icons.Default.Bookmark, null) }, onClick = { menuExpanded = false; onBookmark() })
+                DropdownMenuItem(text = { Text("履歴") }, leadingIcon = { Icon(Icons.Default.History, null) }, onClick = { menuExpanded = false; onHistory() })
+                DropdownMenuItem(text = { Text("ダウンロード") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onDownloads() })
+                DropdownMenuItem(text = { Text("ページを保存") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onSavePage() })
+                DropdownMenuItem(text = { Text("共有") }, leadingIcon = { Icon(Icons.Default.Share, null) }, onClick = { menuExpanded = false; onShare() })
+                DropdownMenuItem(text = { Text("設定") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { menuExpanded = false; onSettings() })
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavButton(icon: androidx.compose.ui.graphics.vector.ImageVector, description: String, onClick: () -> Unit, enabled: Boolean = true, emphasized: Boolean = false) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(if (emphasized) 44.dp else 40.dp), colors = IconButtonDefaults.iconButtonColors(containerColor = if (emphasized) BottomBarButtonEmphasis else BottomBarButton, contentColor = BottomBarText, disabledContainerColor = Color(0xFF131820), disabledContentColor = Color(0xFF657080))) { Icon(icon, contentDescription = description, modifier = Modifier.size(if (emphasized) 24.dp else 21.dp)) }
+}
+
+@Composable
+fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) -> Unit, onClose: (String) -> Unit, onAdd: () -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().background(BottomBarBlack).padding(start = 5.dp, top = 2.dp, bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            tabs.forEach { tab ->
+                val selected = tab.id == selectedTabId
+                Row(modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(if (selected) Color(0xFF18375B) else Color(0xFF1A2029)).then(if (selected) Modifier.border(2.dp, Color(0xFF66B5FF), RoundedCornerShape(12.dp)) else Modifier.border(1.dp, Color(0xFF394554), RoundedCornerShape(12.dp))).clickable { onSelect(tab.id) }.padding(start = 8.dp, end = 2.dp, top = 3.dp, bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BookmarkFavicon(url = tab.url, title = tab.title.ifBlank { "ホーム" }, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text(tab.title.ifBlank { "ホーム" }, color = BottomBarText, modifier = Modifier.width(42.dp), maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                    IconButton(onClick = { onClose(tab.id) }, modifier = Modifier.size(25.dp), colors = IconButtonDefaults.iconButtonColors(contentColor = BottomBarText)) { Icon(Icons.Default.Close, contentDescription = "${tab.title} を閉じる", modifier = Modifier.size(16.dp)) }
+                }
+            }
+        }
+        IconButton(onClick = onAdd, modifier = Modifier.size(34.dp), colors = IconButtonDefaults.iconButtonColors(containerColor = BottomBarButton, contentColor = BottomBarText)) { Icon(Icons.Default.Add, contentDescription = "新しいタブ") }
+    }
+}
+
+@Composable
+fun RightEdgeScrollRail(currentFraction: Float, onScrollToFraction: (Float) -> Unit) {
+    val density = LocalDensity.current
+    val trackHeight = 148.dp
+    val normalThumbHeight = 20.dp
+    val activeThumbHeight = 32.dp
+    var isDragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableFloatStateOf(currentFraction) }
+    val thumbHeight by animateDpAsState(targetValue = if (isDragging) activeThumbHeight else normalThumbHeight, label = "scrollThumbHeight")
+    val railWidth by animateDpAsState(targetValue = if (isDragging) 22.dp else 10.dp, label = "scrollRailWidth")
+    val usableTrackPx = with(density) { (trackHeight - thumbHeight).toPx() }
+    LaunchedEffect(currentFraction, isDragging) { if (!isDragging) dragFraction = currentFraction.coerceIn(0f, 1f) }
+    val dragState = rememberDraggableState { delta -> dragFraction = (dragFraction + delta / usableTrackPx).coerceIn(0f, 1f); onScrollToFraction(dragFraction) }
+    Box(modifier = Modifier.width(railWidth).height(trackHeight).alpha(if (isDragging) 0.92f else 0.38f).clip(RoundedCornerShape(12.dp)).background(if (isDragging) Color(0x44212A35) else Color.Transparent).draggable(state = dragState, orientation = Orientation.Vertical, onDragStarted = { isDragging = true }, onDragStopped = { isDragging = false }), contentAlignment = Alignment.TopCenter) {
+        Box(modifier = Modifier.fillMaxWidth().offset { IntOffset(0, (usableTrackPx * dragFraction).roundToInt()) }.height(thumbHeight).clip(RoundedCornerShape(10.dp)).background(if (isDragging) Color(0xFF89C4FF) else Color(0xAA89C4FF)))
+    }
+}
+
+@Composable
+fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
+    var favicon by remember(url) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(url) { favicon = withContext(Dispatchers.IO) { loadFavicon(url) } }
+    Box(modifier = modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
+        if (favicon != null) Image(bitmap = favicon!!, contentDescription = "$title のサイトアイコン", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        else Icon(Icons.Default.Bookmark, contentDescription = "$title のサイトアイコン", tint = MaterialTheme.colorScheme.onPrimaryContainer)
+    }
+}
+
+private fun loadFavicon(pageUrl: String): ImageBitmap? = runCatching {
+    val pageUri = URI(pageUrl)
+    if (!pageUri.scheme.equals("https", ignoreCase = true) || pageUri.host.isNullOrBlank()) return null
+    val faviconUri = URI("https", null, pageUri.host, pageUri.port, "/favicon.ico", null, null)
+    val connection = (faviconUri.toURL().openConnection() as HttpURLConnection).apply { connectTimeout = 3_000; readTimeout = 3_000; setRequestProperty("User-Agent", "Mozilla/5.0 (Android) HTTPS-Tab-Browser/1.0") }
+    connection.inputStream.use { input -> BitmapFactory.decodeStream(input)?.asImageBitmap() }
+}.getOrNull()
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun HomeScreen(bookmarks: List<Bookmark>, editMode: Boolean, selectedIds: Set<String>, onOpenBookmark: (Bookmark) -> Unit, onAddBookmark: () -> Unit, onEnterEditMode: (String) -> Unit, onToggleSelection: (String) -> Unit, onExitEditMode: () -> Unit, onBackgroundTap: () -> Unit) {
+    val bookmarkCells: List<HomeCell> = bookmarks.take(24).map { HomeCell.BookmarkCell(it) }
+    val cells: List<HomeCell> = if (editMode) bookmarkCells else bookmarkCells + HomeCell.AddCell
+    val rows = cells.chunked(4)
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
+        Box(modifier = Modifier.fillMaxSize().pointerInput(editMode) { detectTapGestures(onTap = { onBackgroundTap(); if (editMode) onExitEditMode() }) })
+        Column(modifier = Modifier.align(Alignment.BottomEnd), verticalArrangement = Arrangement.spacedBy(14.dp), horizontalAlignment = Alignment.End) {
+            rows.reversed().forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.reversed().forEach { cell ->
+                        when (cell) {
+                            is HomeCell.BookmarkCell -> {
+                                val selected = cell.bookmark.id in selectedIds
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clip(RoundedCornerShape(10.dp)).then(if (selected) Modifier.border(2.dp, Color(0xFF7EC8FF), RoundedCornerShape(10.dp)) else Modifier).combinedClickable(onClick = { if (editMode) onToggleSelection(cell.bookmark.id) else onOpenBookmark(cell.bookmark) }, onLongClick = { if (editMode) onToggleSelection(cell.bookmark.id) else onEnterEditMode(cell.bookmark.id) })) {
+                                    BookmarkFavicon(url = cell.bookmark.url, title = cell.bookmark.title.ifBlank { cell.bookmark.url }, modifier = Modifier.size(46.dp))
+                                    Text(cell.bookmark.title.ifBlank { cell.bookmark.url }, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                            HomeCell.AddCell -> Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp).clickable { onAddBookmark() }) {
+                                Box(modifier = Modifier.size(46.dp).clip(CircleShape).background(Color(0xFF3D3D3D)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Add, contentDescription = "ブックマークを追加", tint = Color.White) }
+                                Text("追加", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+fun BookmarkEditActionBar(selectedCount: Int, onEdit: () -> Unit, onDelete: () -> Unit, onMoveToBottomRight: () -> Unit, onMoveToTopLeft: () -> Unit, onDone: () -> Unit, modifier: Modifier = Modifier) {
+    Card(modifier = modifier.fillMaxWidth().padding(horizontal = 10.dp), colors = CardDefaults.cardColors(containerColor = Color(0xEE1E2733))) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+            Text("ブックマークを選択: $selectedCount 件", color = Color.White, style = MaterialTheme.typography.labelMedium)
+            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(enabled = selectedCount == 1, onClick = onEdit) { Text("編集") }
+                TextButton(enabled = selectedCount > 0, onClick = onDelete) { Text("削除") }
+                TextButton(enabled = selectedCount > 0, onClick = onMoveToBottomRight) { Text("右下へ") }
+                TextButton(enabled = selectedCount > 0, onClick = onMoveToTopLeft) { Text("左上へ") }
+                TextButton(onClick = onDone) { Text("完了") }
+            }
+        }
+    }
+}
+
+private sealed interface HomeCell {
+    data class BookmarkCell(val bookmark: Bookmark) : HomeCell
+    data object AddCell : HomeCell
 }
