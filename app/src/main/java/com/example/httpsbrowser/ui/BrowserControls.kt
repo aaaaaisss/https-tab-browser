@@ -79,6 +79,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
@@ -114,6 +115,7 @@ fun AddressBar(
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
 
     LaunchedEffect(value) {
@@ -121,11 +123,13 @@ fun AddressBar(
     }
     LaunchedEffect(isEditing) {
         if (isEditing) {
-            // URL バーをタップしても全選択せず、カーソルを末尾に置く。
-            if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
+            // 編集開始時は現在文字列の末尾にカーソルを置く。
+            if (textFieldValue.text != value) {
+                textFieldValue = TextFieldValue(value, TextRange(value.length))
+            } else {
+                textFieldValue = textFieldValue.copy(selection = TextRange(textFieldValue.text.length), composition = null)
+            }
             focusRequester.requestFocus()
-        } else {
-            focusManager.clearFocus(force = true)
         }
     }
 
@@ -136,7 +140,13 @@ fun AddressBar(
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
-                        if (focus.isFocused && !isEditing) onEditingStarted()
+                        if (focus.isFocused && !isEditing) {
+                            textFieldValue = textFieldValue.copy(
+                                selection = TextRange(textFieldValue.text.length),
+                                composition = null
+                            )
+                            onEditingStarted()
+                        }
                     },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
                 cursorBrush = SolidColor(Color.White),
@@ -154,7 +164,18 @@ fun AddressBar(
                             innerTextField()
                         }
                         if (textFieldValue.text.isNotBlank()) {
-                            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {
+                            IconButton(
+                                onClick = {
+                                    // Xは「入力を全消去して編集状態にする」だけ。
+                                    // キーボードが閉じていれば明示的に開き、既に開いていればそのまま維持する。
+                                    textFieldValue = TextFieldValue("", TextRange.Zero)
+                                    onValueChange("")
+                                    onEditingStarted()
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }
