@@ -70,6 +70,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -124,12 +125,9 @@ fun AddressBar(
     }
     LaunchedEffect(isEditing) {
         if (isEditing) {
-            // URL バーをタップしても全選択せず、カーソルを末尾に置く。
+            // プログラムから編集開始された場合だけ明示的にフォーカスを要求する。
             if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
             focusRequester.requestFocus()
-        } else {
-            focusManager.clearFocus(force = true)
-            keyboardController?.hide()
         }
     }
 
@@ -167,7 +165,15 @@ fun AddressBar(
                             innerTextField()
                         }
                         if (textFieldValue.text.isNotBlank()) {
-                            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .focusProperties { canFocus = false }
+                                    .pointerInput(Unit) {
+                                        detectTapGestures(onTap = { onValueChange("") })
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }
@@ -453,7 +459,6 @@ fun HomeScreen(
     val rows = cells.chunked(4)
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
-        // グリッド外の背景をタップしたらURL編集を終了する。編集モード中は同時に選択も終了する。
         Box(
             modifier = Modifier.fillMaxSize().pointerInput(editMode) {
                 detectTapGestures(onTap = {
