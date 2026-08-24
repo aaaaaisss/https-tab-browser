@@ -79,6 +79,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
@@ -107,25 +108,38 @@ fun AddressBar(
     progress: Int,
     isEditing: Boolean,
     onValueChange: (String) -> Unit,
-    onSubmit: () -> Unit,
+    onSubmit: (String) -> Unit,
     onTranslate: () -> Unit,
     onRefresh: () -> Unit,
-    onEditingStarted: () -> Unit
+    onEditingStarted: () -> Unit,
+    onEditingStopped: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    var clearPending by remember { mutableStateOf(false) }
 
     LaunchedEffect(value) {
-        if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
+        if (clearPending) {
+            // Xを未選択状態で押した直後は、編集状態へ遷移させず表示だけを空にする。
+            // 外部状態が別の値へ更新された場合だけ通常の同期へ戻す。
+            if (value.isNotBlank()) {
+                clearPending = false
+                textFieldValue = TextFieldValue(value, TextRange(value.length))
+            }
+        } else if (textFieldValue.text != value) {
+            textFieldValue = TextFieldValue(value, TextRange(value.length))
+        }
     }
     LaunchedEffect(isEditing) {
         if (isEditing) {
             // URL バーをタップしても全選択せず、カーソルを末尾に置く。
-            if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
+            if (!clearPending && textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
             focusRequester.requestFocus()
         } else {
             focusManager.clearFocus(force = true)
+            keyboardController?.hide()
         }
     }
 
@@ -133,16 +147,36 @@ fun AddressBar(
         Row(verticalAlignment = Alignment.CenterVertically) {
             BasicTextField(
                 value = textFieldValue,
-                onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
+                onValueChange = { updated ->
+                    textFieldValue = updated
+                    clearPending = false
+                    onValueChange(updated.text)
+                },
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
-                        if (focus.isFocused && !isEditing) onEditingStarted()
+                        if (focus.isFocused && !isEditing) {
+                            onEditingStarted()
+                            if (clearPending) {
+                                clearPending = false
+                                // Xで表示だけを先に消したケースでは、実際の状態もここで空にする。
+                                onValueChange("")
+                            }
+                        }
+                        // フォーカス喪失だけでは編集状態を終了しない。
+                        // XボタンやIMEの一時的なフォーカス遷移でstopAddressEditing()が走ると、
+                        // IMEが一瞬だけ表示されて消えるため、明示的な編集終了だけで閉じる。
                     },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
                 cursorBrush = SolidColor(Color.White),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+                keyboardActions = KeyboardActions(onSearch = {
+                    // IMEの検索確定直後にWebViewへフォーカスが移っても、端末差でキーボードが
+                    // 残らないよう先に明示的に閉じる。ViewModel側も候補・編集状態を同時に終了する。
+                    keyboardController?.hide()
+                    focusManager.clearFocus(force = true)
+                    onSubmit(textFieldValue.text)
+                }),
                 decorationBox = { innerTextField ->
                     Row(
                         modifier = Modifier.fillMaxSize().padding(start = 10.dp, end = 3.dp),
@@ -154,7 +188,18 @@ fun AddressBar(
                             innerTextField()
                         }
                         if (textFieldValue.text.isNotBlank()) {
-                            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {
+                            IconButton(onClick = {
+                                if (isEditing) {
+                                    // 既に編集中なら、フォーカスもIMEも触らず入力だけを消す。
+                                    // BasicTextFieldが保持している入力接続を再利用できるため、IMEの点滅を避けられる。
+                                    onValueChange("")
+                                } else {
+                                    // 未選択状態ではVMの編集状態を変更しない。表示だけを空にして、
+                                    // ユーザーが次にURLバーを選択した時点で実状態へ反映する。
+                                    clearPending = true
+                                    textFieldValue = TextFieldValue("")
+                                }
+                            }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }
@@ -190,7 +235,8 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         LazyColumn(
-            // ViewModelは合計6件までに制限する。優先候補が下端で隠れないよう6行分を確保する。
+            // ViewModelは合計6件までに制限する。reverseLayoutでは先頭要素が下端に置かれるため、
+            // ViewModelの優先順（最初=最優先）が画面の下から上へ確実に並ぶ。
             modifier = Modifier.height((suggestions.size * 48).coerceAtMost(288).dp),
             reverseLayout = true
         ) {
@@ -299,10 +345,16 @@ fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) ->
                         .padding(start = 8.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    BookmarkFavicon(
+                        url = tab.url,
+                        title = tab.title.ifBlank { "ホーム" },
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
                     Text(
                         tab.title.ifBlank { "ホーム" },
                         color = BottomBarText,
-                        modifier = Modifier.width(46.dp),
+                        modifier = Modifier.width(42.dp),
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis,
@@ -388,8 +440,8 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
             Image(
                 bitmap = favicon!!,
                 contentDescription = "$title のサイトアイコン",
-                modifier = Modifier.fillMaxSize().padding(5.dp),
-                contentScale = ContentScale.Fit
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
             )
         } else {
             Icon(
@@ -423,21 +475,22 @@ fun HomeScreen(
     onAddBookmark: () -> Unit,
     onEnterEditMode: (String) -> Unit,
     onToggleSelection: (String) -> Unit,
-    onExitEditMode: () -> Unit
+    onExitEditMode: () -> Unit,
+    onBackgroundTap: () -> Unit
 ) {
     val bookmarkCells: List<HomeCell> = bookmarks.take(24).map { HomeCell.BookmarkCell(it) }
     val cells: List<HomeCell> = if (editMode) bookmarkCells else bookmarkCells + HomeCell.AddCell
     val rows = cells.chunked(4)
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
-        // グリッド外の背景をタップした場合だけ編集モードを終了する。
-        if (editMode) {
-            Box(
-                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                    detectTapGestures(onTap = { onExitEditMode() })
-                }
-            )
-        }
+        Box(
+            modifier = Modifier.fillMaxSize().pointerInput(editMode) {
+                detectTapGestures(onTap = {
+                    onBackgroundTap()
+                    if (editMode) onExitEditMode()
+                })
+            }
+        )
         Column(
             modifier = Modifier.align(Alignment.BottomEnd),
             verticalArrangement = Arrangement.spacedBy(14.dp),
