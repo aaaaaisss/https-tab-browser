@@ -118,12 +118,19 @@ fun AddressBar(
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    // ×ボタンで消去した直後にBasicTextFieldへフォーカスが入ると、onEditingStarted()が
+    // 現在のURLを再投入してしまう。次のフォーカス獲得時の編集開始を一度だけ抑制する。
+    var suppressNextEditingStart by remember { mutableStateOf(false) }
 
     LaunchedEffect(value) {
         if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
     }
     LaunchedEffect(isEditing) {
         if (isEditing) {
+            // 編集状態へ正式に遷移した後は、次のフォーカス獲得で通常どおり編集開始してよい。
+            // ×ボタン直後のフォーカス獲得は既にonFocusChanged側で消費済みのため、ここでは
+            // 万一の残留フラグだけを確実にクリアする。
+            suppressNextEditingStart = false
             // URL バーをタップしても全選択せず、カーソルを末尾に置く。
             if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
             focusRequester.requestFocus()
@@ -140,7 +147,15 @@ fun AddressBar(
                 onValueChange = { updated -> textFieldValue = updated; onValueChange(updated.text) },
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
-                        if (focus.isFocused && !isEditing) onEditingStarted()
+                        if (focus.isFocused && !isEditing) {
+                            // ×ボタンで消去した直後のフォーカス獲得では、onEditingStarted()を呼ぶと
+                            // 現在のURLが再投入されて消去が無効化される。一度だけ編集開始を抑制する。
+                            if (suppressNextEditingStart) {
+                                suppressNextEditingStart = false
+                            } else {
+                                onEditingStarted()
+                            }
+                        }
                         // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
                         // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
                         if (!focus.isFocused && isEditing) onEditingStopped()
@@ -167,7 +182,17 @@ fun AddressBar(
                             innerTextField()
                         }
                         if (textFieldValue.text.isNotBlank()) {
-                            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {
+                            IconButton(
+                                onClick = {
+                                    // キーボードが閉じている（未編集）状態で×を押すと、decorationBox内の
+                                    // タップがBasicTextFieldへフォーカスを渡し、onEditingStarted()が現在のURLを
+                                    // 再投入してしまう。消去直後の編集開始だけを一度抑制する。
+                                    if (!isEditing) suppressNextEditingStart = true
+                                    textFieldValue = TextFieldValue("")
+                                    onValueChange("")
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }
