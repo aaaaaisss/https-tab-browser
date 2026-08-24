@@ -9,6 +9,7 @@ use jni::{
     objects::{JClass, JObjectArray, JString},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jlong, jstring},
 };
+use serde_json::json;
 use std::{
     collections::{HashMap, HashSet},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -206,6 +207,39 @@ pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_na
     })).unwrap_or(JNI_FALSE)
 }
 
+/// `should_block`だけではなく、Braveエンジンが返すredirectとremoveparamの有無も返す。
+/// redirect本文はdata URLであり、Kotlin側が安全なresource type・MIME・サイズだけに限定して使う。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_nativeNetworkDecisionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    url: JString,
+    source_url: JString,
+    resource_type: JString,
+) -> jstring {
+    let (Some(url), Some(source_url), Some(resource_type)) = (
+        java_string(&mut env, url),
+        java_string(&mut env, source_url),
+        java_string(&mut env, resource_type),
+    ) else {
+        return env.new_string("{}").map_or(std::ptr::null_mut(), |value| value.into_raw());
+    };
+    let json = catch_unwind(AssertUnwindSafe(|| {
+        let Some(engine) = get_engine(handle) else { return "{}".to_string() };
+        let Ok(request) = Request::new(&url, &source_url, &resource_type, "get") else {
+            return "{}".to_string();
+        };
+        let result = engine.check_network_request(&request);
+        json!({
+            "shouldBlock": result.should_block(),
+            "redirectDataUrl": result.redirect,
+            "rewrittenUrl": result.rewritten_url,
+        }).to_string()
+    })).unwrap_or_else(|_| "{}".to_string());
+    env.new_string(json).map_or(std::ptr::null_mut(), |value| value.into_raw())
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_nativeCosmeticJson(
     mut env: JNIEnv,
@@ -268,6 +302,28 @@ mod tests {
             "get",
         ).expect("valid request");
         assert!(restored.check_network_request(&request).should_block());
+    }
+
+    #[test]
+    fn network_result_exposes_removeparam_rewrite() {
+        let mut filters = FilterSet::new(false);
+        filters.add_filter_list(
+            "||example.test^$removeparam=utm_source".to_string(),
+            ParseOptions::default(),
+        );
+        let engine = Engine::new_with_filter_set(filters);
+        let request = Request::new(
+            "https://example.test/watch?utm_source=ad&keep=1",
+            "https://origin.test/",
+            "document",
+            "get",
+        ).expect("valid request");
+        let result = engine.check_network_request(&request);
+        assert!(!result.should_block());
+        assert_eq!(
+            result.rewritten_url.as_deref(),
+            Some("https://example.test/watch?keep=1")
+        );
     }
 
     #[test]

@@ -1,0 +1,68 @@
+name: Apply address bar IME race fix
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/address-bar-clear-ime-race
+
+      - name: Patch address bar focus/IME handling
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt')
+          s = p.read_text()
+          old = '''.focusRequester(focusRequester).onFocusChanged { focus ->
+                        if (focus.isFocused && !isEditing) onEditingStarted()
+                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
+                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
+                        if (!focus.isFocused && isEditing) onEditingStopped()
+                    },'''
+          new = '''.focusRequester(focusRequester).onFocusChanged { focus ->
+                        // フォーカス喪失からstopAddressEditing()を自動発火しない。
+                        // Xボタン等のタップでは一時的なフォーカス遷移が起きるため、
+                        // ここで編集状態を閉じるとIMEが一瞬だけ表示されて消える。
+                        if (focus.isFocused && !isEditing) onEditingStarted()
+                    },'''
+          if old not in s:
+              raise SystemExit('focus block not found')
+          s = s.replace(old, new, 1)
+          old = '''IconButton(onClick = {
+                                onValueChange("")
+                                onEditingStarted()
+                            }, modifier = Modifier.size(32.dp)) {'''
+          new = '''IconButton(onClick = {
+                                // 編集状態を先に確定してから文字列を消す。
+                                // これにより「Xを押す→focus変更→stop」の競合を避ける。
+                                onEditingStarted()
+                                onValueChange("")
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
+                            }, modifier = Modifier.size(32.dp)) {'''
+          if old not in s:
+              raise SystemExit('clear button block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+      - name: Commit fix and remove one-shot workflow and trigger
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/apply-ime-fix.yml .ime-fix-trigger
+          git add app/src/main/java/com/example/httpsbrowser/ui/BrowserControls.kt
+          git commit -m "fix(address-bar): prevent IME dismissal race when clearing input"
+          git push origin fix/address-bar-clear-ime-race

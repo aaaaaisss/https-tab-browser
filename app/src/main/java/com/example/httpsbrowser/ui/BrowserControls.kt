@@ -79,6 +79,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
@@ -107,13 +108,15 @@ fun AddressBar(
     progress: Int,
     isEditing: Boolean,
     onValueChange: (String) -> Unit,
-    onSubmit: () -> Unit,
+    onSubmit: (String) -> Unit,
     onTranslate: () -> Unit,
     onRefresh: () -> Unit,
-    onEditingStarted: () -> Unit
+    onEditingStarted: () -> Unit,
+    onEditingStopped: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
 
     LaunchedEffect(value) {
@@ -126,6 +129,7 @@ fun AddressBar(
             focusRequester.requestFocus()
         } else {
             focusManager.clearFocus(force = true)
+            keyboardController?.hide()
         }
     }
 
@@ -137,12 +141,21 @@ fun AddressBar(
                 modifier = Modifier.weight(1f).height(40.dp).clip(RoundedCornerShape(50)).background(Color(0xFF474747))
                     .focusRequester(focusRequester).onFocusChanged { focus ->
                         if (focus.isFocused && !isEditing) onEditingStarted()
+                        // IMEを閉じた端末でも、ホームの空白部や他の操作でフォーカスが外れれば
+                        // 編集状態を必ず終了し、下部の操作列・タブバーを復帰する。
+                        if (!focus.isFocused && isEditing) onEditingStopped()
                     },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
                 cursorBrush = SolidColor(Color.White),
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSubmit() }),
+                keyboardActions = KeyboardActions(onSearch = {
+                    // IMEの検索確定直後にWebViewへフォーカスが移っても、端末差でキーボードが
+                    // 残らないよう先に明示的に閉じる。ViewModel側も候補・編集状態を同時に終了する。
+                    keyboardController?.hide()
+                    focusManager.clearFocus(force = true)
+                    onSubmit(textFieldValue.text)
+                }),
                 decorationBox = { innerTextField ->
                     Row(
                         modifier = Modifier.fillMaxSize().padding(start = 10.dp, end = 3.dp),
@@ -154,7 +167,10 @@ fun AddressBar(
                             innerTextField()
                         }
                         if (textFieldValue.text.isNotBlank()) {
-                            IconButton(onClick = { onValueChange("") }, modifier = Modifier.size(32.dp)) {
+                            IconButton(onClick = {
+                                onValueChange("")
+                                onEditingStarted()
+                            }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Default.Close, contentDescription = "入力を消去", modifier = Modifier.size(18.dp), tint = Color.White)
                             }
                         }
@@ -190,7 +206,8 @@ fun SuggestionPanel(suggestions: List<Suggestion>, onClick: (Suggestion) -> Unit
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         LazyColumn(
-            // ViewModelは合計6件までに制限する。優先候補が下端で隠れないよう6行分を確保する。
+            // ViewModelは合計6件までに制限する。reverseLayoutでは先頭要素が下端に置かれるため、
+            // ViewModelの優先順（最初=最優先）が画面の下から上へ確実に並ぶ。
             modifier = Modifier.height((suggestions.size * 48).coerceAtMost(288).dp),
             reverseLayout = true
         ) {
@@ -299,10 +316,16 @@ fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) ->
                         .padding(start = 8.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    BookmarkFavicon(
+                        url = tab.url,
+                        title = tab.title.ifBlank { "ホーム" },
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
                     Text(
                         tab.title.ifBlank { "ホーム" },
                         color = BottomBarText,
-                        modifier = Modifier.width(46.dp),
+                        modifier = Modifier.width(42.dp),
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis,
@@ -388,8 +411,10 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
             Image(
                 bitmap = favicon!!,
                 contentDescription = "$title のサイトアイコン",
-                modifier = Modifier.fillMaxSize().padding(5.dp),
-                contentScale = ContentScale.Fit
+                // タブでは画像そのものを優先し、favicon内の余白を残さない。
+                // 正方形でない画像や端の意匠は円形クリップで少し切れてもよい。
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
             )
         } else {
             Icon(
@@ -423,21 +448,23 @@ fun HomeScreen(
     onAddBookmark: () -> Unit,
     onEnterEditMode: (String) -> Unit,
     onToggleSelection: (String) -> Unit,
-    onExitEditMode: () -> Unit
+    onExitEditMode: () -> Unit,
+    onBackgroundTap: () -> Unit
 ) {
     val bookmarkCells: List<HomeCell> = bookmarks.take(24).map { HomeCell.BookmarkCell(it) }
     val cells: List<HomeCell> = if (editMode) bookmarkCells else bookmarkCells + HomeCell.AddCell
     val rows = cells.chunked(4)
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black).padding(horizontal = 14.dp, vertical = 12.dp)) {
-        // グリッド外の背景をタップした場合だけ編集モードを終了する。
-        if (editMode) {
-            Box(
-                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                    detectTapGestures(onTap = { onExitEditMode() })
-                }
-            )
-        }
+        // グリッド外の背景をタップしたらURL編集を終了する。編集モード中は同時に選択も終了する。
+        Box(
+            modifier = Modifier.fillMaxSize().pointerInput(editMode) {
+                detectTapGestures(onTap = {
+                    onBackgroundTap()
+                    if (editMode) onExitEditMode()
+                })
+            }
+        )
         Column(
             modifier = Modifier.align(Alignment.BottomEnd),
             verticalArrangement = Arrangement.spacedBy(14.dp),

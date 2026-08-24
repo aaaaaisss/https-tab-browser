@@ -3,28 +3,53 @@ package com.example.httpsbrowser
 import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.util.Rational
+import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.ComposeView
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import java.util.concurrent.ConcurrentHashMap
 import com.example.httpsbrowser.ui.BrowserScreen
 import com.example.httpsbrowser.ui.HttpsBrowserTheme
+import com.example.httpsbrowser.web.BrowserWebViewRegistry
 
 class MainActivity : ComponentActivity() {
     private var incomingUrl by mutableStateOf<String?>(null)
+    private lateinit var appRoot: FrameLayout
+    /** 通常ページをComposeのAndroidViewから分離して保持する、選択タブ専用のnative host。 */
+    private lateinit var normalWebContentHost: FrameLayout
+    private lateinit var composeOverlayView: ComposeView
+    private var normalWebContentBoundsReady = false
+    private var forwardingNormalWebTouch = false
+    /** Composeの右端スクロールレールが見える通常ページだけ、レール用のタッチ領域を予約する。 */
+    private var normalWebContentReservesRightTouchRail = false
     @Volatile private var fullscreenVideoView: View? = null
+    private var fullscreenVideoTabId: String? = null
+    private val videoDimensionsByTab = ConcurrentHashMap<String, VideoDimensions>()
+    private var fullscreenContainer: FrameLayout? = null
+    private var fullscreenPipButton: View? = null
     private var pictureInPictureActive by mutableStateOf(false)
     @Volatile private var pictureInPictureTransitionRequested = false
-    // custom viewはComposeのレイアウト、回転、PiP遷移で座標が変わる。
-    // そのたびにauto-enter等の全パラメータを保ったsourceRectHintを更新する。
+
+    // custom viewは全画面・PiP遷移で座標が変わる。sourceRectHintを追従させる。
     private val pipHintLayoutListener = View.OnLayoutChangeListener { view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
         if (view === fullscreenVideoView && (left != oldLeft || top != oldTop || right != oldRight || bottom != oldBottom)) {
             updatePictureInPictureParams(view)
@@ -35,66 +60,261 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         incomingUrl = httpsViewUrl(intent)
-        setContent {
-            HttpsBrowserTheme {
-                BrowserScreen(viewModel(), externalUrl = incomingUrl)
+
+        // custom viewはComposeのAndroidViewに重ねず、Fulgurisと同じくActivityのnative rootへ追加する。
+        // これにより動画surfaceの親・測定サイズがCompose再構成で変わらない。
+        appRoot = FrameLayout(this)
+        normalWebContentHost = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+            clipChildren = true
+            clipToPadding = true
+        }
+        composeOverlayView = ComposeView(this).apply {
+            setContent {
+                HttpsBrowserTheme {
+                    BrowserScreen(viewModel(), externalUrl = incomingUrl)
+                }
             }
+        }
+        // 通常ページhostを最下層、Composeを常にその上に置く。ページ領域以外のComposeは透明なので
+        // WebViewの描画・タップを妨げず、下部バー、ホーム、各シートは常に最前面で操作できる。
+        appRoot.addView(normalWebContentHost, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        appRoot.addView(composeOverlayView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        // Composeは操作UIを前面表示するが、ページ領域の連続タッチだけはnative WebViewへ転送する。
+        // これにより下部バー・ホーム・検索候補は覆われず、スクロール・ピンチ操作も維持する。
+        composeOverlayView.setOnTouchListener { _, event -> forwardPageTouchToNativeWebView(event) }
+        setContentView(appRoot)
+    }
+
+    /**
+     * Compose rootが最前面でも、ページ矩形内で始まった連続タッチをnative WebViewへ転送する。
+     * 右端レール用の細い領域はComposeへ残し、通常ページ上のスクロール・ピンチを阻害しない。
+     */
+    private fun forwardPageTouchToNativeWebView(event: MotionEvent): Boolean {
+        if (::normalWebContentHost.isInitialized.not() || normalWebContentHost.visibility != View.VISIBLE) return false
+        val railWidth = if (normalWebContentReservesRightTouchRail) {
+            (40 * resources.displayMetrics.density).toInt()
+        } else 0
+        val withinHost = event.x >= normalWebContentHost.left && event.x < normalWebContentHost.right &&
+            event.y >= normalWebContentHost.top && event.y < normalWebContentHost.bottom
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                forwardingNormalWebTouch = withinHost && event.x < normalWebContentHost.right - railWidth
+            }
+            MotionEvent.ACTION_CANCEL -> Unit
+        }
+        // GoogleページではhostをComposeより前面に置くため、ここへ届く場合は中継しない。
+        if (!forwardingNormalWebTouch) return false
+        val forwarded = MotionEvent.obtain(event)
+        forwarded.offsetLocation(-normalWebContentHost.left.toFloat(), -normalWebContentHost.top.toFloat())
+        normalWebContentHost.dispatchTouchEvent(forwarded)
+        forwarded.recycle()
+        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            forwardingNormalWebTouch = false
+        }
+        return true
+    }
+
+    /** 選択タブの通常WebViewをnative hostへ接続し、Composeの再構成から親Viewを分離する。 */
+    fun showNormalWebContent(registry: BrowserWebViewRegistry, tabId: String) {
+        if (::normalWebContentHost.isInitialized.not()) return
+        registry.attachToNativeHost(tabId, normalWebContentHost)
+        // Composeからページ矩形を受けるまで全画面の仮LayoutParamsを見せない。
+        normalWebContentHost.visibility = if (normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
+        CrashDiagnostics.record("normal_webview_native_host_shown", "tab=$tabId")
+    }
+
+    /** Composeのシートやダイアログ表示中だけ、通常ページを破棄せず隠してUIを最前面にする。 */
+    fun setNormalWebContentVisible(visible: Boolean) {
+        if (::normalWebContentHost.isInitialized.not()) return
+        if (normalWebContentHost.childCount == 0) {
+            normalWebContentHost.visibility = View.GONE
+            return
+        }
+        normalWebContentHost.visibility = if (visible && normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
+    }
+
+    /** ホーム等ではWebViewを破棄せず、表示hostからだけ外す。 */
+    fun hideNormalWebContent() {
+        if (::normalWebContentHost.isInitialized.not()) return
+        normalWebContentHost.removeAllViews()
+        // 次に通常ページへ戻る時は、最後に確定した同じページ矩形をすぐ利用できる。
+        normalWebContentHost.visibility = View.GONE
+    }
+
+    /** Composeが計測したページ矩形だけを通常WebViewへ割り当て、下部操作UIと重ねない。 */
+    fun setNormalWebContentBounds(
+        left: Int,
+        top: Int,
+        width: Int,
+        height: Int,
+        reserveRightTouchRail: Boolean,
+        placeAboveCompose: Boolean
+    ) {
+        if (::normalWebContentHost.isInitialized.not() || width <= 0 || height <= 0) return
+        // Page boxはComposeがstatus bar下から下部バー上まで測定した値をそのまま使う。
+        // Google系では右端予約を外し、重ねる型Webポップアップの全領域をWebViewへ渡す。
+        normalWebContentReservesRightTouchRail = reserveRightTouchRail
+        // Googleのページ内モーダルはComposeのタッチ中継を経由させず、ページ矩形だけnative WebViewを前面にする。
+        // Host自体は下部バーより上の高さへclip済みのため、下部バー・シートは覆わない。
+        if (placeAboveCompose) normalWebContentHost.bringToFront() else composeOverlayView.bringToFront()
+        val current = normalWebContentHost.layoutParams as? FrameLayout.LayoutParams ?: return
+        normalWebContentBoundsReady = true
+        if (current.leftMargin == left && current.topMargin == top && current.width == width && current.height == height) return
+        current.leftMargin = left
+        current.topMargin = top
+        current.width = width
+        current.height = height
+        normalWebContentHost.layoutParams = current
+        if (normalWebContentHost.childCount > 0 && normalWebContentHost.visibility != View.INVISIBLE) {
+            normalWebContentHost.visibility = View.VISIBLE
         }
     }
 
-    /** WebChromeClientの全画面custom viewが存在する間だけPiPへの手動遷移を許可する。 */
+    /**
+     * Chromium WebChromeClientが渡すfullscreen custom viewを、Activity root上の単一native containerへ
+     * 接続する。通常WebViewはCompose側に残るためAwContentsの描画先を切り替えない。
+     */
+    fun showFullscreenCustomView(view: View, tabId: String?) {
+        if (::appRoot.isInitialized.not()) return
+        if (fullscreenVideoView === view && fullscreenContainer != null) return
+        hideFullscreenCustomView(fullscreenVideoView)
+
+        val container = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        (view.parent as? ViewGroup)?.removeView(view)
+        container.addView(view, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        val pipButton = createPipButton()
+        container.addView(pipButton, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END
+        ).apply { setMargins(0, 18, 18, 0) })
+        fullscreenPipButton = pipButton
+        appRoot.addView(container, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        fullscreenContainer = container
+        fullscreenVideoTabId = tabId
+        setFullscreenVideoForPictureInPicture(view)
+        runCatching { view.keepScreenOn = true }
+        setFullscreenSystemBars(true)
+        CrashDiagnostics.record("fullscreen_native_container_shown", "view=${view.javaClass.name}")
+    }
+
+    /** native fullscreen containerを一度だけ除去し、通常画面とPiP設定を復帰する。 */
+    fun hideFullscreenCustomView(expectedView: View? = null) {
+        val view = fullscreenVideoView
+        if (expectedView != null && view !== expectedView) return
+        fullscreenContainer?.let { container ->
+            appRoot.removeView(container)
+            container.removeAllViews()
+        }
+        fullscreenContainer = null
+        fullscreenPipButton = null
+        fullscreenVideoTabId = null
+        // PiPまたは全画面終了後にだけ通常のCompose操作UIを戻す。
+        if (::composeOverlayView.isInitialized) composeOverlayView.visibility = View.VISIBLE
+        runCatching { view?.keepScreenOn = false }
+        setFullscreenVideoForPictureInPicture(null)
+        setFullscreenSystemBars(false)
+        CrashDiagnostics.record("fullscreen_native_container_hidden", "view=${view?.javaClass?.name.orEmpty()}")
+    }
+
+    /**
+     * WebViewが取得した実映像サイズをタブごとに記録し、全画面中のタブならPiP設定を即時更新する。
+     * 画面回転ではなくvideoWidth/videoHeightを使うため、縦持ち中の横動画も横長PiPになる。
+     */
+    fun updatePictureInPictureVideoDimensions(tabId: String, width: Int, height: Int) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread { updatePictureInPictureVideoDimensions(tabId, width, height) }
+            return
+        }
+        if (tabId.isBlank() || width <= 0 || height <= 0) return
+        val dimensions = VideoDimensions(width, height)
+        if (videoDimensionsByTab.put(tabId, dimensions) == dimensions) return
+        if (fullscreenVideoTabId == tabId) updatePictureInPictureParams(fullscreenVideoView)
+    }
+
+    /** 全画面custom viewが存在する間だけPiPへ移行できる。 */
     fun setFullscreenVideoForPictureInPicture(view: View?) {
         val previousView = fullscreenVideoView
         if (previousView !== view) previousView?.removeOnLayoutChangeListener(pipHintLayoutListener)
         fullscreenVideoView = view
         if (previousView !== view) view?.addOnLayoutChangeListener(pipHintLayoutListener)
         if (view == null) pictureInPictureTransitionRequested = false
-        // Viewがまだレイアウトされていない場合もあるため、現在値と将来のレイアウト変化の両方を扱う。
         updatePictureInPictureParams(view)
     }
 
-    /** WebViewがPiPへの遷移でonHideCustomViewを送っても、動画Viewを外さないための判定。 */
+    /** WebViewがPiP開始に伴いonHideCustomViewを先に送っても、動画Viewを外さないための判定。 */
     fun shouldRetainFullscreenCustomView(): Boolean =
         pictureInPictureActive || pictureInPictureTransitionRequested
+
+    /** 全画面中だけ使う明示PiP操作。API 26以上ではauto-enterへ依存せず直接開始する。 */
+    fun enterFullscreenPictureInPictureMode(): Boolean {
+        val videoView = fullscreenVideoView
+        if (videoView == null || !supportsPictureInPicture() || isInPictureInPictureMode || pictureInPictureTransitionRequested) return false
+        pictureInPictureTransitionRequested = true
+        val entered = runCatching {
+            enterPictureInPictureMode(buildPictureInPictureParams(videoView))
+        }.getOrDefault(false)
+        if (!entered) {
+            pictureInPictureTransitionRequested = false
+            CrashDiagnostics.record("pip_enter_failed", "enterPictureInPictureMode=false")
+        } else {
+            CrashDiagnostics.record("pip_enter_requested", "source=explicit\napi=${Build.VERSION.SDK_INT}")
+        }
+        return entered
+    }
 
     @Suppress("DEPRECATION")
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        val videoView = fullscreenVideoView
-        if (videoView == null || !supportsPictureInPicture() || isInPictureInPictureMode) return
-        // Android 12以降はauto-enterがジェスチャー遷移を担当する。ここではWebViewが
-        // onHideCustomViewを先に送った場合にcustom viewを保持する印だけを残す。
-        pictureInPictureTransitionRequested = true
-        CrashDiagnostics.record("pip_leave_hint", "fullscreenView=true\napi=${Build.VERSION.SDK_INT}\nauto=${Build.VERSION.SDK_INT >= Build.VERSION_CODES.S}")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) return
-        val entered = runCatching { enterPictureInPictureMode(buildPictureInPictureParams(videoView)) }.getOrDefault(false)
-        if (!entered) {
-            pictureInPictureTransitionRequested = false
-            CrashDiagnostics.record("pip_enter_failed", "enterPictureInPictureMode=false")
+        // Android 12以降は、事前に設定したauto-enterがジェスチャーPiPをより滑らかに開始する。
+        // ここで明示enterを重ねると、WebView custom viewの停止・再親子化と競合し黒画面化し得る。
+        // API 26〜30だけ従来の明示経路を使う。
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && fullscreenVideoView != null && !isInPictureInPictureMode) {
+            enterFullscreenPictureInPictureMode()
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // PiPへ入らずにアプリへ戻った場合だけ、遷移中マーカーを解除する。
         if (!isInPictureInPictureMode) pictureInPictureTransitionRequested = false
     }
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode)
         pictureInPictureActive = isInPictureInPictureMode
+        pictureInPictureTransitionRequested = false
+        // PiP windowには動画だけを残す。操作ボタンやCompose下部バーはPiP中に合成しない。
+        fullscreenPipButton?.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
         if (isInPictureInPictureMode) {
-            pictureInPictureTransitionRequested = false
-            CrashDiagnostics.record("pip_entered", "fullscreenView=${fullscreenVideoView != null}")
-        } else {
-            pictureInPictureTransitionRequested = false
-            CrashDiagnostics.record("pip_exited", "fullscreenView=${fullscreenVideoView != null}")
+            if (::composeOverlayView.isInitialized) composeOverlayView.visibility = View.GONE
+        } else if (fullscreenContainer == null && ::composeOverlayView.isInitialized) {
+            composeOverlayView.visibility = View.VISIBLE
         }
+        CrashDiagnostics.record(
+            if (isInPictureInPictureMode) "pip_entered" else "pip_exited",
+            "fullscreenView=${fullscreenVideoView != null}"
+        )
     }
 
     override fun onDestroy() {
         fullscreenVideoView?.removeOnLayoutChangeListener(pipHintLayoutListener)
         fullscreenVideoView = null
+        fullscreenContainer = null
+        if (::normalWebContentHost.isInitialized) normalWebContentHost.removeAllViews()
         super.onDestroy()
     }
 
@@ -102,6 +322,22 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         incomingUrl = httpsViewUrl(intent)
+    }
+
+    private fun createPipButton(): TextView = TextView(this).apply {
+        text = "PiP"
+        contentDescription = "ピクチャーインピクチャーで再生"
+        setTextColor(Color.WHITE)
+        textSize = 13f
+        gravity = Gravity.CENTER
+        setPadding(16, 8, 16, 8)
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 40f
+            setColor(0xC20D1118.toInt())
+            setStroke(1, 0x88FFFFFF.toInt())
+        }
+        setOnClickListener { enterFullscreenPictureInPictureMode() }
     }
 
     private fun supportsPictureInPicture(): Boolean =
@@ -119,19 +355,32 @@ class MainActivity : ComponentActivity() {
             val bounds = Rect()
             if (view.getGlobalVisibleRect(bounds) && bounds.width() > 0 && bounds.height() > 0) {
                 builder.setSourceRectHint(bounds)
-                val ratio = bounds.width().toFloat() / bounds.height().toFloat()
+                val dimensions = fullscreenVideoTabId?.let(videoDimensionsByTab::get)
+                val aspectWidth = dimensions?.width ?: bounds.width()
+                val aspectHeight = dimensions?.height ?: bounds.height()
+                val ratio = aspectWidth.toFloat() / aspectHeight.toFloat()
                 if (ratio in MIN_PIP_ASPECT_RATIO..MAX_PIP_ASPECT_RATIO) {
-                    builder.setAspectRatio(Rational(bounds.width(), bounds.height()))
+                    builder.setAspectRatio(Rational(aspectWidth, aspectHeight))
                 }
+            } else {
+                builder.setAspectRatio(Rational(16, 9))
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Android 12以降はauto-enterがスワイプ/ホームのPiP遷移を開始する。
-            // fullscreen custom viewが存在する時だけ有効化し、通常ページではPiPにしない。
+            // 明示PiPの補助としてauto-enterも有効にする。通常ページではvideoViewがnullのため無効。
             builder.setAutoEnterEnabled(videoView != null)
             if (videoView != null) builder.setSeamlessResizeEnabled(true)
         }
         return builder.build()
+    }
+
+    private fun setFullscreenSystemBars(fullscreen: Boolean) {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+            // ホームジェスチャーを最優先するためnavigation barは隠さず、status barだけを制御する。
+            if (fullscreen) hide(WindowInsetsCompat.Type.statusBars())
+            else show(WindowInsetsCompat.Type.statusBars())
+        }
     }
 
     private fun httpsViewUrl(intent: Intent?): String? {
@@ -140,6 +389,8 @@ class MainActivity : ComponentActivity() {
             it.startsWith("https://", ignoreCase = true) || it.startsWith("http://", ignoreCase = true)
         }
     }
+
+    private data class VideoDimensions(val width: Int, val height: Int)
 
     private companion object {
         const val MIN_PIP_ASPECT_RATIO = 1f / 2.39f
