@@ -126,12 +126,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun startAddressEditing() {
         val tab = uiState.selectedTab ?: return
-        uiState = uiState.copy(
-            addressInput = if (tab.isHome) "" else tab.displayText.ifBlank { tab.url },
-            isAddressFocused = true,
-            isSuggestionPanelVisible = false,
-            suggestions = emptyList()
-        )
+        // Google検索ページではdisplayTextに検索語を保持している。URLバーを開いた直後から
+        // その語を候補生成へ渡し、入力し直さなくても履歴・Google候補を表示する。
+        beginAddressEditing(if (tab.isHome) "" else tab.displayText.ifBlank { tab.url })
     }
 
     fun stopAddressEditing() {
@@ -145,14 +142,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
-    fun setAddressInput(value: String) {
+    fun setAddressInput(value: String) = beginAddressEditing(value)
+
+    /**
+     * URLバーをタップした場合と文字を入力した場合で、候補の生成・非同期取得・表示条件を共通化する。
+     * これによりGoogle検索ページを編集した直後も、表示中の検索語から候補を開始できる。
+     */
+    private fun beginAddressEditing(value: String) {
         val query = value.trim()
-        // 候補パネルは入力中だけ専用状態で表示し、ページ遷移後に残らないようにする。
         val localSuggestions = createSuggestions(value)
         uiState = uiState.copy(
             addressInput = value,
             isAddressFocused = true,
-            // 端末内候補がゼロでも 2 文字以上なら Google 候補の到着を待って表示する。
+            // 端末内候補がゼロでも2文字以上ならGoogle候補の到着を待ってパネルを開く。
             isSuggestionPanelVisible = query.length >= 2 || (query.isNotBlank() && localSuggestions.isNotEmpty()),
             suggestions = localSuggestions
         )
@@ -171,13 +173,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun prepareNavigation(input: String = uiState.addressInput): PreparedNavigation? {
         val prepared = buildNavigation(input) ?: return null
-        updateSelected { it.copy(
-            url = prepared.url,
-            lastRequestedUrl = prepared.url,
-            displayText = prepared.displayText,
-            displayMode = prepared.displayMode,
-            isHome = false
-        ) }
+        updateSelected { tab ->
+            tab.copy(
+                url = prepared.url,
+                lastRequestedUrl = prepared.url,
+                displayText = prepared.displayText,
+                displayMode = prepared.displayMode,
+                isHome = false,
+                // 独自ホームから開いたブックマーク・検索・URLは、WebView履歴の次にホームへ戻す。
+                returnToHomeOnBack = tab.isHome || tab.returnToHomeOnBack
+            )
+        }
         suggestionJob?.cancel()
         uiState = uiState.copy(
             addressInput = prepared.displayText,
@@ -191,7 +197,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun openHome() {
         updateSelected { tab ->
-            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, canGoBack = false, canGoForward = false)
+            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, returnToHomeOnBack = false, canGoBack = false, canGoForward = false)
         }
         suggestionJob?.cancel()
         uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
@@ -226,6 +232,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
         }
         if (uiState.selectedTabId == tabId && !uiState.isAddressFocused) uiState = uiState.copy(addressInput = tab.displayText)
+        persistSoon()
+    }
+
+    /**
+     * YouTube等のSPAがHistory APIだけでURLを変えた時の追従処理。
+     * main-frame loadを伴わないためonPageFinishedだけでは共有先URLが古いまま残る。
+     */
+    fun onVisitedHistory(tabId: String, url: String) {
+        if (!isHttps(url)) return
+        updateTab(tabId) { tab ->
+            val googleQuery = googleSearchQuery(url)
+            tab.copy(
+                url = url,
+                lastRequestedUrl = url,
+                displayText = googleQuery ?: url,
+                displayMode = if (googleQuery != null) AddressDisplayMode.SEARCH else AddressDisplayMode.URL,
+                isHome = false
+            )
+        }
+        val tab = uiState.tabs.firstOrNull { it.id == tabId } ?: return
+        if (!tab.isPrivate) {
+            val entry = HistoryEntry(title = tab.title, url = url, query = tab.displayText.takeIf { tab.displayMode == AddressDisplayMode.SEARCH })
+            uiState = uiState.copy(history = listOf(entry) + uiState.history.filterNot { it.url == url }.take(499))
+        }
+        if (uiState.selectedTabId == tabId && !uiState.isAddressFocused) {
+            uiState = uiState.copy(addressInput = tab.displayText)
+        }
         persistSoon()
     }
 
@@ -269,6 +302,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setFullscreen(value: Boolean) { uiState = uiState.copy(isFullscreen = value) }
+
+    /** WebView履歴が尽きたホーム起点ページを、独自ホームへ確実に戻す。 */
+    fun returnSelectedTabToHome() {
+        if (uiState.selectedTab?.isHome == false) openHome()
+    }
 
     fun updateSettings(transform: (BrowserSettings) -> BrowserSettings) {
         uiState = uiState.copy(settings = transform(uiState.settings))

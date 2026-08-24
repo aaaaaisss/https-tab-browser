@@ -13,6 +13,14 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+data class AdBlockNetworkDecision(
+    val shouldBlock: Boolean = false,
+    /** Brave resource replacementが返すdata URL。空なら置換なし。 */
+    val redirectDataUrl: String? = null,
+    /** `$removeparam`結果。WebViewが安全に再発行できる経路だけで将来利用する。 */
+    val rewrittenUrl: String? = null
+)
+
 /**
  * Brave adblock-rust を Android JNI 経由で利用するフィルタ実行器。
  * 規則の解釈はネイティブエンジンに任せ、Kotlin 側で ABP 規則を再実装しない。
@@ -249,12 +257,29 @@ class BraveAdBlockEngine(context: Context) {
 
     fun isReady(): Boolean = activeHandle.get() != 0L
 
-    fun shouldBlock(url: String, documentUrl: String, resourceType: String): Boolean {
+    /**
+     * Braveのnetwork判定を一度だけ実行し、遮断・安全なredirect資源・`$removeparam`結果を返す。
+     * `redirectDataUrl`の実適用はWebView側でresource type・MIME・サイズを制限する。
+     */
+    fun networkDecision(url: String, documentUrl: String, resourceType: String): AdBlockNetworkDecision {
         val handle = activeHandle.get()
-        if (handle == 0L || !NativeAdBlockEngine.shouldBlock(handle, url, documentUrl, resourceType)) return false
-        recordBlockedRequest()
-        return true
+        if (handle == 0L) return AdBlockNetworkDecision()
+        val decision = runCatching {
+            val raw = NativeAdBlockEngine.networkDecisionJson(handle, url, documentUrl, resourceType)
+            val json = JSONObject(raw)
+            AdBlockNetworkDecision(
+                shouldBlock = json.optBoolean("shouldBlock", false),
+                redirectDataUrl = json.optString("redirectDataUrl").takeIf(String::isNotBlank),
+                rewrittenUrl = json.optString("rewrittenUrl").takeIf(String::isNotBlank)
+            )
+        }.getOrDefault(AdBlockNetworkDecision())
+        if (decision.shouldBlock) recordBlockedRequest()
+        return decision
     }
+
+    /** 既存呼出し互換用。新規コードはnetworkDecisionを使い、redirectも評価する。 */
+    fun shouldBlock(url: String, documentUrl: String, resourceType: String): Boolean =
+        networkDecision(url, documentUrl, resourceType).shouldBlock
 
     /** ページ固有selector・例外・非特権scriptlet情報をJSONで返す。 */
     fun cosmeticResources(url: String): String {
@@ -339,7 +364,7 @@ class BraveAdBlockEngine(context: Context) {
         const val BRAVE_RESOURCES_COMMIT = "9a0cc4312e155cb5b16b701afc0ab9285dc30f24"
         const val BRAVE_RESOURCES_SHA256 = "dca2802415565b15ceb7288811685d47ddf4bc6b0c4324357ac66e33c1de4948"
         const val CACHE_FORMAT_VERSION = "2"
-        const val NATIVE_ENGINE_CACHE_VERSION = "adblock-rust-0.13.2"
+        const val NATIVE_ENGINE_CACHE_VERSION = "adblock-rust-0.13.3"
         const val SIGNATURE_BUFFER_BYTES = 64 * 1024
     }
 }
@@ -363,6 +388,10 @@ object NativeAdBlockEngine {
     fun destroy(handle: Long) { if (available) runCatching { nativeDestroy(handle) } }
     fun shouldBlock(handle: Long, url: String, documentUrl: String, resourceType: String): Boolean =
         available && runCatching { nativeShouldBlock(handle, url, documentUrl, resourceType) }.getOrDefault(false)
+    fun networkDecisionJson(handle: Long, url: String, documentUrl: String, resourceType: String): String =
+        if (available) runCatching {
+            nativeNetworkDecisionJson(handle, url, documentUrl, resourceType)
+        }.getOrDefault("{}") else "{}"
     fun cosmeticJson(handle: Long, url: String): String =
         if (available) runCatching { nativeCosmeticJson(handle, url) }.getOrDefault("{}") else "{}"
     fun genericCss(handle: Long, classesJson: String, idsJson: String, exceptionsJson: String): String =
@@ -373,6 +402,7 @@ object NativeAdBlockEngine {
     @JvmStatic private external fun nativeSerializeToFile(handle: Long, path: String): Boolean
     @JvmStatic private external fun nativeDestroy(handle: Long)
     @JvmStatic private external fun nativeShouldBlock(handle: Long, url: String, documentUrl: String, resourceType: String): Boolean
+    @JvmStatic private external fun nativeNetworkDecisionJson(handle: Long, url: String, documentUrl: String, resourceType: String): String
     @JvmStatic private external fun nativeCosmeticJson(handle: Long, url: String): String
     @JvmStatic private external fun nativeGenericCss(handle: Long, classesJson: String, idsJson: String, exceptionsJson: String): String
 }

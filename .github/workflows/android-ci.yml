@@ -38,6 +38,9 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi
 
+      - name: Verify browser regression guards
+        run: node tools/verify_all.js
+
       - name: Verify Brave content-filtering library
         run: cargo test --manifest-path app/src/main/rust/Cargo.toml --release
 
