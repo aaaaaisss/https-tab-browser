@@ -114,6 +114,7 @@ fun AddressBar(
     onEditingStopped: () -> Unit
 ) {
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    var suppressNextEditingStart by remember { mutableStateOf(false) }
 
     LaunchedEffect(value) {
         if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
@@ -128,7 +129,13 @@ fun AddressBar(
                     .focusRequester(focusRequester).onFocusChanged { focus ->
                         if (focus.isFocused) {
                             textFieldValue = textFieldValue.copy(selection = TextRange(textFieldValue.text.length), composition = null)
-                            if (!isEditing) onEditingStarted()
+                            if (!isEditing) {
+                                if (suppressNextEditingStart) {
+                                    suppressNextEditingStart = false
+                                } else {
+                                    onEditingStarted()
+                                }
+                            }
                         }
                     },
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White, fontSize = 14.sp, lineHeight = 18.sp),
@@ -148,6 +155,7 @@ fun AddressBar(
                         }
                         if (textFieldValue.text.isNotBlank()) {
                             IconButton(onClick = {
+                                if (!isEditing) suppressNextEditingStart = true
                                 textFieldValue = TextFieldValue("")
                                 onValueChange("")
                             }, modifier = Modifier.size(32.dp)) {
