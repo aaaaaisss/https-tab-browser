@@ -23,3 +23,13 @@ local.properties
 
 # CI-generated Rust/JNI libraries
 app/src/main/jniLibs/
+
+# Local research, references, CI logs, and downloaded distribution artifacts
+# Keep durable conclusions in AI_HANDOFF.md or tracked documentation instead.
+/analysis/
+/reference/
+/release/
+
+# One-off local research helpers; promote only maintained checks into tools/.
+/tools/extract_brave_sabr_resource.js
+/tools/rebuild_webview_host.py

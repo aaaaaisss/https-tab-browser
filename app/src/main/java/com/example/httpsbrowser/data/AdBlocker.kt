@@ -68,7 +68,7 @@ class AdBlockListRepository(
     /** 初回導入時に公式・HTTPS の標準リストだけを登録する。ユーザー追加リストは変更しない。 */
     suspend fun ensureStandardLists(): List<BlockListSource> = withContext(Dispatchers.IO) {
         var sources = listSourcesInternal()
-        // 旧4標準リストだけを削除し、ユーザーが追加した任意リストはそのまま維持する。
+        // 廃止した組込みリストだけを削除し、ユーザーが追加した任意リストはそのまま維持する。
         val retiredBuiltIns = sources.filter { it.builtIn && it.sourceUrl !in STANDARD_LIST_URLS }
         retiredBuiltIns.forEach { source -> File(directory, "${source.id}.txt").delete() }
         sources = sources.filterNot { it in retiredBuiltIns }
@@ -83,7 +83,7 @@ class AdBlockListRepository(
         sources
         }
 
-    /** 7 日以上更新されていない標準リストだけを更新する。失敗時は直前の正常ファイルを維持する。 */
+    /** 1 日以上更新されていない標準リストだけを更新する。失敗時は直前の正常ファイルを維持する。 */
     suspend fun updateDueStandardLists(): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
             val now = System.currentTimeMillis()
@@ -97,6 +97,23 @@ class AdBlockListRepository(
                 updatedCount++
             }
             saveSources(sources)
+            updatedCount
+        }
+    }
+
+    /** ユーザー操作時は更新期限を待たず、有効な標準・追加リストをすべて取得して即時再コンパイルする。 */
+    suspend fun forceUpdateEnabledLists(): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            var sources = listSourcesInternal()
+            var updatedCount = 0
+            sources.filter { it.enabled }.forEach { source ->
+                fetchToFile(source, source.id)
+                val updated = source.copy(updatedAt = System.currentTimeMillis())
+                sources = sources.map { if (it.id == source.id) updated else it }
+                updatedCount++
+            }
+            saveSources(sources)
+            loadAndCompile()
             updatedCount
         }
     }
@@ -208,10 +225,24 @@ class AdBlockListRepository(
     }
 
     companion object {
-        private const val UPDATE_INTERVAL_MS = 7L * 24L * 60L * 60L * 1000L
+        private const val UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L
         private const val MAX_LIST_BYTES = 12 * 1024 * 1024
 
         val STANDARD_LISTS = listOf(
+            BlockListSource(
+                "adguard_android_2_optimized",
+                "AdGuard Base フィルタ（Android 最適化版）",
+                "https://filters.adtidy.org/android/filters/2_optimized.txt",
+                builtIn = true
+            ),
+            BlockListSource(
+                "brave_specific",
+                "Brave Specific（YouTube・動画補助）",
+                "https://raw.githubusercontent.com/brave/adblock-lists/master/brave-lists/brave-specific.txt",
+                builtIn = true
+            ),
+            // a994015以降に外れていたが、広告遮断が強かった構成に含まれていたモバイル最適化EasyList。
+            // Base・Brave Specific・日本語と併用し、YouTube周辺を含む第三者広告要求の照合範囲を戻す。
             BlockListSource(
                 "adguard_android_101_optimized",
                 "EasyList（AdGuard Android 最適化版）",
@@ -249,8 +280,9 @@ class AdBlockUpdateWorker(appContext: Context, params: WorkerParameters) : Corou
         private const val WORK_NAME = "https_tab_browser_adblock_update"
 
         fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<AdBlockUpdateWorker>(7, TimeUnit.DAYS)
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            val request = PeriodicWorkRequestBuilder<AdBlockUpdateWorker>(1, TimeUnit.DAYS)
+                // 携帯回線を消費せず、Wi‑Fi等の非従量ネットワークでだけ日次更新する。
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,

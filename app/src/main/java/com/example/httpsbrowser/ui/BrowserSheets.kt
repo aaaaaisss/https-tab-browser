@@ -26,6 +26,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -49,11 +50,18 @@ import androidx.compose.ui.unit.dp
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.BlockListSource
 import com.example.httpsbrowser.data.Bookmark
+import com.example.httpsbrowser.data.BrowserDownloadDispatcher
+import com.example.httpsbrowser.data.BrowserDownloadStatus
 import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BrowserUiState
 import com.example.httpsbrowser.data.SettingsPage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.URI
 
 object BrowserSheets {
     @OptIn(ExperimentalMaterial3Api::class)
@@ -137,9 +145,12 @@ object BrowserSheets {
                 SettingsPage.ROOT -> SettingsRoot(state, onSettings, onOpenPage, onDownloads, onDismiss)
                 SettingsPage.BOOKMARKS -> BookmarkPage(state.bookmarks, onOpenUrl, onSaveBookmark, onUpdateBookmark, onDeleteBookmark, onBack, onNotice)
                 SettingsPage.HISTORY -> HistoryPage(state.history, onOpenUrl, onDeleteHistory, onBack)
+                SettingsPage.DOWNLOADS -> DownloadsPage(onBack)
+                SettingsPage.DARK_EXCLUSIONS -> DarkExclusionsPage(state.settings, onSettings, onBack)
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
                 SettingsPage.DATA -> DataPage(onClear, onBack)
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPage(onBack, onShareDiagnostics)
+                SettingsPage.OPEN_SOURCE_LICENSES -> OpenSourceLicensesPage(onBack)
             }
         }
     }
@@ -154,8 +165,29 @@ object BrowserSheets {
     ) {
         LazyColumn(Modifier.padding(bottom = 24.dp)) {
             item { SheetTitle("設定") }
-            item { SettingSwitch("ページを強制的に暗色化", state.settings.forceDarkPages) { onSettings { setting -> setting.copy(forceDarkPages = it) } } }
-            item { SettingSwitch("広告 URL ルールをブロック", state.settings.adBlockingEnabled) { onSettings { setting -> setting.copy(adBlockingEnabled = it) } } }
+            item {
+                ModeSetting(
+                    label = "暗色化",
+                    highSelected = state.settings.forceDarkPages && state.settings.forceDarkVideoPages,
+                    onNormal = { onSettings { setting -> setting.copy(forceDarkPages = true, forceDarkVideoPages = false) } },
+                    onHigh = { onSettings { setting -> setting.copy(forceDarkPages = true, forceDarkVideoPages = true) } }
+                )
+            }
+            item {
+                SettingSwitch(
+                    "元から暗いページでは追加暗色化しない",
+                    state.settings.skipDarkeningAlreadyDarkPages
+                ) { enabled -> onSettings { setting -> setting.copy(skipDarkeningAlreadyDarkPages = enabled) } }
+            }
+            item {
+                ModeSetting(
+                    label = "広告ブロック",
+                    highSelected = state.settings.adBlockingEnabled && state.settings.aggressiveAdBlockingEnabled,
+                    onNormal = { onSettings { setting -> setting.copy(adBlockingEnabled = true, aggressiveAdBlockingEnabled = false) } },
+                    onHigh = { onSettings { setting -> setting.copy(adBlockingEnabled = true, aggressiveAdBlockingEnabled = true) } }
+                )
+            }
+            item { NavigationItem("暗色化の例外", Icons.Default.Security) { onOpenPage(SettingsPage.DARK_EXCLUSIONS) } }
             item { SettingSwitch("JavaScript を有効化", state.settings.javascriptEnabled) { onSettings { setting -> setting.copy(javascriptEnabled = it) } } }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             item { SheetTitle("管理") }
@@ -164,6 +196,7 @@ object BrowserSheets {
             item { NavigationItem("ダウンロード", Icons.Default.Download, onDownloads) }
             item { NavigationItem("広告ブロック", Icons.Default.Security) { onOpenPage(SettingsPage.AD_BLOCK) } }
             item { NavigationItem("クラッシュ診断", Icons.Default.Security) { onOpenPage(SettingsPage.DIAGNOSTICS) } }
+            item { NavigationItem("オープンソースライセンス", Icons.Default.Security) { onOpenPage(SettingsPage.OPEN_SOURCE_LICENSES) } }
             item { NavigationItem("閲覧データの消去", Icons.Default.Delete) { onOpenPage(SettingsPage.DATA) } }
             item { TextButton(onClick = onDismiss, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { Text("閉じる") } }
         }
@@ -248,12 +281,137 @@ object BrowserSheets {
     }
 
     @Composable
+    private fun DarkExclusionsPage(
+        settings: BrowserSettings,
+        onSettings: ((BrowserSettings) -> BrowserSettings) -> Unit,
+        onBack: () -> Unit
+    ) {
+        var hostInput by remember { mutableStateOf("") }
+        PageHeader("暗色化の例外", onBack)
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+            Text("ここに追加したサイトでは、highを含む追加暗色化を行いません。example.com を追加するとサブドメインも対象です。", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = hostInput,
+                    onValueChange = { hostInput = it },
+                    label = { Text("サイトURL またはホスト名") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = {
+                    normalizeDarkExclusionHost(hostInput)?.let { host ->
+                        onSettings { current -> current.copy(darkModeExcludedHosts = (current.darkModeExcludedHosts + host).distinct()) }
+                        hostInput = ""
+                    }
+                }) { Text("追加") }
+            }
+        }
+        LazyColumn(Modifier.padding(bottom = 24.dp)) {
+            if (settings.darkModeExcludedHosts.isEmpty()) item { EmptyRow("暗色化の例外はまだありません。") }
+            items(settings.darkModeExcludedHosts, key = { it }) { host ->
+                ListItem(
+                    headlineContent = { Text(host) },
+                    supportingContent = { Text("このサイトとサブドメインでは追加暗色化をしない", style = MaterialTheme.typography.bodySmall) },
+                    trailingContent = {
+                        IconButton(onClick = {
+                            onSettings { current -> current.copy(darkModeExcludedHosts = current.darkModeExcludedHosts - host) }
+                        }) { Icon(Icons.Default.Delete, "$host を除外リストから削除") }
+                    }
+                )
+            }
+        }
+    }
+
+    private fun normalizeDarkExclusionHost(input: String): String? = runCatching {
+        val normalized = input.trim().lowercase()
+        val uri = URI(if ("://" in normalized) normalized else "https://$normalized")
+        uri.host?.removePrefix("www.")?.takeIf { host -> host.matches(Regex("[a-z0-9.-]+")) }
+    }.getOrNull()
+
+    @Composable
+    private fun DownloadsPage(onBack: () -> Unit) {
+        val context = LocalContext.current
+        var downloads by remember { mutableStateOf<List<BrowserDownloadStatus>>(emptyList()) }
+        LaunchedEffect(Unit) {
+            while (isActive) {
+                downloads = BrowserDownloadDispatcher.currentStatuses(context)
+                delay(700)
+            }
+        }
+        PageHeader("ダウンロード", onBack)
+        LazyColumn(Modifier.padding(bottom = 24.dp)) {
+            if (downloads.isEmpty()) {
+                item { EmptyRow("進行中またはこの起動中に開始したダウンロードはここに表示されます。") }
+            }
+            items(downloads, key = { it.id }) { download ->
+                DownloadStatusRow(
+                    download = download,
+                    onCancel = { BrowserDownloadDispatcher.cancel(context, download.id) },
+                    onDelete = { BrowserDownloadDispatcher.delete(context, download.id) }
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun DownloadStatusRow(
+        download: BrowserDownloadStatus,
+        onCancel: () -> Unit,
+        onDelete: () -> Unit
+    ) {
+        val fraction = download.progressFraction
+        ListItem(
+            headlineContent = { Text(download.fileName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            supportingContent = {
+                Column {
+                    Text(
+                        "${if (download.mode == com.example.httpsbrowser.data.BrowserDownloadMode.HIGH) "高速" else "通常"}・${download.phase}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (fraction != null) {
+                        LinearProgressIndicator(progress = fraction, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+                        Text(
+                            "${(fraction * 100).toInt()}%  ${formatBytes(download.downloadedBytes)} / ${formatBytes(download.totalBytes ?: 0L)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    } else if (download.downloadedBytes > 0L) {
+                        Text("${formatBytes(download.downloadedBytes)} を取得済み", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            },
+            trailingContent = {
+                Column(horizontalAlignment = androidx.compose.ui.Alignment.End) {
+                    Text(
+                        if (download.isSuccessful) "完了" else if (download.isTerminal) "確認" else "進行中",
+                        color = if (download.isTerminal && !download.isSuccessful) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    if (download.isTerminal) {
+                        TextButton(onClick = onDelete) { Text("削除") }
+                    } else {
+                        TextButton(onClick = onCancel) { Text("停止") }
+                    }
+                }
+            }
+        )
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024L * 1024L -> "%.1f GB".format(bytes / (1024.0 * 1024.0 * 1024.0))
+        bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+        bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0)
+        else -> "$bytes B"
+    }
+
+    @Composable
     private fun AdBlockPage(listRepository: AdBlockListRepository, onBack: () -> Unit, onNotice: (String) -> Unit) {
         val scope = rememberCoroutineScope()
         var sources by remember { mutableStateOf<List<BlockListSource>>(emptyList()) }
         var status by remember { mutableStateOf(listRepository.blockStatus()) }
         var creating by remember { mutableStateOf(false) }
         var editing by remember { mutableStateOf<BlockListSource?>(null) }
+        var updating by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) {
             sources = listRepository.loadAndCompile()
             status = listRepository.blockStatus()
@@ -272,6 +430,20 @@ object BrowserSheets {
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text("HTTPS URL のリストだけを登録できます。例外・オプション・resource type はフィルタエンジンが評価します。", style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        enabled = !updating,
+                        onClick = {
+                            scope.launch {
+                                updating = true
+                                listRepository.forceUpdateEnabledLists().onSuccess { count ->
+                                    sources = listRepository.loadAndCompile()
+                                    status = listRepository.blockStatus()
+                                    onNotice("有効なフィルタ $count 件を手動更新しました。")
+                                }.onFailure { onNotice(it.message ?: "フィルタを更新できませんでした。") }
+                                updating = false
+                            }
+                        }
+                    ) { Text(if (updating) "フィルタを更新中…" else "フィルタを今すぐ更新") }
                 }
             }
             if (sources.isEmpty()) item { EmptyRow("広告ブロックリストはまだありません。") }
@@ -333,6 +505,59 @@ object BrowserSheets {
                 Text(details, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
             }
         }
+    }
+
+    @Composable
+    private fun OpenSourceLicensesPage(onBack: () -> Unit) {
+        val context = LocalContext.current
+        var fulgurisNotice by remember { mutableStateOf("") }
+        var thirdPartyNotice by remember { mutableStateOf("") }
+        var cpalText by remember { mutableStateOf("") }
+        LaunchedEffect(Unit) {
+            val documents = withContext(Dispatchers.IO) {
+                fun readAsset(name: String) = runCatching {
+                    context.assets.open("licenses/$name").bufferedReader(Charsets.UTF_8).use { it.readText() }
+                }.getOrDefault("ライセンス文書を読み込めませんでした。")
+                Triple(
+                    readAsset("FULGURIS_CPAL_NOTICE.md"),
+                    readAsset("THIRD_PARTY_NOTICES.md"),
+                    readAsset("CPAL-1.0.txt")
+                )
+            }
+            fulgurisNotice = documents.first
+            thirdPartyNotice = documents.second
+            cpalText = documents.third
+        }
+        PageHeader("オープンソースライセンス", onBack)
+        LazyColumn(Modifier.padding(bottom = 24.dp)) {
+            item {
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                    Text("Powered by Fulguris Browser", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "ねこぶらうざはFulguris由来の動画ライフサイクル、全画面表示、Google Translate遷移を最小限適合しています。詳細な変更記録と対応ソースは以下に表示します。",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+                HorizontalDivider()
+            }
+            item { LicenseSection("Fulguris CPAL-1.0変更記録", fulgurisNotice) }
+            item { LicenseSection("第三者通知", thirdPartyNotice) }
+            item { LicenseSection("CPAL-1.0 全文", cpalText) }
+        }
+    }
+
+    @Composable
+    private fun LicenseSection(title: String, content: String) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (content.isBlank()) "読み込み中…" else content,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        HorizontalDivider()
     }
 
     @Composable
@@ -418,6 +643,28 @@ object BrowserSheets {
 
     @Composable private fun EmptyRow(text: String) {
         Text(text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
+    }
+
+    @Composable
+    private fun ModeSetting(
+        label: String,
+        highSelected: Boolean,
+        onNormal: () -> Unit,
+        onHigh: () -> Unit
+    ) {
+        ListItem(
+            headlineContent = { Text(label) },
+            trailingContent = {
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = onNormal) {
+                        Text(if (highSelected) "normal" else "✓ normal")
+                    }
+                    TextButton(onClick = onHigh) {
+                        Text(if (highSelected) "✓ high" else "high")
+                    }
+                }
+            }
+        )
     }
 
     @Composable private fun SettingSwitch(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
