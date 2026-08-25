@@ -36,7 +36,7 @@ requireText(screen, 'state.isAddressFocused -> viewModel.stopAddressEditing()', 
 requireText(screen, 'onSubmit = { input -> navigate(input) }', 'IME navigation wiring');
 requireText(screen, 'onOpenBookmark = { bookmark -> navigate(bookmark.url) }', 'bookmark URL-bar navigation');
 const systemBackHome = screen.indexOf('selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()');
-const systemBackHistory = screen.indexOf('selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)');
+const systemBackHistory = screen.indexOf('selectedTab?.isHome == false && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)');
 if (systemBackHome < 0 || systemBackHistory < 0 || systemBackHistory > systemBackHome) {
   throw new Error('Chromium history back must run before bookmark home fallback');
 }

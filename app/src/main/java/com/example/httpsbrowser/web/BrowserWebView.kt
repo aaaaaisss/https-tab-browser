@@ -306,9 +306,6 @@ class BrowserWebViewRegistry(
         view.scrollTo(0, (maximum * fraction.coerceIn(0f, 1f)).toInt())
     }
 
-    fun pause(tabId: String) = entries[tabId]?.webView?.onPause()
-    fun resume(tabId: String) = entries[tabId]?.webView?.onResume()
-
     fun remove(tabId: String) {
         entries.remove(tabId)?.let { entry ->
             entry.isActive = false
@@ -316,13 +313,11 @@ class BrowserWebViewRegistry(
             runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
-            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.youtubeAdSanitizerScriptHandler = null
-            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
@@ -606,10 +601,8 @@ class BrowserWebViewRegistry(
         }
         if (!entry.adBlockingEnabled) {
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
-            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.youtubeAdSanitizerScriptHandler = null
-            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
@@ -626,9 +619,7 @@ class BrowserWebViewRegistry(
         // 広告を消せた安定sessionを作り直さず、SABR制御応答の待機値だけを短縮する。
         // 通常モードでは完全に外し、ユーザーが選ぶ攻めた広告遮断モードだけへ限定する。
         if (!entry.aggressiveAdBlockingEnabled) {
-            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
-            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
@@ -1235,8 +1226,6 @@ class BrowserWebViewRegistry(
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         /** 組込みYouTube広告メタデータ除去script。外部リストには実行権限を与えない。 */
         var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
-        /** warm navigationのplayer requestへ広告なし指定を入れる組込みscript。攻めたモード限定。 */
-        var youtubeNoAdWarmPlayerScriptHandler: ScriptHandler? = null,
         /** 既存sessionを再取得せずSABR backoffだけを短縮する組込みscript。攻めたモード限定。 */
         var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
@@ -1696,46 +1685,12 @@ class BrowserWebViewRegistry(
             })();
         """.trimIndent()
 
-        /**
-         * warm navigationでクライアントが生成するplayer requestだけを補正する。
-         * sessionのcancel/reloadや初期responseの削除を行わず、JSON.stringifyを先にhookして
-         * YouTubeのlocker scriptより前に広告なしplayer contextを渡す。Object.assignは補助経路。
-         */
-        val YOUTUBE_NO_AD_WARM_PLAYER_SCRIPT = """
-            (function(){
-              if(window.__nekoBrowserNoAdWarmPlayer) return;
-              window.__nekoBrowserNoAdWarmPlayer=true;
-              function patchText(text){
-                if(typeof text!=='string'||text.indexOf('contentPlaybackContext')<0||text.indexOf('isInlinePlaybackNoAd')>=0) return text;
-                return text.replace(/"contentPlaybackContext"\s*:\s*\{(?!\s*"isInlinePlaybackNoAd"\s*:\s*true)/,'"contentPlaybackContext":{"isInlinePlaybackNoAd":true,');
-              }
-              function patchCarrier(value){
-                try{
-                  if(value&&typeof value.body==='string') value.body=patchText(value.body);
-                }catch(_e){}
-                return value;
-              }
-              try{
-                var realStringify=JSON.stringify;
-                JSON.stringify=function(){return patchText(realStringify.apply(this,arguments));};
-              }catch(_e){}
-              try{
-                var realAssign=Object.assign;
-                Object.assign=new Proxy(realAssign,{apply:function(target,thisArg,args){
-                  var result=Reflect.apply(target,thisArg,args);
-                  patchCarrier(result);
-                  if(args&&args.length>0) patchCarrier(args[0]);
-                  return result;
-                }});
-              }catch(_e){}
-            })();
-        """.trimIndent()
 
         /**
          * Brave公式SABR対策から、既存の再生sessionを再取得する処理を除いた最小版。
          * googlevideoの小さな`sabr=1`制御応答だけをteeして、protobuf field 4のbackoffTimeMsを
          * 同じvarint長で50〜149msへ置き換える。映像chunk（1000 bytes以上）は無加工で返す。
-         * 読取失敗を偽の成功responseへ変換せず、Chromium/YouTube本来の再試行へ委ねて再読込loopを防ぐ。
+         * 読取・tee失敗時は未加工のpass branchを返し、任意の検査失敗でプレーヤー本体のfetchを拒否しない。
          */
         val YOUTUBE_SABR_PATCH_ONLY_SCRIPT = """
             (function(){

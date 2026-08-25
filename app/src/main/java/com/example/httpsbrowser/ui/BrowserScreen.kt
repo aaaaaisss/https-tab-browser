@@ -181,12 +181,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     LaunchedEffect(state.bookmarks) {
         homeBookmarkSelection = homeBookmarkSelection.intersect(state.bookmarks.map { it.id }.toSet())
     }
-    DisposableEffect(selectedTab?.id) {
-        selectedTab?.takeIf { !it.isHome }?.let { registry.resume(it.id) }
-        // タブ切替だけで WebView を pause すると、ユーザーが開始した音声・動画も停止する。
-        // レンダラはアプリ終了時またはタブを閉じた時に確実に破棄する。
-        onDispose { }
-    }
     DisposableEffect(Unit) { onDispose { registry.close() } }
 
     LaunchedEffect(
@@ -306,7 +300,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 homeBookmarkSelection = emptySet()
             }
             // 戻る・進むはWebViewの履歴を使う。loadUrlを呼ばないため、ページ再読み込みを避けられる。
-            selectedTab?.isHome == false && selectedTab != null && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
+            selectedTab?.isHome == false && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
             // ホームからURLバー経由で開いたブックマーク等は、履歴を使い切った時だけ独自ホームへ戻す。
             selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()
             // 通常ページの履歴が尽きた時は、Android戻るとして終了する。
