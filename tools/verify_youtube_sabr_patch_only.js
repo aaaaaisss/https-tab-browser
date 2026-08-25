@@ -68,13 +68,13 @@ for (const forbidden of ['cancelPlayback', 'loadVideoById', 'isInlinePlaybackNoA
     Response,
     Uint8Array,
   );
-  let rejected = false;
+  let fallback;
   try {
-    await failingWindow.fetch('https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
+    fallback = await failingWindow.fetch('https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
   } catch (_error) {
-    rejected = true;
+    throw new Error('SABR inspection failure must preserve the pass-through response instead of rejecting player fetch');
   }
-  if (!rejected) throw new Error('SABR read failure must propagate instead of returning a synthetic success response');
+  if (!(fallback instanceof Response)) throw new Error('SABR inspection fallback must return a Response');
   console.log('YouTube SABR patch-only session-preserving behavior: OK');
 })().catch((error) => {
   console.error(error);

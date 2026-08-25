@@ -1807,6 +1807,10 @@ class BrowserWebViewRegistry(
                     var out=new Response(bytes,reinit);
                     try{Object.defineProperty(out,'url',{value:response.url,configurable:true});Object.defineProperty(out,'type',{value:response.type,configurable:true});}catch(_e){}
                     return out;
+                  }).catch(function(){
+                    // SABR検査は任意最適化であり、読取・tee失敗をプレーヤー本体の
+                    // fetch失敗へ変換してはならない。安定版と同じ未加工のpass branchを返す。
+                    return passThrough();
                   });
                 });
               };
