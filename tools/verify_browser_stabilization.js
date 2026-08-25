@@ -76,6 +76,8 @@ requireText(mainActivity, 'normalWebContentPlacedAboveCompose', 'native host z-o
 requireText(mainActivity, 'Composeの下で表示を維持することで動画・音声の描画サーフェスと再生sessionを保つ', 'overlay keeps media surface attached');
 requireText(mainActivity, 'if (visible && normalWebContentPlacedAboveCompose) normalWebContentHost.bringToFront()', 'overlay restore honors Google native front layer');
 forbidText(mainActivity, 'if (visible && normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE', 'overlay must not hide the WebView surface');
+requireText(mainActivity, 'ホームタブでも既存WebViewをhostから外さない', 'home tab keeps background media session attached');
+forbidText(mainActivity, 'normalWebContentHost.removeAllViews()\n        // 次に通常ページへ戻る時', 'home tab must not detach media WebViews');
 requireText(cargoToml, 'version = "=0.13.3"', 'Brave adblock-rust version is exactly pinned');
 
 requireText(models, 'skipDarkeningAlreadyDarkPages: Boolean = false', 'already-dark exclusion default');

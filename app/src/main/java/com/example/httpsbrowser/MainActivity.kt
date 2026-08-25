@@ -148,12 +148,20 @@ class MainActivity : ComponentActivity() {
         normalWebContentHost.visibility = if (normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
     }
 
-    /** ホーム等ではWebViewを破棄せず、表示hostからだけ外す。 */
+    /**
+     * ホームタブでも既存WebViewをhostから外さない。通常のタブ切替で親Viewを外すと、
+     * Chromiumが動画の描画サーフェスを破棄し再生を停止するため、Composeホームを前面に
+     * 重ねて背後のWebViewセッションを保持する。明示的なホーム復帰・タブ削除・Activity
+     * 破棄だけがWebViewを破棄する経路となる。
+     */
     fun hideNormalWebContent() {
         if (::normalWebContentHost.isInitialized.not()) return
-        normalWebContentHost.removeAllViews()
-        // 次に通常ページへ戻る時は、最後に確定した同じページ矩形をすぐ利用できる。
-        normalWebContentHost.visibility = View.GONE
+        composeOverlayView.bringToFront()
+        normalWebContentHost.visibility = if (normalWebContentHost.childCount > 0 && normalWebContentBoundsReady) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
     }
 
     /** Composeが計測したページ矩形だけを通常WebViewへ割り当て、下部操作UIと重ねない。 */
