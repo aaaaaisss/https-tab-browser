@@ -131,12 +131,18 @@ fun AddressBar(
             // ×ボタン直後のフォーカス獲得は既にonFocusChanged側で消費済みのため、ここでは
             // 万一の残留フラグだけを確実にクリアする。
             suppressNextEditingStart = false
-            // URL バーをタップしても全選択せず、カーソルを末尾に置く。
-            if (textFieldValue.text != value) textFieldValue = TextFieldValue(value, TextRange(value.length))
+            // 編集開始時は現在の文字列末尾へカーソルを置く。編集終了時にここで
+            // フォーカスを強制解除しないことで、画面更新とタップが競合してIMEが
+            // 一瞬で閉じることを防ぐ。
+            if (textFieldValue.text != value) {
+                textFieldValue = TextFieldValue(value, TextRange(value.length))
+            } else {
+                textFieldValue = textFieldValue.copy(
+                    selection = TextRange(textFieldValue.text.length),
+                    composition = null
+                )
+            }
             focusRequester.requestFocus()
-        } else {
-            focusManager.clearFocus(force = true)
-            keyboardController?.hide()
         }
     }
 
@@ -188,8 +194,13 @@ fun AddressBar(
                                     // タップがBasicTextFieldへフォーカスを渡し、onEditingStarted()が現在のURLを
                                     // 再投入してしまう。消去直後の編集開始だけを一度抑制する。
                                     if (!isEditing) suppressNextEditingStart = true
-                                    textFieldValue = TextFieldValue("")
+                                    textFieldValue = TextFieldValue("", TextRange.Zero)
+                                    // 値更新で編集状態を有効化してから、フォーカスとIMEを
+                                    // 明示的に要求する。onEditingStarted()は現在URLの再投入を
+                                    // 引き起こすため呼ばない。
                                     onValueChange("")
+                                    focusRequester.requestFocus()
+                                    keyboardController?.show()
                                 },
                                 modifier = Modifier.size(32.dp)
                             ) {
