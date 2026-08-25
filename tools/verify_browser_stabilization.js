@@ -8,6 +8,7 @@ const models = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/
 const repository = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserRepository.kt', 'utf8');
 const webView = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt', 'utf8');
 const mainActivity = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/MainActivity.kt', 'utf8');
+const cargoToml = fs.readFileSync('app/src/main/rust/Cargo.toml', 'utf8');
 
 function requireText(source, text, label) {
   if (!source.includes(text)) throw new Error(`${label}: missing ${text}`);
@@ -68,6 +69,14 @@ requireText(mainActivity, 'normalWebContentReservesRightTouchRail', 'page-specif
 requireText(mainActivity, 'else 0', 'Google web surfaces forward the full page width');
 requireText(mainActivity, 'clipChildren = true', 'native host clips popup rendering to page bounds');
 requireText(mainActivity, 'normalWebContentHost.bringToFront()', 'Google native front layer');
+requireText(webView, 'view.bringToFront()', 'selected tab WebView is promoted without recreation');
+forbidText(webView, 'host.removeAllViews()', 'tab switch must not detach the outgoing WebView');
+forbidText(webView, 'host.getChildAt(index).visibility = View.INVISIBLE', 'tab switch must not hide the outgoing media surface');
+requireText(mainActivity, 'normalWebContentPlacedAboveCompose', 'native host z-order is restored after an overlay');
+requireText(mainActivity, 'Composeの下で表示を維持することで動画・音声の描画サーフェスと再生sessionを保つ', 'overlay keeps media surface attached');
+requireText(mainActivity, 'if (visible && normalWebContentPlacedAboveCompose) normalWebContentHost.bringToFront()', 'overlay restore honors Google native front layer');
+forbidText(mainActivity, 'if (visible && normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE', 'overlay must not hide the WebView surface');
+requireText(cargoToml, 'version = "=0.13.3"', 'Brave adblock-rust version is exactly pinned');
 
 requireText(models, 'skipDarkeningAlreadyDarkPages: Boolean = false', 'already-dark exclusion default');
 requireText(models, 'darkModeExcludedHosts: List<String> = emptyList()', 'manual dark exclusion model');

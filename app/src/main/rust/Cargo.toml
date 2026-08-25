@@ -8,6 +8,8 @@ license = "MPL-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-adblock = { version = "0.13.3", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+# Brave公式adblock-rust 0.13.3 APIを使うJNI実装。互換バージョンの自動更新で
+# ブロック判定・redirect結果が変化しないよう、更新は監査とCI検証を伴う明示作業に限定する。
+adblock = { version = "=0.13.3", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
 jni = "0.21.1"
 serde_json = "1.0"

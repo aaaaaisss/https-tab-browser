@@ -237,23 +237,30 @@ class BrowserWebViewRegistry(
      */
     fun attachToNativeHost(tabId: String, host: ViewGroup): Boolean {
         val view = entries[tabId]?.webView ?: return false
-        if (view.parent === host) return true
-        (view.parent as? ViewGroup)?.removeView(view)
-        host.removeAllViews()
-        host.addView(view, ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT
-        ))
+        // タブ切替で前面WebViewを一括除去したり不可視化すると、Chromiumは
+        // 描画先の消滅として扱う場合がある。YouTubeの再生sessionを維持するため、
+        // 既存WebViewはhost内で可視のまま重ね、選択タブだけを前面へ移動する。
+        if (view.parent !== host) {
+            (view.parent as? ViewGroup)?.removeView(view)
+            host.addView(view, ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            ))
+        }
         view.visibility = View.VISIBLE
+        view.bringToFront()
         return true
     }
-
-    /** 非選択タブは破棄せずnative hostからだけ外す。タブ履歴・ログイン状態・再生状態を保持する。 */
+    /**
+     * 非選択タブはhost内に残す。親Viewからの切離しは、タブを閉じるかレジストリを
+     * 破棄する時だけに限定し、動画・音声・ログインのWebView状態を保つ。
+     */
     fun detachFromNativeHost(tabId: String, host: ViewGroup? = null) {
         val view = entries[tabId]?.webView ?: return
         val parent = view.parent as? ViewGroup ?: return
-        if (host == null || parent === host) parent.removeView(view)
+        if (host == null) parent.removeView(view)
     }
+
 
     /**
      * Fulgurisと同じく、翻訳はGoogle Translateのページ遷移として実行する。

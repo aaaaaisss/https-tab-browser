@@ -41,6 +41,8 @@ class MainActivity : ComponentActivity() {
     private var forwardingNormalWebTouch = false
     /** Composeの右端スクロールレールが見える通常ページだけ、レール用のタッチ領域を予約する。 */
     private var normalWebContentReservesRightTouchRail = false
+    /** Googleのページ内モーダルなど、通常WebViewをComposeより前面に置くページかを保持する。 */
+    private var normalWebContentPlacedAboveCompose = false
     @Volatile private var fullscreenVideoView: View? = null
     private var fullscreenVideoTabId: String? = null
     private val videoDimensionsByTab = ConcurrentHashMap<String, VideoDimensions>()
@@ -131,14 +133,19 @@ class MainActivity : ComponentActivity() {
         CrashDiagnostics.record("normal_webview_native_host_shown", "tab=$tabId")
     }
 
-    /** Composeのシートやダイアログ表示中だけ、通常ページを破棄せず隠してUIを最前面にする。 */
+    /**
+     * Composeのシートやダイアログを前面にする。WebView自体は不可視化・切離しせず、
+     * Composeの下で表示を維持することで動画・音声の描画サーフェスと再生sessionを保つ。
+     */
     fun setNormalWebContentVisible(visible: Boolean) {
         if (::normalWebContentHost.isInitialized.not()) return
         if (normalWebContentHost.childCount == 0) {
             normalWebContentHost.visibility = View.GONE
             return
         }
-        normalWebContentHost.visibility = if (visible && normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
+        if (visible && normalWebContentPlacedAboveCompose) normalWebContentHost.bringToFront()
+        else composeOverlayView.bringToFront()
+        normalWebContentHost.visibility = if (normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
     }
 
     /** ホーム等ではWebViewを破棄せず、表示hostからだけ外す。 */
@@ -162,6 +169,7 @@ class MainActivity : ComponentActivity() {
         // Page boxはComposeがstatus bar下から下部バー上まで測定した値をそのまま使う。
         // Google系では右端予約を外し、重ねる型Webポップアップの全領域をWebViewへ渡す。
         normalWebContentReservesRightTouchRail = reserveRightTouchRail
+        normalWebContentPlacedAboveCompose = placeAboveCompose
         // Googleのページ内モーダルはComposeのタッチ中継を経由させず、ページ矩形だけnative WebViewを前面にする。
         // Host自体は下部バーより上の高さへclip済みのため、下部バー・シートは覆わない。
         if (placeAboveCompose) normalWebContentHost.bringToFront() else composeOverlayView.bringToFront()
@@ -173,7 +181,9 @@ class MainActivity : ComponentActivity() {
         current.width = width
         current.height = height
         normalWebContentHost.layoutParams = current
-        if (normalWebContentHost.childCount > 0 && normalWebContentHost.visibility != View.INVISIBLE) {
+        if (normalWebContentHost.childCount > 0) {
+            // レイアウト更新時もhostを不可視化しない。IME・シート・タブ切替で
+            // WebViewのサーフェスが破棄されると動画再生が止まる端末がある。
             normalWebContentHost.visibility = View.VISIBLE
         }
     }
