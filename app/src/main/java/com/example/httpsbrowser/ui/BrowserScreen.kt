@@ -6,21 +6,16 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.graphics.Rect
 import android.net.Uri
 import android.view.View
-import android.view.ViewTreeObserver
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -45,7 +40,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
@@ -90,14 +84,12 @@ private fun shouldShowRightEdgeScrollRail(url: String): Boolean {
     return !(host.startsWith("google.") || host.contains(".google."))
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val context = LocalContext.current
     val activity = context as? Activity
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val rootView = LocalView.current
     val blocker = remember { com.example.httpsbrowser.data.BraveAdBlockEngine(context.applicationContext) }
     // WebViewはActivity contextで生成する。application contextではWindow/表示設定に紐づかず、
     // 動画surface・全画面・autofillの描画経路が不安定になり得る。
@@ -183,37 +175,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             focusManager.clearFocus(force = true)
         }
     }
-    // Androidの戻る・IME閉じる操作を検知し、URLバーだけが編集状態に残って候補が居座る不具合を防ぐ。
-    var addressImeWasVisible by remember { mutableStateOf(false) }
-    val imeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(state.isAddressFocused, imeVisible) {
-        when {
-            !state.isAddressFocused -> addressImeWasVisible = false
-            imeVisible -> addressImeWasVisible = true
-            addressImeWasVisible -> {
-                focusManager.clearFocus(force = true)
-                viewModel.stopAddressEditing()
-            }
-        }
-    }
-    DisposableEffect(rootView) {
-        val listener = ViewTreeObserver.OnGlobalLayoutListener {
-            if (!viewModel.uiState.isAddressFocused) return@OnGlobalLayoutListener
-            val visibleFrame = Rect()
-            rootView.getWindowVisibleDisplayFrame(visibleFrame)
-            val keyboardVisible = rootView.rootView.height - visibleFrame.bottom > rootView.rootView.height * 0.15f
-            if (keyboardVisible) {
-                addressImeWasVisible = true
-            } else if (addressImeWasVisible) {
-                // Android戻るがCompose Insetsへ届かない端末でも、実際のIME消滅を編集終了へ反映する。
-                rootView.post { if (viewModel.uiState.isAddressFocused) endAddressEditing() }
-            }
-        }
-        rootView.viewTreeObserver.addOnGlobalLayoutListener(listener)
-        onDispose {
-            if (rootView.viewTreeObserver.isAlive) rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener)
-        }
-    }
+    // IMEの可視性はWebView hostの再配置や端末実装の通知順によって一時的にfalseになり得る。
+    // ここで編集状態を終了すると、URLバーをタップした直後にフォーカスとIMEが失われるため、
+    // 編集終了は戻る操作・明示的な画面操作・TextFieldの実フォーカス喪失だけで行う。
     LaunchedEffect(state.bookmarks) {
         homeBookmarkSelection = homeBookmarkSelection.intersect(state.bookmarks.map { it.id }.toSet())
     }
