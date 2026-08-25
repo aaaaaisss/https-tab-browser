@@ -632,17 +632,10 @@ class BrowserWebViewRegistry(
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
-        // client側player requestが生じるSPA遷移だけへ作用し、初期responseや現在のsessionは変更しない。
-        if (entry.youtubeNoAdWarmPlayerScriptHandler == null) {
-            runCatching {
-                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_NO_AD_WARM_PLAYER_SCRIPT, originRules)
-            }.onSuccess { handler ->
-                entry.youtubeNoAdWarmPlayerScriptHandler = handler
-                CrashDiagnostics.record("youtube_no_ad_warm_player_ready", "documentStart=true")
-            }.onFailure { throwable ->
-                CrashDiagnostics.record("youtube_no_ad_warm_player_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
-            }
-        }
+        // player request本文への事前フラグ注入はYouTubeが広告遮断検知に使う入力まで変え得る。
+        // Brave最新対策と同じく、実際のSABR backoff制御応答だけを見て待機値を短縮する。
+        // これにより広告ブロックのネットワーク・cosmetic規則は維持したまま、SPA開始時の
+        // 不自然なplayer session書換えを行わない。
         if (entry.youtubeSabrPatchOnlyScriptHandler == null) {
             runCatching {
                 WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_SABR_PATCH_ONLY_SCRIPT, originRules)
@@ -1741,7 +1734,7 @@ class BrowserWebViewRegistry(
         /**
          * Brave公式SABR対策から、既存の再生sessionを再取得する処理を除いた最小版。
          * googlevideoの小さな`sabr=1`制御応答だけをteeして、protobuf field 4のbackoffTimeMsを
-         * 同じvarint長で50〜150msへ置き換える。映像chunk（1000 bytes以上）は無加工で返す。
+         * 同じvarint長で50〜149msへ置き換える。映像chunk（1000 bytes以上）は無加工で返す。
          * 読取失敗を偽の成功responseへ変換せず、Chromium/YouTube本来の再試行へ委ねて再読込loopを防ぐ。
          */
         val YOUTUBE_SABR_PATCH_ONLY_SCRIPT = """
@@ -1782,9 +1775,9 @@ class BrowserWebViewRegistry(
                     shift+=7;end++;
                   }
                   if(value>500&&value<100000){
-                    // 初期sessionの再取得はせず、YouTubeが送った長いSABR待機値だけを25〜74msへ縮める。
-                    // ゼロ固定にはせず僅かなjitterを残し、同時再試行の集中と無限loopを避ける。
-                    var target=25+Math.floor(Math.random()*50),pos=i+1,remaining=target;
+                    // 初期sessionの再取得はせず、YouTubeが送った長いSABR待機値だけを
+                    // Brave公式と同じ50〜149msへ縮める。ゼロ固定にせず自然なjitterを残す。
+                    var target=50+Math.floor(Math.random()*100),pos=i+1,remaining=target;
                     while(pos<end-1){bytes[pos++]=(remaining&0x7f)|0x80;remaining>>>=7;}
                     bytes[pos]=remaining&0x7f;patched=true;
                   }
