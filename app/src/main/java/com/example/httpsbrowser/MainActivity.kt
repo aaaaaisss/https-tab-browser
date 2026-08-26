@@ -1,11 +1,14 @@
 package com.example.httpsbrowser
 
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
@@ -28,10 +31,11 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.util.concurrent.ConcurrentHashMap
 import com.example.httpsbrowser.ui.BrowserScreen
+import com.example.httpsbrowser.ui.BrowserScreenHost
 import com.example.httpsbrowser.ui.HttpsBrowserTheme
 import com.example.httpsbrowser.web.BrowserWebViewRegistry
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), BrowserScreenHost {
     private var incomingUrl by mutableStateOf<String?>(null)
     private lateinit var appRoot: FrameLayout
     /** 通常ページをComposeのAndroidViewから分離して保持する、選択タブ専用のnative host。 */
@@ -125,7 +129,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 選択タブの通常WebViewをnative hostへ接続し、Composeの再構成から親Viewを分離する。 */
-    fun showNormalWebContent(registry: BrowserWebViewRegistry, tabId: String) {
+    override fun showNormalWebContent(registry: BrowserWebViewRegistry, tabId: String) {
         if (::normalWebContentHost.isInitialized.not()) return
         registry.attachToNativeHost(tabId, normalWebContentHost)
         // Composeからページ矩形を受けるまで全画面の仮LayoutParamsを見せない。
@@ -137,7 +141,7 @@ class MainActivity : ComponentActivity() {
      * Composeのシートやダイアログを前面にする。WebView自体は不可視化・切離しせず、
      * Composeの下で表示を維持することで動画・音声の描画サーフェスと再生sessionを保つ。
      */
-    fun setNormalWebContentVisible(visible: Boolean) {
+    override fun setNormalWebContentVisible(visible: Boolean) {
         if (::normalWebContentHost.isInitialized.not()) return
         if (normalWebContentHost.childCount == 0) {
             normalWebContentHost.visibility = View.GONE
@@ -154,7 +158,7 @@ class MainActivity : ComponentActivity() {
      * 重ねて背後のWebViewセッションを保持する。明示的なホーム復帰・タブ削除・Activity
      * 破棄だけがWebViewを破棄する経路となる。
      */
-    fun hideNormalWebContent() {
+    override fun hideNormalWebContent() {
         if (::normalWebContentHost.isInitialized.not()) return
         composeOverlayView.bringToFront()
         normalWebContentHost.visibility = if (normalWebContentHost.childCount > 0 && normalWebContentBoundsReady) {
@@ -165,7 +169,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Composeが計測したページ矩形だけを通常WebViewへ割り当て、下部操作UIと重ねない。 */
-    fun setNormalWebContentBounds(
+    override fun setNormalWebContentBounds(
         left: Int,
         top: Int,
         width: Int,
@@ -200,7 +204,7 @@ class MainActivity : ComponentActivity() {
      * Chromium WebChromeClientが渡すfullscreen custom viewを、Activity root上の単一native containerへ
      * 接続する。通常WebViewはCompose側に残るためAwContentsの描画先を切り替えない。
      */
-    fun showFullscreenCustomView(view: View, tabId: String?) {
+    override fun showFullscreenCustomView(view: View, tabId: String?) {
         if (::appRoot.isInitialized.not()) return
         if (fullscreenVideoView === view && fullscreenContainer != null) return
         hideFullscreenCustomView(fullscreenVideoView)
@@ -231,7 +235,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** native fullscreen containerを一度だけ除去し、通常画面とPiP設定を復帰する。 */
-    fun hideFullscreenCustomView(expectedView: View? = null) {
+    override fun hideFullscreenCustomView(expectedView: View?) {
         val view = fullscreenVideoView
         if (expectedView != null && view !== expectedView) return
         fullscreenContainer?.let { container ->
@@ -253,7 +257,7 @@ class MainActivity : ComponentActivity() {
      * WebViewが取得した実映像サイズをタブごとに記録し、全画面中のタブならPiP設定を即時更新する。
      * 画面回転ではなくvideoWidth/videoHeightを使うため、縦持ち中の横動画も横長PiPになる。
      */
-    fun updatePictureInPictureVideoDimensions(tabId: String, width: Int, height: Int) {
+    override fun updatePictureInPictureVideoDimensions(tabId: String, width: Int, height: Int) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             runOnUiThread { updatePictureInPictureVideoDimensions(tabId, width, height) }
             return
@@ -275,7 +279,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** WebViewがPiP開始に伴いonHideCustomViewを先に送っても、動画Viewを外さないための判定。 */
-    fun shouldRetainFullscreenCustomView(): Boolean =
+    override fun shouldRetainFullscreenCustomView(): Boolean =
         pictureInPictureActive || pictureInPictureTransitionRequested
 
     /** 全画面中だけ使う明示PiP操作。API 26以上ではauto-enterへ依存せず直接開始する。 */
@@ -384,12 +388,36 @@ class MainActivity : ComponentActivity() {
                 builder.setAspectRatio(Rational(16, 9))
             }
         }
+        if (videoView != null) {
+            // PiP小窓の動画Viewは現在のActivityに残し、別Activityだけを前面化する。
+            // WebView/custom viewをActivity間で再親子化しないため、再生surface・PiPを壊さない。
+            builder.setActions(listOf(createOpenBrowserRemoteAction()))
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // 明示PiPの補助としてauto-enterも有効にする。通常ページではvideoViewがnullのため無効。
             builder.setAutoEnterEnabled(videoView != null)
             if (videoView != null) builder.setSeamlessResizeEnabled(true)
         }
         return builder.build()
+    }
+
+    private fun createOpenBrowserRemoteAction(): RemoteAction {
+        val browserIntent = Intent(this, BrowserActivity::class.java).apply {
+            // PiPを含む再生hostのtaskへ戻らず、通常UI専用の新しいdocument taskとして開く。
+            addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            REQUEST_OPEN_BROWSER_FROM_PIP,
+            browserIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return RemoteAction(
+            Icon.createWithResource(this, R.drawable.ic_browser),
+            "ブラウズを開く",
+            "PiP再生を続けたままブラウザを操作",
+            pendingIntent
+        )
     }
 
     private fun setFullscreenSystemBars(fullscreen: Boolean) {
@@ -413,5 +441,6 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val MIN_PIP_ASPECT_RATIO = 1f / 2.39f
         const val MAX_PIP_ASPECT_RATIO = 2.39f
+        const val REQUEST_OPEN_BROWSER_FROM_PIP = 4_021
     }
 }

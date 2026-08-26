@@ -6,6 +6,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.httpsbrowser.data.AddressDisplayMode
 import com.example.httpsbrowser.data.Bookmark
@@ -28,9 +30,14 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
 
-class BrowserViewModel(application: Application) : AndroidViewModel(application) {
+class BrowserViewModel(
+    application: Application,
+    private val restorePersistentSession: Boolean = true
+) : AndroidViewModel(application) {
     private val repository = BrowserRepository(application)
     private var persistJob: Job? = null
+    private var sharedSettingsPersistJob: Job? = null
+    private var sharedBookmarksPersistJob: Job? = null
     private var suggestionJob: Job? = null
 
     var uiState by mutableStateOf(BrowserUiState())
@@ -39,14 +46,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     init {
         viewModelScope.launch {
             val stored = withContext(Dispatchers.IO) { repository.load() }
-            val normalizedTabs = stored.tabs.ifEmpty { listOf(homeTab()) }.map { tab ->
+            // PiPから開く独立ブラウズ画面は、再生中ActivityのWebView・動画URLを復元しない。
+            // 同じ永続タブを2つのActivityが保存すると選択状態を競合させるため、そこでのタブは画面内限定とする。
+            val sourceTabs = if (restorePersistentSession) stored.tabs.ifEmpty { listOf(homeTab()) } else listOf(homeTab())
+            val normalizedTabs = sourceTabs.map { tab ->
                 val isLegacyStartTab = tab.url == GOOGLE_HOME && tab.title == "新しいタブ"
                 if (tab.url.isBlank() || tab.isHome || isLegacyStartTab) tab.copy(
                     url = "", lastRequestedUrl = "", displayText = "", title = tab.title.ifBlank { "ホーム" }, isHome = true
                 ) else tab.copy(isHome = false)
             }
-            val selected = stored.selectedTabId?.takeIf { id -> normalizedTabs.any { it.id == id } }
-                ?: normalizedTabs.first().id
+            val selected = if (restorePersistentSession) {
+                stored.selectedTabId?.takeIf { id -> normalizedTabs.any { it.id == id } } ?: normalizedTabs.first().id
+            } else {
+                normalizedTabs.first().id
+            }
             uiState = BrowserUiState(
                 tabs = normalizedTabs,
                 selectedTabId = selected,
@@ -310,7 +323,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun updateSettings(transform: (BrowserSettings) -> BrowserSettings) {
         uiState = uiState.copy(settings = transform(uiState.settings))
-        persistSoon()
+        persistSettingsSoon()
     }
 
     fun addBookmark(title: String, url: String): Boolean {
@@ -318,7 +331,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val existing = uiState.bookmarks.firstOrNull { it.url == prepared.url }
         val bookmark = Bookmark(id = existing?.id ?: java.util.UUID.randomUUID().toString(), title = title.trim().ifBlank { prepared.displayText.ifBlank { prepared.url } }, url = prepared.url, createdAt = existing?.createdAt ?: System.currentTimeMillis())
         uiState = uiState.copy(bookmarks = listOf(bookmark) + uiState.bookmarks.filterNot { it.id == bookmark.id })
-        persistSoon()
+        persistBookmarksSoon()
         return true
     }
 
@@ -327,7 +340,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val old = uiState.bookmarks.firstOrNull { it.id == id } ?: return false
         val updated = old.copy(title = title.trim().ifBlank { prepared.displayText.ifBlank { prepared.url } }, url = prepared.url)
         uiState = uiState.copy(bookmarks = uiState.bookmarks.map { if (it.id == id) updated else it })
-        persistSoon()
+        persistBookmarksSoon()
         return true
     }
 
@@ -336,7 +349,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun removeBookmarks(ids: Set<String>) {
         if (ids.isEmpty()) return
         uiState = uiState.copy(bookmarks = uiState.bookmarks.filterNot { it.id in ids })
-        persistSoon()
+        persistBookmarksSoon()
     }
 
     /** グリッドの右下側（リスト先頭）または左上側（リスト末尾）へ選択項目をまとめて移動する。 */
@@ -346,7 +359,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val remaining = uiState.bookmarks.filterNot { it.id in ids }
         if (selected.isEmpty()) return
         uiState = uiState.copy(bookmarks = if (toEnd) remaining + selected else selected + remaining)
-        persistSoon()
+        persistBookmarksSoon()
     }
 
     fun isBookmarked(url: String): Boolean = url.isNotBlank() && uiState.bookmarks.any { it.url == url }
@@ -358,7 +371,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearBrowsingData(onDone: () -> Unit) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.clearBrowsingData(keepBookmarks = true) }
+            // PiP中の隔離ブラウズ画面は、元の再生hostの永続タブ・履歴を消去してはならない。
+            if (restorePersistentSession) {
+                withContext(Dispatchers.IO) { repository.clearBrowsingData(keepBookmarks = true) }
+            }
             val newTab = homeTab()
             uiState = uiState.copy(tabs = listOf(newTab), selectedTabId = newTab.id, addressInput = "", history = emptyList(), isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
             onDone()
@@ -374,10 +390,37 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun persistSoon() {
+        // PiPの再生hostとは別Activityで開くブラウズ画面は、永続タブ・履歴・選択状態を保存しない。
+        // これにより、PiP側の既存WebViewを別Activityの復元やDataStore書込みで妨げない。
+        if (!restorePersistentSession) return
         persistJob?.cancel()
         persistJob = viewModelScope.launch(Dispatchers.IO) {
             delay(250)
             repository.save(uiState)
+        }
+    }
+
+    private fun persistSettingsSoon() {
+        if (restorePersistentSession) {
+            persistSoon()
+            return
+        }
+        sharedSettingsPersistJob?.cancel()
+        sharedSettingsPersistJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(100)
+            repository.saveSettings(uiState.settings)
+        }
+    }
+
+    private fun persistBookmarksSoon() {
+        if (restorePersistentSession) {
+            persistSoon()
+            return
+        }
+        sharedBookmarksPersistJob?.cancel()
+        sharedBookmarksPersistJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(100)
+            repository.saveBookmarks(uiState.bookmarks)
         }
     }
 
@@ -464,5 +507,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         const val MAX_SUGGESTIONS = 6
         // 入力語自身と最新履歴候補の余地を残し、Google取得分は最大5件にする。
         const val MAX_REMOTE_SUGGESTIONS = 5
+    }
+}
+
+/** PiPから開くブラウズ画面だけが、再生hostの永続セッションを復元・保存しないためのFactory。 */
+class BrowserViewModelFactory(
+    private val application: Application,
+    private val restorePersistentSession: Boolean
+) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(BrowserViewModel::class.java)) {
+            return BrowserViewModel(application, restorePersistentSession) as T
+        }
+        throw IllegalArgumentException("Unsupported ViewModel: ${modelClass.name}")
     }
 }
