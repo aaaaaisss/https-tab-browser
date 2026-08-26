@@ -313,11 +313,13 @@ class BrowserWebViewRegistry(
             runCatching { entry.siteDocumentStartScriptHandler?.remove() }
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
             entry.siteDocumentStartScriptHandler = null
             entry.youtubePictureInPictureScriptHandler = null
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
@@ -601,8 +603,10 @@ class BrowserWebViewRegistry(
         }
         if (!entry.adBlockingEnabled) {
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
             entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
@@ -616,17 +620,25 @@ class BrowserWebViewRegistry(
                 CrashDiagnostics.record("youtube_ad_sanitizer_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
             }
         }
-        // 広告を消せた安定sessionを作り直さず、SABR制御応答の待機値だけを短縮する。
-        // 通常モードでは完全に外し、ユーザーが選ぶ攻めた広告遮断モードだけへ限定する。
+        // 今回は既知良好版との差分を一因子に限定する。通常モードは一切変えず、強い広告遮断モードでのみ
+        // warm navigationのclient-side player requestへNo-Ad contextを追加する。SABRの待機値は現行のまま保持する。
         if (!entry.aggressiveAdBlockingEnabled) {
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
             runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
             entry.youtubeSabrPatchOnlyScriptHandler = null
             return
         }
-        // player request本文への事前フラグ注入はYouTubeが広告遮断検知に使う入力まで変え得る。
-        // Brave最新対策と同じく、実際のSABR backoff制御応答だけを見て待機値を短縮する。
-        // これにより広告ブロックのネットワーク・cosmetic規則は維持したまま、SPA開始時の
-        // 不自然なplayer session書換えを行わない。
+        if (entry.youtubeNoAdWarmPlayerScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_NO_AD_WARM_PLAYER_SCRIPT, originRules)
+            }.onSuccess { handler ->
+                entry.youtubeNoAdWarmPlayerScriptHandler = handler
+                CrashDiagnostics.record("youtube_no_ad_warm_player_ready", "documentStart=true\nmode=aggressive\nexperiment=warm_only")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_no_ad_warm_player_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
+        }
         if (entry.youtubeSabrPatchOnlyScriptHandler == null) {
             runCatching {
                 WebViewCompat.addDocumentStartJavaScript(entry.webView, YOUTUBE_SABR_PATCH_ONLY_SCRIPT, originRules)
@@ -1226,6 +1238,8 @@ class BrowserWebViewRegistry(
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         /** 組込みYouTube広告メタデータ除去script。外部リストには実行権限を与えない。 */
         var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
+        /** warm navigationのplayer requestだけを補正する組込みscript。攻めたモード限定。 */
+        var youtubeNoAdWarmPlayerScriptHandler: ScriptHandler? = null,
         /** 既存sessionを再取得せずSABR backoffだけを短縮する組込みscript。攻めたモード限定。 */
         var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
@@ -1685,6 +1699,36 @@ class BrowserWebViewRegistry(
             })();
         """.trimIndent()
 
+
+        /**
+         * 既知良好版で使用していたwarm navigation限定のplayer request補正。
+         * 初期response、動画chunk、認証Cookie、URL遷移、SABR制御応答には触れない。
+         */
+        val YOUTUBE_NO_AD_WARM_PLAYER_SCRIPT = """
+            (function(){
+              if(window.__nekoBrowserNoAdWarmPlayer) return;
+              window.__nekoBrowserNoAdWarmPlayer=true;
+              function patchText(text){
+                if(typeof text!=='string'||text.indexOf('contentPlaybackContext')<0||text.indexOf('isInlinePlaybackNoAd')>=0) return text;
+                return text.replace(/"contentPlaybackContext"\s*:\s*\{(?!\s*"isInlinePlaybackNoAd"\s*:\s*true)/,'"contentPlaybackContext":{"isInlinePlaybackNoAd":true,');
+              }
+              function patchCarrier(value){
+                try{ if(value&&typeof value.body==='string') value.body=patchText(value.body); }catch(_e){}
+                return value;
+              }
+              try{
+                var realStringify=JSON.stringify;
+                JSON.stringify=function(){return patchText(realStringify.apply(this,arguments));};
+              }catch(_e){}
+              try{
+                var realAssign=Object.assign;
+                Object.assign=new Proxy(realAssign,{apply:function(target,thisArg,args){
+                  var result=Reflect.apply(target,thisArg,args);
+                  patchCarrier(result); if(args&&args.length>0) patchCarrier(args[0]); return result;
+                }});
+              }catch(_e){}
+            })();
+        """.trimIndent()
 
         /**
          * Brave公式SABR対策から、既存の再生sessionを再取得する処理を除いた最小版。
