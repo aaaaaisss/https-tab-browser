@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -103,6 +104,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var pendingPermission by remember { mutableStateOf<PendingWebPermission?>(null) }
     var fullscreenContent by remember { mutableStateOf<FullscreenContent?>(null) }
     var longPressedLink by remember { mutableStateOf<String?>(null) }
+    var linkShortcutUrl by remember { mutableStateOf<String?>(null) }
     var externalAppUrl by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var addBookmarkDialog by remember { mutableStateOf(false) }
@@ -188,13 +190,14 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         state.isSettingsSheetVisible,
         pendingPermission,
         longPressedLink,
+        linkShortcutUrl,
         externalAppUrl,
         notice,
         addBookmarkDialog,
         editingHomeBookmark
     ) {
         val overlayVisible = state.isTabSheetVisible || state.isSettingsSheetVisible ||
-            pendingPermission != null || longPressedLink != null || externalAppUrl != null ||
+            pendingPermission != null || longPressedLink != null || linkShortcutUrl != null || externalAppUrl != null ||
             notice != null || addBookmarkDialog || editingHomeBookmark != null
         (activity as? MainActivity)?.setNormalWebContentVisible(!overlayVisible)
     }
@@ -394,7 +397,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     if (!state.isAddressFocused) {
                         NavigationRow(
                             canGoBack = (selectedTab.canGoBack || selectedTab.returnToHomeOnBack) && !selectedTab.isHome,
-                            canGoForward = selectedTab.canGoForward && !selectedTab.isHome,
+                            canGoForward = selectedTab.canGoForward,
                             onTabs = { endAddressEditing(); viewModel.toggleTabSheet() },
                             onBack = {
                                 viewModel.stopAddressEditing()
@@ -405,7 +408,12 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                 }
                             },
                             onSearch = viewModel::startAddressEditing,
-                            onForward = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) registry.goForward(selectedTab.id) },
+                            onForward = {
+                                viewModel.stopAddressEditing()
+                                // ホームはUI表示だけで、前方履歴はWebViewに保持している。
+                                // 有効な「進む」なら同じWebViewのforward復帰を許可する。
+                                if (selectedTab.canGoForward) registry.goForward(selectedTab.id)
+                            },
                             onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
                             onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
                             onDownloads = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.DOWNLOADS) },
@@ -500,6 +508,19 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         )
     }
 
+    linkShortcutUrl?.let { url ->
+        BrowserSheets.BookmarkEditorDialog(
+            title = "ホームショートカットに追加",
+            initialTitle = Uri.parse(url).host.orEmpty(),
+            initialUrl = url,
+            onConfirm = { title, savedUrl ->
+                if (viewModel.addBookmark(title, savedUrl)) linkShortcutUrl = null
+                else notice = "HTTPS URL または検索語を入力してください。"
+            },
+            onDismiss = { linkShortcutUrl = null }
+        )
+    }
+
     editingHomeBookmark?.let { bookmark ->
         BrowserSheets.BookmarkEditorDialog(
             title = "ブックマークを編集",
@@ -574,7 +595,13 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             onDismissRequest = { longPressedLink = null },
             title = { Text("リンク") },
             text = { Text(url) },
-            confirmButton = { TextButton(onClick = { viewModel.addTab(url); longPressedLink = null }) { Text("新しいタブで開く") } },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = { viewModel.addTab(url); longPressedLink = null }) { Text("新しいタブで開く") }
+                    TextButton(onClick = { shareUrl(context, url); longPressedLink = null }) { Text("共有") }
+                    TextButton(onClick = { linkShortcutUrl = url; longPressedLink = null }) { Text("ショートカットに追加") }
+                }
+            },
             dismissButton = { TextButton(onClick = {
                 (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("URL", url))
                 longPressedLink = null

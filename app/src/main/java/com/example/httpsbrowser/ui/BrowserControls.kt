@@ -437,23 +437,23 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
         favicon = withContext(Dispatchers.IO) { loadFavicon(url) }
     }
     Box(
-        modifier = modifier.clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+        modifier = modifier.clip(CircleShape).background(Color(0xFF5E5E5E)),
         contentAlignment = Alignment.Center
     ) {
         if (favicon != null) {
             Image(
                 bitmap = favicon!!,
                 contentDescription = "$title のサイトアイコン",
-                // タブでは画像そのものを優先し、favicon内の余白を残さない。
-                // 正方形でない画像や端の意匠は円形クリップで少し切れてもよい。
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+                // faviconは配布サイズが小さいため、余白を切り取って拡大しない。
+                // 少し小さくFit表示し、低解像度画像の粗さと端の切れを抑える。
+                modifier = Modifier.fillMaxSize().padding(6.dp),
+                contentScale = ContentScale.Fit
             )
         } else {
             Icon(
                 Icons.Default.Bookmark,
                 contentDescription = "$title のサイトアイコン",
-                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                tint = Color(0xFFE8E8E8)
             )
         }
     }
@@ -511,7 +511,7 @@ fun HomeScreen(
                                 val selected = cell.bookmark.id in selectedIds
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.width(64.dp).clip(RoundedCornerShape(10.dp))
+                                    modifier = Modifier.width(60.dp).clip(RoundedCornerShape(10.dp))
                                         .then(if (selected) Modifier.border(2.dp, Color(0xFF7EC8FF), RoundedCornerShape(10.dp)) else Modifier)
                                         .combinedClickable(
                                             onClick = {
@@ -527,7 +527,7 @@ fun HomeScreen(
                                     BookmarkFavicon(
                                         url = cell.bookmark.url,
                                         title = cell.bookmark.title.ifBlank { cell.bookmark.url },
-                                        modifier = Modifier.size(46.dp)
+                                        modifier = Modifier.size(38.dp)
                                     )
                                     Text(
                                         cell.bookmark.title.ifBlank { cell.bookmark.url },
@@ -540,10 +540,10 @@ fun HomeScreen(
                             }
                             HomeCell.AddCell -> Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.width(64.dp).clickable { onAddBookmark() }
+                                modifier = Modifier.width(60.dp).clickable { onAddBookmark() }
                             ) {
                                 Box(
-                                    modifier = Modifier.size(46.dp).clip(CircleShape).background(Color(0xFF3D3D3D)),
+                                    modifier = Modifier.size(38.dp).clip(CircleShape).background(Color(0xFF5E5E5E)),
                                     contentAlignment = Alignment.Center
                                 ) { Icon(Icons.Default.Add, contentDescription = "ブックマークを追加", tint = Color.White) }
                                 Text("追加", color = Color.White, style = MaterialTheme.typography.labelSmall)

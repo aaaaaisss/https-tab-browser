@@ -197,7 +197,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun openHome() {
         updateSelected { tab ->
-            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, returnToHomeOnBack = false, canGoBack = false, canGoForward = false)
+            // ホームはUI上の表示状態であり、背後のWebView前方履歴は残す。
+            // ここでcanGoForwardを消すと、ホームから「進む」で直前の文書へ戻れなくなる。
+            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, returnToHomeOnBack = false, canGoBack = false)
         }
         suggestionJob?.cancel()
         uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())

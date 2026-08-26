@@ -35,6 +35,13 @@ forbidText(screen, 'addressImeWasVisible', 'stale IME visibility state');
 requireText(screen, 'state.isAddressFocused -> viewModel.stopAddressEditing()', 'system back ends address editing');
 requireText(screen, 'onSubmit = { input -> navigate(input) }', 'IME navigation wiring');
 requireText(screen, 'onOpenBookmark = { bookmark -> navigate(bookmark.url) }', 'bookmark URL-bar navigation');
+requireText(screen, 'Text("共有")', 'long-pressed link share action');
+requireText(screen, 'Text("ショートカットに追加")', 'long-pressed link shortcut action');
+requireText(screen, 'title = "ホームショートカットに追加"', 'link shortcut editor reuse');
+requireText(controls, 'Color(0xFF5E5E5E)', 'neutral gray shortcut base color');
+requireText(controls, 'modifier = Modifier.size(38.dp)', 'smaller home shortcut icon');
+requireText(controls, 'contentScale = ContentScale.Fit', 'favicon avoids crop enlargement');
+requireText(controls, 'Modifier.fillMaxSize().padding(6.dp)', 'favicon leaves scale-reducing inset');
 const systemBackHome = screen.indexOf('selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()');
 const systemBackHistory = screen.indexOf('selectedTab?.isHome == false && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)');
 if (systemBackHome < 0 || systemBackHistory < 0 || systemBackHistory > systemBackHome) {
@@ -97,9 +104,13 @@ requireText(webView, 'fun refreshContentFiltering()', 'post-compile adblock reap
 requireText(webView, 'adblock_reapplied_after_engine_ready', 'engine-ready adblock diagnostic');
 requireText(screen, 'registry.refreshContentFiltering()', 'post-compile existing tab protection');
 requireText(webView, 'entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages', 'existing-dark runtime suppression');
-requireText(webView, 'entry.homeResetInProgress = true', 'home reset callback guard');
-requireText(webView, 'page_finished_ignored_during_home_reset', 'stale callback diagnostics');
+requireText(webView, 'webview_history_retained_for_home', 'home retains native forward history');
+requireText(webView, 'entry.callbacks.onHistoryState(tabId, false, entry.webView.canGoForward())', 'home forwards actual forward-history state');
+forbidText(webView, 'loadUrl(ABOUT_BLANK_URL)\n                clearHistory()', 'home must not erase forward history');
+requireText(viewModel, 'isHome = true, returnToHomeOnBack = false, canGoBack = false)', 'home disables back without resetting forward state');
+requireText(screen, 'canGoForward = selectedTab.canGoForward,', 'home forward button follows WebView state');
+requireText(screen, 'if (selectedTab.canGoForward) registry.goForward(selectedTab.id)', 'home forward action uses retained WebView history');
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address focus recovery, home reset, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization settings, address focus recovery, retained home forward history, shortcut UI, long-press actions, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');

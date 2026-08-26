@@ -201,26 +201,18 @@ class BrowserWebViewRegistry(
     }
 
     /**
-     * 独自ホームへ復帰する際、同タブのChromium履歴を破棄する。
-     * UIだけをホームへ切り替えると、次に開いたページから以前のサイトやforward履歴へ戻れてしまう。
+     * 独自ホームはComposeの前面表示だけで実現し、背後のChromium履歴は保持する。
+     * 以前のabout:blank読み込みとclearHistoryは、ホームから「進む」を押せなくしていた。
+     * 戻るはホームUIで止めつつ、前方履歴がある場合だけ進むで直前のWebView文書へ復帰できる。
      */
     fun resetForHome(tabId: String) {
         entries[tabId]?.let { entry ->
-            entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
-            entry.cookieFlushRunnable = null
-            entry.homeResetInProgress = true
-            entry.documentIsAlreadyDark = false
-            entry.loadedUrl = null
-            entry.activeDocumentUrl = null
-            entry.rearmPageLifecycle(ABOUT_BLANK_URL)
-            entry.webView.apply {
-                stopLoading()
-                loadUrl(ABOUT_BLANK_URL)
-                clearHistory()
-                scrollTo(0, 0)
-            }
-            entry.callbacks.onHistoryState(tabId, false, false)
-            CrashDiagnostics.record("webview_history_reset_for_home", "tab=$tabId")
+            entry.homeResetInProgress = false
+            entry.callbacks.onHistoryState(tabId, false, entry.webView.canGoForward())
+            CrashDiagnostics.record(
+                "webview_history_retained_for_home",
+                "tab=$tabId\ncanGoForward=${entry.webView.canGoForward()}"
+            )
         }
     }
 
