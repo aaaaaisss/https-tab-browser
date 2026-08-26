@@ -11,6 +11,24 @@ for (const forbidden of ['cancelPlayback', 'loadVideoById', 'isInlinePlaybackNoA
   if (script.includes(forbidden)) throw new Error(`Patch-only script must not use ${forbidden}`);
 }
 
+function readField4Backoff(bytes) {
+  if (bytes[0] !== 0x20) return null;
+  let value = 0;
+  let shift = 0;
+  for (let index = 1; index < bytes.length && shift < 35; index += 1, shift += 7) {
+    value += (bytes[index] & 0x7f) * (2 ** shift);
+    if ((bytes[index] & 0x80) === 0) return value;
+  }
+  return null;
+}
+
+function requirePatchedBackoff(bytes, label) {
+  const value = readField4Backoff(bytes);
+  if (value === null || value < 50 || value > 149) {
+    throw new Error(`${label}: expected field-4 SABR backoff in the 50–149 ms target range, got ${value}`);
+  }
+}
+
 (async () => {
   const original = new Uint8Array([0x20, 0xd8, 0x09]); // field 4: 1240 ms
   class FakeXmlHttpRequest {
@@ -39,23 +57,22 @@ for (const forbidden of ['cancelPlayback', 'loadVideoById', 'isInlinePlaybackNoA
   );
   const response = await window.fetch('https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length !== original.length || bytes[0] !== 0x20 || bytes[1] === original[1]) {
-    throw new Error('SABR fetch backoff response was not patched in place');
-  }
+  if (bytes.length !== original.length) throw new Error('SABR fetch response length changed unexpectedly');
+  requirePatchedBackoff(bytes, 'SABR fetch backoff response');
 
   const xhr = new FakeXmlHttpRequest();
   let xhrLoadSawPatchedResponse = false;
   xhr.addEventListener('load', function () {
     const loadBytes = new Uint8Array(this.response);
-    xhrLoadSawPatchedResponse = loadBytes[0] === 0x20 && loadBytes[1] !== original[1];
+    const backoff = readField4Backoff(loadBytes);
+    xhrLoadSawPatchedResponse = backoff !== null && backoff >= 50 && backoff <= 149;
   });
   xhr.open('GET', 'https://rr1---sn.googlevideo.com/videoplayback?sabr=1');
   xhr.send();
   if (!xhrLoadSawPatchedResponse) throw new Error('SABR XHR response must be patched before load listeners read it');
   const xhrBytes = new Uint8Array(xhr.response);
-  if (xhrBytes.length !== original.length || xhrBytes[0] !== 0x20 || xhrBytes[1] === original[1]) {
-    throw new Error('SABR XHR backoff response was not patched in place');
-  }
+  if (xhrBytes.length !== original.length) throw new Error('SABR XHR response length changed unexpectedly');
+  requirePatchedBackoff(xhrBytes, 'SABR XHR backoff response');
 
   const failingWindow = {
     fetch: () => Promise.resolve(new Response(new ReadableStream({
