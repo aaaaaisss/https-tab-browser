@@ -12,6 +12,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
@@ -248,6 +250,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         val hostActivity = activity as? MainActivity
         val tab = selectedTab
         if (hostActivity == null || tab == null || tab.isHome) {
+            // ホームは背後のWebViewを保持したままComposeを前面化するだけで、履歴状態を加工しない。
             hostActivity?.hideNormalWebContent()
         } else {
             registry.obtain(tab, state.settings, callbacksFor(
@@ -280,15 +283,13 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         }
     }
 
-    /** 独自ホームへ戻る時は、まずURL入力・候補を含むCompose状態をホームへ確定してからWebView履歴を破棄する。 */
+    /** 独自ホームはCompose表示のみを切り替え、同じWebViewの実履歴を破棄・加工しない。 */
     fun returnSelectedTabToHome() {
         val tabId = selectedTab?.takeIf { !it.isHome }?.id
         // AddressBarのTextFieldValueはstate.addressInputの変化に同期するため、先に空文字を流して残留を防ぐ。
         viewModel.returnSelectedTabToHome()
-        tabId?.let { id ->
-            // ホームへ切り替えた直後にnative hostが重ならないよう外し、遅延した旧ページcallbackはregistry側で無視する。
+        tabId?.let {
             (activity as? MainActivity)?.hideNormalWebContent()
-            registry.resetForHome(id)
         }
     }
 
@@ -395,9 +396,17 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     // IME表示中はURLバーと横の翻訳・更新ボタンだけをキーボード直上に固定する。
                     // 操作列とタブバーを同時に再計測しないため、キーボードにめり込んだり戻ったりしない。
                     if (!state.isAddressFocused) {
+                        // ボタン表示も実行可否も同じWebView履歴から判定する。ViewModelの値は再構成を促すミラーであり、
+                        // ホーム用に履歴を別管理しない。
+                        val actualCanGoBack = !selectedTab.isHome && registry.canGoBack(selectedTab.id)
+                        val actualCanGoForward = if (selectedTab.isHome) {
+                            viewModel.canResumeSelectedTabFromHome()
+                        } else {
+                            registry.canGoForward(selectedTab.id)
+                        }
                         NavigationRow(
-                            canGoBack = (selectedTab.canGoBack || selectedTab.returnToHomeOnBack) && !selectedTab.isHome,
-                            canGoForward = selectedTab.canGoForward,
+                            canGoBack = actualCanGoBack || (selectedTab.returnToHomeOnBack && !selectedTab.isHome),
+                            canGoForward = actualCanGoForward,
                             onTabs = { endAddressEditing(); viewModel.toggleTabSheet() },
                             onBack = {
                                 viewModel.stopAddressEditing()
@@ -410,9 +419,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             onSearch = viewModel::startAddressEditing,
                             onForward = {
                                 viewModel.stopAddressEditing()
-                                // ホームはUI表示だけで、前方履歴はWebViewに保持している。
-                                // 有効な「進む」なら同じWebViewのforward復帰を許可する。
-                                if (selectedTab.canGoForward) registry.goForward(selectedTab.id)
+                                // ホームの進むは背後の最後のページを再開する。通常ページだけWebView履歴を進める。
+                                if (selectedTab.isHome) viewModel.resumeSelectedTabFromHome()
+                                else registry.goForward(selectedTab.id)
                             },
                             onBookmark = { viewModel.stopAddressEditing(); addBookmarkDialog = true },
                             onHistory = { viewModel.stopAddressEditing(); viewModel.openSettings(SettingsPage.HISTORY) },
@@ -593,19 +602,38 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     longPressedLink?.let { url ->
         AlertDialog(
             onDismissRequest = { longPressedLink = null },
-            title = { Text("リンク") },
-            text = { Text(url) },
-            confirmButton = {
-                Row {
-                    TextButton(onClick = { viewModel.addTab(url); longPressedLink = null }) { Text("新しいタブで開く") }
-                    TextButton(onClick = { shareUrl(context, url); longPressedLink = null }) { Text("共有") }
-                    TextButton(onClick = { linkShortcutUrl = url; longPressedLink = null }) { Text("ショートカットに追加") }
+            title = { Text("リンクの操作") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(url, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("開く場所や共有方法を選択してください。", style = MaterialTheme.typography.bodySmall)
                 }
             },
-            dismissButton = { TextButton(onClick = {
-                (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("URL", url))
-                longPressedLink = null
-            }) { Text("URL をコピー") } }
+            confirmButton = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { viewModel.addTab(url); longPressedLink = null }
+                    ) { Text("新しいタブで開く") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { shareUrl(context, url); longPressedLink = null }
+                    ) { Text("共有") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { linkShortcutUrl = url; longPressedLink = null }
+                    ) { Text("ホームショートカットに追加") }
+                    TextButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                                .setPrimaryClip(ClipData.newPlainText("URL", url))
+                            longPressedLink = null
+                        }
+                    ) { Text("URL をコピー") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { longPressedLink = null }) { Text("キャンセル") } }
         )
     }
 

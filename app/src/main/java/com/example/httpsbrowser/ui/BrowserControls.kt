@@ -437,7 +437,7 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
         favicon = withContext(Dispatchers.IO) { loadFavicon(url) }
     }
     Box(
-        modifier = modifier.clip(CircleShape).background(Color(0xFF5E5E5E)),
+        modifier = modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xFF5E5E5E)),
         contentAlignment = Alignment.Center
     ) {
         if (favicon != null) {
@@ -446,7 +446,7 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
                 contentDescription = "$title のサイトアイコン",
                 // faviconは配布サイズが小さいため、余白を切り取って拡大しない。
                 // 少し小さくFit表示し、低解像度画像の粗さと端の切れを抑える。
-                modifier = Modifier.fillMaxSize().padding(6.dp),
+                modifier = Modifier.fillMaxSize().padding(4.dp).clip(RoundedCornerShape(7.dp)),
                 contentScale = ContentScale.Fit
             )
         } else {
@@ -543,7 +543,7 @@ fun HomeScreen(
                                 modifier = Modifier.width(60.dp).clickable { onAddBookmark() }
                             ) {
                                 Box(
-                                    modifier = Modifier.size(38.dp).clip(CircleShape).background(Color(0xFF5E5E5E)),
+                                    modifier = Modifier.size(38.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFF5E5E5E)),
                                     contentAlignment = Alignment.Center
                                 ) { Icon(Icons.Default.Add, contentDescription = "ブックマークを追加", tint = Color.White) }
                                 Text("追加", color = Color.White, style = MaterialTheme.typography.labelSmall)

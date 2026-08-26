@@ -195,14 +195,51 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         return prepared
     }
 
+    /**
+     * ホームはWebView履歴の項目ではなく、最後に表示したHTTPS文書を背後に保つアプリ内オーバーレイ。
+     * 再開先だけをlastRequestedUrlに保持し、Chromiumのabout:blank履歴や擬似的なforward状態を作らない。
+     */
     fun openHome() {
         updateSelected { tab ->
-            // ホームはUI上の表示状態であり、背後のWebView前方履歴は残す。
-            // ここでcanGoForwardを消すと、ホームから「進む」で直前の文書へ戻れなくなる。
-            tab.copy(url = "", lastRequestedUrl = "", title = "ホーム", displayText = "", displayMode = AddressDisplayMode.URL, isHome = true, returnToHomeOnBack = false, canGoBack = false)
+            val resumeUrl = tab.lastRequestedUrl.ifBlank { tab.url }
+            tab.copy(
+                url = "",
+                lastRequestedUrl = resumeUrl,
+                title = "ホーム",
+                displayText = "",
+                displayMode = AddressDisplayMode.URL,
+                isHome = true,
+                returnToHomeOnBack = false,
+                canGoBack = false,
+                canGoForward = false
+            )
         }
         suggestionJob?.cancel()
         uiState = uiState.copy(addressInput = "", isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
+        persistSoon()
+    }
+
+    /** ホームの「進む」はWebViewのforwardではなく、背後に保持したページを再表示する操作。 */
+    fun canResumeSelectedTabFromHome(): Boolean {
+        val tab = uiState.selectedTab ?: return false
+        return tab.isHome && buildNavigation(tab.lastRequestedUrl) != null
+    }
+
+    fun resumeSelectedTabFromHome() {
+        val tab = uiState.selectedTab ?: return
+        val prepared = buildNavigation(tab.lastRequestedUrl) ?: return
+        updateSelected { current ->
+            current.copy(
+                url = prepared.url,
+                lastRequestedUrl = prepared.url,
+                title = prepared.displayText.ifBlank { prepared.url },
+                displayText = prepared.displayText,
+                displayMode = prepared.displayMode,
+                isHome = false,
+                returnToHomeOnBack = true
+            )
+        }
+        uiState = uiState.copy(addressInput = prepared.displayText, isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
         persistSoon()
     }
 

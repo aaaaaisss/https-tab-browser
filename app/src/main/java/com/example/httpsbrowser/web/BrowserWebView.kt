@@ -133,8 +133,6 @@ class BrowserWebViewRegistry(
     fun load(tabId: String, url: String) {
         entries[tabId]?.let { entry ->
             if (isHttps(url)) {
-                // 独自ホーム待機中にだけ旧文書callbackを遮断する保護を、次の明示遷移で解除する。
-                entry.homeResetInProgress = false
                 entry.loadedUrl = url
                 entry.documentIsAlreadyDark = false
                 entry.rearmPageLifecycle(url)
@@ -161,24 +159,36 @@ class BrowserWebViewRegistry(
         entry.webView.reload()
     }
 
-    /** Fulgurisと同様、キャッシュからの履歴遷移でも完了処理が再実行できるよう先に再armする。 */
+    /** キャッシュ復帰を含む履歴遷移でも、実際のWebView履歴を唯一の基準にして再arm・同期する。 */
     fun goBack(tabId: String) = entries[tabId]?.let { entry ->
-        entry.webView.takeIf { canGoBack(tabId) }?.let { view ->
+        entry.webView.takeIf { canNavigateHistory(it, -1) }?.let { view ->
             val history = view.copyBackForwardList()
             val targetUrl = history.getItemAtIndex(history.currentIndex - 1).url
             entry.activeDocumentUrl = targetUrl
             beginDarkRevealGuard(view, entry, targetUrl)
             entry.rearmPageLifecycle(targetUrl)
             view.goBack()
+            view.post { notifyHistoryState(tabId, view) }
         }
     }
 
-    /** 独自ホーム復帰用のabout:blankを戻る先にせず、直前がHTTPS文書の時だけ戻る。 */
-    fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.let { view ->
+    fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.let { canNavigateHistory(it, -1) } == true
+
+    fun canGoForward(tabId: String): Boolean = entries[tabId]?.webView?.let { canNavigateHistory(it, 1) } == true
+
+    private fun canNavigateHistory(view: WebView, direction: Int): Boolean {
         val history = view.copyBackForwardList()
-        val previousIndex = history.currentIndex - 1
-        previousIndex >= 0 && isHttps(history.getItemAtIndex(previousIndex).url)
-    } == true
+        val targetIndex = history.currentIndex + direction
+        return targetIndex in 0 until history.size && isHttps(history.getItemAtIndex(targetIndex).url)
+    }
+
+    private fun notifyHistoryState(tabId: String, view: WebView) {
+        entries[tabId]?.callbacks?.onHistoryState(
+            tabId = tabId,
+            canGoBack = canNavigateHistory(view, -1),
+            canGoForward = canNavigateHistory(view, 1)
+        )
+    }
 
     /** 全画面custom video surfaceへページCSSの反転が及ばないよう、表示中だけ暗色CSSを外す。 */
     fun setFullscreenVideoDarkeningSuppressed(tabId: String, suppressed: Boolean) {
@@ -200,21 +210,6 @@ class BrowserWebViewRegistry(
         }
     }
 
-    /**
-     * 独自ホームはComposeの前面表示だけで実現し、背後のChromium履歴は保持する。
-     * 以前のabout:blank読み込みとclearHistoryは、ホームから「進む」を押せなくしていた。
-     * 戻るはホームUIで止めつつ、前方履歴がある場合だけ進むで直前のWebView文書へ復帰できる。
-     */
-    fun resetForHome(tabId: String) {
-        entries[tabId]?.let { entry ->
-            entry.homeResetInProgress = false
-            entry.callbacks.onHistoryState(tabId, false, entry.webView.canGoForward())
-            CrashDiagnostics.record(
-                "webview_history_retained_for_home",
-                "tab=$tabId\ncanGoForward=${entry.webView.canGoForward()}"
-            )
-        }
-    }
 
     /** SPA遷移を含む実際の表示URL。共有とrenderer再作成ではタブ保存値より優先する。 */
     fun currentUrl(tabId: String): String? = entries[tabId]?.let { entry ->
@@ -281,13 +276,14 @@ class BrowserWebViewRegistry(
         }
     }
     fun goForward(tabId: String) = entries[tabId]?.let { entry ->
-        entry.webView.takeIf { it.canGoForward() }?.let { view ->
+        entry.webView.takeIf { canNavigateHistory(it, 1) }?.let { view ->
             val history = view.copyBackForwardList()
             val targetUrl = history.getItemAtIndex(history.currentIndex + 1).url
             entry.activeDocumentUrl = targetUrl
             beginDarkRevealGuard(view, entry, targetUrl)
             entry.rearmPageLifecycle(targetUrl)
             view.goForward()
+            view.post { notifyHistoryState(tabId, view) }
         }
     }
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
@@ -508,7 +504,7 @@ class BrowserWebViewRegistry(
         view.evaluateJavascript(DARK_DETECTOR_WITHOUT_OVERRIDE_SCRIPT) { result ->
             val isAlreadyDark = result.trim() == "true"
             // 非同期評価中に遷移・ホーム復帰した場合は、古い文書の結果を採用しない。
-            if (entry.homeResetInProgress || entry.activeDocumentUrl != url) return@evaluateJavascript
+            if (entry.activeDocumentUrl != url) return@evaluateJavascript
             if (entry.documentIsAlreadyDark == isAlreadyDark) {
                 releaseDarkRevealGuard(view, entry, url)
                 return@evaluateJavascript
@@ -974,7 +970,6 @@ class BrowserWebViewRegistry(
             super.doUpdateVisitedHistory(view, url, isReload)
             if (!isHttps(url)) return
             val entry = entries[tabId] ?: return
-            if (entry.homeResetInProgress) return
             // YouTube等のSPAはmain-frame loadを発生させずURLだけをhistory APIで更新する。
             // 共有・アドレスバー・renderer再作成用のタブURLをここで最新化する。
             entry.loadedUrl = url
@@ -999,16 +994,12 @@ class BrowserWebViewRegistry(
             )
             detectAlreadyDarkDocument(view, entry, url)
             entry.callbacks.onVisitedHistory(tabId, url)
-            entry.callbacks.onHistoryState(tabId, canGoBack(tabId), view.canGoForward())
+            notifyHistoryState(tabId, view)
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
-            if (entry?.homeResetInProgress == true && url != ABOUT_BLANK_URL) {
-                CrashDiagnostics.record("page_started_ignored_during_home_reset", "url=$url")
-                return
-            }
             entry?.documentIsAlreadyDark = false
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
@@ -1035,7 +1026,6 @@ class BrowserWebViewRegistry(
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
-            if (entry?.homeResetInProgress == true && url != ABOUT_BLANK_URL) return
             // 121e47bの暗色化経路を、動画上書き設定を含めて初回可視化時から適用する。
             applyDeepDarkCss(
                 view,
@@ -1053,11 +1043,6 @@ class BrowserWebViewRegistry(
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId] ?: return
-            if (entry.homeResetInProgress) {
-                // about:blank完了後も、次の明示遷移まで旧HTTPS callbackはすべて無視する。
-                if (url != ABOUT_BLANK_URL) CrashDiagnostics.record("page_finished_ignored_during_home_reset", "url=$url")
-                return
-            }
             // FulgurisがYouTube/キャッシュ復帰で行うのと同じく、progress=100の最初の完了だけを
             // 採用する。重複したonPageFinishedでCSS注入・Cookie flush・履歴通知を繰り返さない。
             if (!entry.tryCompletePageLifecycle(view.progress)) {
@@ -1081,7 +1066,7 @@ class BrowserWebViewRegistry(
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             scheduleCookieFlush(view, entry)
             entry.callbacks.onPageFinished(tabId, url, view.title)
-            entry.callbacks.onHistoryState(tabId, canGoBack(tabId), view.canGoForward())
+            notifyHistoryState(tabId, view)
         }
 
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
@@ -1245,7 +1230,6 @@ class BrowserWebViewRegistry(
         /** PageCommitVisible後に読んだ、ページ自身の暗色テーマ状態。遷移・ホーム復帰では必ずfalseへ戻す。 */
         @Volatile var documentIsAlreadyDark: Boolean = false,
         /** about:blank完了まで、停止済みの旧HTTPS文書callbackをUIへ渡さない。 */
-        @Volatile var homeResetInProgress: Boolean = false,
         @Volatile var aggressiveAdBlockingEnabled: Boolean = false,
         @Volatile var fullscreenVideoDarkeningSuppressed: Boolean = false,
         @Volatile var activeDocumentUrl: String? = null,
@@ -1815,27 +1799,28 @@ class BrowserWebViewRegistry(
                     this.__nekoSabrControl=isSabrControlUrl(String(url||''));
                     return realOpen.apply(this,arguments);
                   };
-                  xhrProto.send=function(){
-                    if(this.__nekoSabrControl&&!isPremium()){
-                      var responsePatched=false;
-                      var patchResponse=function(){
-                        if(responsePatched) return;
+                    xhrProto.send=function(){
+                      if(this.__nekoSabrControl&&!isPremium()){
+                        // load listenerの登録順に依存せず、responseを初めて読む瞬間に小さなSABR制御応答だけを置換する。
+                        // これならYouTube側が先にload listenerを登録していても、同じpatched bufferを受け取れる。
                         try{
-                          var original=this.response;
-                          if(!(original instanceof ArrayBuffer)) return;
-                          var patched=patchArrayBuffer(original);
-                          if(patched===original){responsePatched=true;return;}
-                          Object.defineProperty(this,'response',{configurable:true,get:function(){return patched;}});
-                          if(this.response===patched) responsePatched=true;
+                          var object=this,proto=object,getter=null;
+                          while(proto&&!getter){
+                            var descriptor=Object.getOwnPropertyDescriptor(proto,'response');
+                            getter=descriptor&&descriptor.get;
+                            proto=Object.getPrototypeOf(proto);
+                          }
+                          var initialResponse=object.response,lastOriginal=null,lastPatched=null;
+                          Object.defineProperty(object,'response',{configurable:true,get:function(){
+                            var original=getter?getter.call(object):initialResponse;
+                            if(!(original instanceof ArrayBuffer)) return original;
+                            if(original===lastOriginal&&lastPatched!==null) return lastPatched;
+                            lastOriginal=original;lastPatched=patchArrayBuffer(original);return lastPatched;
+                          }});
                         }catch(_e){}
-                      };
-                      // playerがloadで先にresponseを読む経路に備え、readyState=4/loadで先にpatchする。
-                      this.addEventListener('readystatechange',function(){if(this.readyState===4) patchResponse.call(this);});
-                      this.addEventListener('load',patchResponse);
-                      this.addEventListener('loadend',patchResponse,{once:true});
-                    }
-                    return realSend.apply(this,arguments);
-                  };
+                      }
+                      return realSend.apply(this,arguments);
+                    };
                 }
               }catch(_e){}
             })();
