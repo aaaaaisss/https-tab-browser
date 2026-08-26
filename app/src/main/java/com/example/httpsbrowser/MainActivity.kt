@@ -1,11 +1,14 @@
 package com.example.httpsbrowser
 
+import android.app.PendingIntent
 import android.app.PictureInPictureParams
+import android.app.RemoteAction
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
@@ -384,12 +387,38 @@ class MainActivity : ComponentActivity() {
                 builder.setAspectRatio(Rational(16, 9))
             }
         }
+        if (videoView != null) {
+            // 起動時・通常ブラウズ時のActivity構成には触れない。PiP操作を押した時だけ、
+            // 再生surfaceを所有する本Activityを動かさず、同じ安定済みMainActivityを別taskで開く。
+            builder.setActions(listOf(createOpenBrowserRemoteAction()))
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // 明示PiPの補助としてauto-enterも有効にする。通常ページではvideoViewがnullのため無効。
             builder.setAutoEnterEnabled(videoView != null)
             if (videoView != null) builder.setSeamlessResizeEnabled(true)
         }
         return builder.build()
+    }
+
+    /** PiP動画のWebView/custom viewを再親子化せず、通常ブラウズ用の既存Activityだけを別taskで開く。 */
+    private fun createOpenBrowserRemoteAction(): RemoteAction {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            REQUEST_OPEN_BROWSER_FROM_PIP,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return RemoteAction(
+            Icon.createWithResource(this, R.drawable.ic_browser),
+            "ブラウズを開く",
+            "PiP再生を続けたままブラウザを操作",
+            pendingIntent
+        )
     }
 
     private fun setFullscreenSystemBars(fullscreen: Boolean) {
@@ -413,5 +442,6 @@ class MainActivity : ComponentActivity() {
     private companion object {
         const val MIN_PIP_ASPECT_RATIO = 1f / 2.39f
         const val MAX_PIP_ASPECT_RATIO = 2.39f
+        const val REQUEST_OPEN_BROWSER_FROM_PIP = 4_021
     }
 }
