@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.BrowserDownloadDispatcher
 import com.example.httpsbrowser.data.BrowserDownloadMode
@@ -195,7 +196,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         val overlayVisible = state.isTabSheetVisible || state.isSettingsSheetVisible ||
             pendingPermission != null || longPressedLink != null || externalAppUrl != null ||
             notice != null || addBookmarkDialog || editingHomeBookmark != null
-        (activity as? BrowserScreenHost)?.setNormalWebContentVisible(!overlayVisible)
+        (activity as? MainActivity)?.setNormalWebContentVisible(!overlayVisible)
     }
 
     /**
@@ -208,13 +209,13 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, false) }
         // Activity rootのnative containerを先に外す。ComposeのAndroidViewへ差し戻さないため、
         // Chromiumの動画surfaceが再親子化されず、全画面終了時の停止を抑える。
-        (activity as? BrowserScreenHost)?.hideFullscreenCustomView(content.view)
+        (activity as? MainActivity)?.hideFullscreenCustomView(content.view)
         viewModel.setFullscreen(false)
         if (notifyPage) runCatching { content.callback.onCustomViewHidden() }
     }
 
     fun handleWebViewHideFullscreen() {
-        if ((activity as? BrowserScreenHost)?.shouldRetainFullscreenCustomView() == true) {
+        if ((activity as? MainActivity)?.shouldRetainFullscreenCustomView() == true) {
             // PiP遷移ではWebViewがonHideCustomViewを先に通知することがある。
             // この時点でcustom viewを外すと通常の下部バーがPiPに入り、再生も止まる。
             com.example.httpsbrowser.CrashDiagnostics.record("pip_custom_view_retained", "reason=webview_hide_during_pip")
@@ -237,11 +238,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, true) }
         viewModel.setFullscreen(true)
         // PiP、native fullscreen container、system barはActivityへ一元化する。
-        (activity as? BrowserScreenHost)?.showFullscreenCustomView(view, selectedTab?.id)
+        (activity as? MainActivity)?.showFullscreenCustomView(view, selectedTab?.id)
     }
 
     LaunchedEffect(selectedTab?.id, selectedTab?.isHome, selectedTab?.lastRequestedUrl, state.settings, rendererVersion) {
-        val hostActivity = activity as? BrowserScreenHost
+        val hostActivity = activity as? MainActivity
         val tab = selectedTab
         if (hostActivity == null || tab == null || tab.isHome) {
             hostActivity?.hideNormalWebContent()
@@ -283,7 +284,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         viewModel.returnSelectedTabToHome()
         tabId?.let { id ->
             // ホームへ切り替えた直後にnative hostが重ならないよう外し、遅延した旧ページcallbackはregistry側で無視する。
-            (activity as? BrowserScreenHost)?.hideNormalWebContent()
+            (activity as? MainActivity)?.hideNormalWebContent()
             registry.resetForHome(id)
         }
     }
@@ -328,7 +329,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         .onGloballyPositioned { coordinates ->
                             if (!selectedTab.isHome) {
                                 val position = coordinates.positionInRoot()
-                                (activity as? BrowserScreenHost)?.setNormalWebContentBounds(
+                                (activity as? MainActivity)?.setNormalWebContentBounds(
                                     left = position.x.toInt(),
                                     top = position.y.toInt(),
                                     width = coordinates.size.width,

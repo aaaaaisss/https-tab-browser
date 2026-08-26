@@ -6,8 +6,7 @@ const checks = [
   'tools/verify_youtube_sanitizer.js',
   'tools/verify_youtube_noad_warm_player.js',
   'tools/verify_youtube_sabr_patch_only.js',
-  'tools/verify_brave_sabr_resource.js',
-  'tools/verify_pip_continuous_browsing.js'
+  'tools/verify_brave_sabr_resource.js'
 ];
 
 for (const check of checks) {

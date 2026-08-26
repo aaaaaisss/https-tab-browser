@@ -79,27 +79,6 @@ class BrowserRepository(private val context: Context) {
         }
     }
 
-    /** PiPから開いた隔離ブラウズ画面が、再生hostのタブ状態を上書きせず設定だけ共有する保存経路。 */
-    suspend fun saveSettings(settings: BrowserSettings) {
-        context.browserDataStore.edit { preferences ->
-            preferences[Keys.forceDark] = settings.forceDarkPages
-            preferences[Keys.forceDarkInitialized] = true
-            preferences[Keys.forceDarkVideoPages] = settings.forceDarkVideoPages
-            preferences[Keys.skipDarkeningAlreadyDarkPages] = settings.skipDarkeningAlreadyDarkPages
-            preferences[Keys.darkModeExcludedHosts] = encodeStringList(settings.darkModeExcludedHosts).toString()
-            preferences[Keys.adBlock] = settings.adBlockingEnabled
-            preferences[Keys.aggressiveAdBlock] = settings.aggressiveAdBlockingEnabled
-            preferences[Keys.javascript] = settings.javascriptEnabled
-        }
-    }
-
-    /** タブ選択・履歴を書き換えず、隔離ブラウズ画面で編集したブックマークだけを共有する。 */
-    suspend fun saveBookmarks(bookmarks: List<Bookmark>) {
-        context.browserDataStore.edit { preferences ->
-            preferences[Keys.bookmarks] = encodeBookmarks(bookmarks).toString()
-        }
-    }
-
     suspend fun clearBrowsingData(keepBookmarks: Boolean) {
         context.browserDataStore.edit { preferences ->
             preferences.remove(Keys.history)
