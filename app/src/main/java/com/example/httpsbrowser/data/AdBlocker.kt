@@ -189,15 +189,19 @@ class AdBlockListRepository(
             instanceFollowRedirects = false
             setRequestProperty("User-Agent", "HttpsTabBrowser/1.0")
         }
-        require(request.responseCode in 200..299) { "リストを取得できませんでした: HTTP ${request.responseCode}" }
-        val content = BufferedInputStream(request.inputStream).use { input -> input.readBytesLimited(MAX_LIST_BYTES) }.toString(Charsets.UTF_8)
-        require(content.isNotBlank()) { "空のリストは登録できません。" }
-        val temporary = File(directory, "$fileId.tmp")
-        temporary.writeText(content)
-        val destination = File(directory, "$fileId.txt")
-        if (!temporary.renameTo(destination)) {
-            temporary.copyTo(destination, overwrite = true)
-            temporary.delete()
+        try {
+            require(request.responseCode in 200..299) { "リストを取得できませんでした: HTTP ${request.responseCode}" }
+            val content = BufferedInputStream(request.inputStream).use { input -> input.readBytesLimited(MAX_LIST_BYTES) }.toString(Charsets.UTF_8)
+            require(content.isNotBlank()) { "空のリストは登録できません。" }
+            val temporary = File(directory, "$fileId.tmp")
+            temporary.writeText(content)
+            val destination = File(directory, "$fileId.txt")
+            if (!temporary.renameTo(destination)) {
+                temporary.copyTo(destination, overwrite = true)
+                temporary.delete()
+            }
+        } finally {
+            request.disconnect()
         }
     }
 
@@ -260,7 +264,7 @@ class AdBlockListRepository(
     }
 }
 
-/** ネットワーク接続時に 7 日ごとを目安として標準リストを更新する。 */
+/** 非従量ネットワーク接続時に日次で標準リストを更新する。 */
 class AdBlockUpdateWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val engine = BraveAdBlockEngine(applicationContext)

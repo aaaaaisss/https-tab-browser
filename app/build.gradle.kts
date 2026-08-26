@@ -59,8 +59,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     // Document Start、暗色化、renderer crash handlingの互換性を最新安定版に揃える。
     implementation("androidx.webkit:webkit:1.17.0")
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
+    // 1.2.1は安定版。Preferences APIを維持しつつ、DataStoreのR8・起動時I/O修正を取り込む。
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("androidx.core:core-splashscreen:1.0.1")
-    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    // 2.11.2はAndroid 15以降のネットワーク制約・定期work再スケジュール修正を含む。
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

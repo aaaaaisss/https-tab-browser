@@ -42,7 +42,7 @@ requireText(screen, 'viewModel.openSettings(SettingsPage.DOWNLOADS)', 'bottom me
 requireText(screen, 'BrowserDownloadDispatcher.start(context, request, BrowserDownloadMode.NORMAL)', 'normal start without blocking notice');
 requireText(sheets, 'SettingsPage.DOWNLOADS -> DownloadsPage(onBack)', 'downloads settings page routing');
 requireText(sheets, 'BrowserDownloadDispatcher.currentStatuses(context)', 'in-app download progress polling');
-requireText(sheets, 'LinearProgressIndicator(progress = fraction', 'download progress indicator');
+requireText(sheets, 'LinearProgressIndicator(progress = { fraction }', 'download progress indicator');
 requireText(sheets, 'Text("停止")', 'in-app download cancel action');
 requireText(sheets, 'Text("削除")', 'in-app download delete action');
 requireText(models, 'DOWNLOADS', 'downloads page type');

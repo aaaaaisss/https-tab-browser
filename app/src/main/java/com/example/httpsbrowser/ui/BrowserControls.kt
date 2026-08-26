@@ -35,8 +35,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
@@ -293,9 +293,9 @@ fun NavigationRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         NavButton(Icons.Default.Tab, "タブ一覧", onTabs)
-        NavButton(Icons.Default.ArrowBack, "戻る", onBack, enabled = canGoBack)
+        NavButton(Icons.AutoMirrored.Filled.ArrowBack, "戻る", onBack, enabled = canGoBack)
         NavButton(Icons.Default.Search, "アドレスバーを編集", onSearch, emphasized = true)
-        NavButton(Icons.Default.ArrowForward, "進む", onForward, enabled = canGoForward)
+        NavButton(Icons.AutoMirrored.Filled.ArrowForward, "進む", onForward, enabled = canGoForward)
         Box {
             NavButton(Icons.Default.Menu, "メニュー", { menuExpanded = true })
             DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {

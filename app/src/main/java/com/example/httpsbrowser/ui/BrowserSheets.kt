@@ -13,13 +13,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -271,7 +271,7 @@ object BrowserSheets {
                     supportingContent = { Text(entry.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     trailingContent = {
                         Row {
-                            Icon(Icons.Default.OpenInNew, null)
+                            Icon(Icons.AutoMirrored.Filled.OpenInNew, null)
                             IconButton(onClick = { onDelete(entry.id) }) { Icon(Icons.Default.Delete, "この履歴を削除") }
                         }
                     }
@@ -369,7 +369,7 @@ object BrowserSheets {
                         style = MaterialTheme.typography.bodySmall
                     )
                     if (fraction != null) {
-                        LinearProgressIndicator(progress = fraction, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+                        LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
                         Text(
                             "${(fraction * 100).toInt()}%  ${formatBytes(download.downloadedBytes)} / ${formatBytes(download.totalBytes ?: 0L)}",
                             style = MaterialTheme.typography.labelSmall,
@@ -625,7 +625,7 @@ object BrowserSheets {
     private fun PageHeader(title: String, onBack: () -> Unit, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Row {
-                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "設定に戻る") }
+                IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "設定に戻る") }
                 Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 10.dp))
             }
             if (actionLabel != null && onAction != null) TextButton(onClick = onAction) { Icon(Icons.Default.Add, null); Text(actionLabel) }
@@ -634,7 +634,7 @@ object BrowserSheets {
 
     @Composable
     private fun NavigationItem(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
-        ListItem(modifier = Modifier.clickable { onClick() }, headlineContent = { Text(label) }, leadingContent = { Icon(icon, null) }, trailingContent = { Icon(Icons.Default.OpenInNew, null) })
+        ListItem(modifier = Modifier.clickable { onClick() }, headlineContent = { Text(label) }, leadingContent = { Icon(icon, null) }, trailingContent = { Icon(Icons.AutoMirrored.Filled.OpenInNew, null) })
     }
 
     @Composable private fun SheetTitle(text: String) {
