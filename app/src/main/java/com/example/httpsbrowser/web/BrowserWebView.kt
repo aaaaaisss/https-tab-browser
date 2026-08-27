@@ -310,9 +310,11 @@ class BrowserWebViewRegistry(
     }
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
     fun scrollToTop(tabId: String) = entries[tabId]?.webView?.scrollTo(0, 0)
-    fun scrollToBottom(tabId: String) = entries[tabId]?.webView?.let { it.scrollTo(0, (it.contentHeight * it.scale).toInt()) }
-    fun scrollToFraction(tabId: String, fraction: Float) = entries[tabId]?.webView?.let { view ->
-        val maximum = ((view.contentHeight * view.scale).toInt() - view.height).coerceAtLeast(0)
+    /** `pageDown(true)`は縮尺値に依存せずWebView自身の文書末尾へ移動する。 */
+    fun scrollToBottom(tabId: String) = entries[tabId]?.webView?.pageDown(true)
+    fun scrollToFraction(tabId: String, fraction: Float) = entries[tabId]?.let { entry ->
+        val view = entry.webView
+        val maximum = ((view.contentHeight * entry.pageScale).toInt() - view.height).coerceAtLeast(0)
         view.scrollTo(0, (maximum * fraction.coerceIn(0f, 1f)).toInt())
     }
 
@@ -369,7 +371,7 @@ class BrowserWebViewRegistry(
     private fun createWebView(tabId: String): WebView = object : WebView(context) {
         override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
             super.onScrollChanged(l, t, oldl, oldt)
-            val scrollRange = ((contentHeight * scale).toInt() - height).coerceAtLeast(0)
+            val scrollRange = ((contentHeight * (entries[tabId]?.pageScale ?: 1f)).toInt() - height).coerceAtLeast(0)
             val fraction = if (scrollRange == 0) 0f else t.toFloat() / scrollRange
             entries[tabId]?.callbacks?.onScrollPosition(tabId, fraction.coerceIn(0f, 1f))
         }
@@ -402,7 +404,6 @@ class BrowserWebViewRegistry(
             builtInZoomControls = true
             displayZoomControls = false
             setSupportZoom(true)
-            databaseEnabled = false
             allowFileAccess = false
             allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
@@ -462,21 +463,10 @@ class BrowserWebViewRegistry(
     ) {
         view.settings.javaScriptEnabled = settings.javascriptEnabled
         val allowPlatformDarkening = shouldApplyPlatformDarkening(settings, videoPage, documentIsAlreadyDark, url)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) view.setForceDarkAllowed(allowPlatformDarkening)
+        // targetSdk 35ではJetpack WebKitのAlgorithmic Darkeningが後方互換を担う。
+        // Force Dark系は旧targetSdk向けで、動画surfaceを含む描画経路へ副作用を持ち得るため使わない。
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowPlatformDarkening)
-        }
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-            WebSettingsCompat.setForceDark(
-                view.settings,
-                if (allowPlatformDarkening) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
-            )
-        }
-        if (allowPlatformDarkening && WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-            WebSettingsCompat.setForceDarkStrategy(
-                view.settings,
-                WebSettingsCompat.DARK_STRATEGY_USER_AGENT_DARKENING_ONLY
-            )
         }
         CrashDiagnostics.record(
             "dark_mode_configured",
@@ -1020,6 +1010,12 @@ class BrowserWebViewRegistry(
             completeBackNavigation(tabId, entry, view)
         }
 
+        override fun onScaleChanged(view: WebView, oldScale: Float, newScale: Float) {
+            super.onScaleChanged(view, oldScale, newScale)
+            // getScale()はWeb rendererとUI threadの競合で不正確なため、変更callbackの値を保持する。
+            entries[tabId]?.pageScale = newScale.takeIf { it > 0f } ?: 1f
+        }
+
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
@@ -1086,7 +1082,7 @@ class BrowserWebViewRegistry(
             applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
             if (entry.settings.skipDarkeningAlreadyDarkPages) detectAlreadyDarkDocument(view, entry, url)
             else releaseDarkRevealGuard(view, entry, url)
-            if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
+            if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url, entry)
             scheduleCookieFlush(view, entry)
             entry.callbacks.onPageFinished(tabId, url, view.title)
             notifyHistoryState(tabId, view)
@@ -1259,6 +1255,8 @@ class BrowserWebViewRegistry(
         @Volatile var aggressiveAdBlockingEnabled: Boolean = false,
         @Volatile var fullscreenVideoDarkeningSuppressed: Boolean = false,
         @Volatile var activeDocumentUrl: String? = null,
+        /** onScaleChangedで受け取るWebViewの最新拡大率。初期値は標準倍率。 */
+        @Volatile var pageScale: Float = 1f,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true,
         @Volatile private var backNavigationInFlight: Boolean = false,
@@ -1443,13 +1441,13 @@ class BrowserWebViewRegistry(
                     path.contains("/youtubei/v1/player/ad_break") || path.startsWith("/get_midroll_")))
     }
 
-    private fun recordVideoViewportMetrics(view: WebView, url: String) {
+    private fun recordVideoViewportMetrics(view: WebView, url: String, entry: Entry) {
         view.evaluateJavascript(VIDEO_VIEWPORT_METRICS_SCRIPT) { raw ->
             val metrics = runCatching { JSONTokener(raw ?: "\"\"").nextValue() as? String }.getOrNull().orEmpty()
             if (metrics.isNotBlank()) {
                 CrashDiagnostics.record(
                     "youtube_viewport_metrics",
-                    "host=${youtubeHost(url).orEmpty()}\nwebViewWidth=${view.width}\nwebViewHeight=${view.height}\nscrollX=${view.scrollX}\nscrollY=${view.scrollY}\nscale=${view.scale}\n$metrics"
+                    "host=${youtubeHost(url).orEmpty()}\nwebViewWidth=${view.width}\nwebViewHeight=${view.height}\nscrollX=${view.scrollX}\nscrollY=${view.scrollY}\nscale=${entry.pageScale}\n$metrics"
                 )
             }
         }

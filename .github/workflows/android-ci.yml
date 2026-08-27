@@ -77,7 +77,8 @@ jobs:
           name: HTTPS-Tab-Browser-release-apk
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-          retention-days: 14
+          # 手動CIを連続実行しても無料枠を圧迫しないよう、配布確認に必要な期間だけ保管する。
+          retention-days: 3
 
       - name: Upload lint reports when a check fails
         if: failure()
@@ -88,4 +89,5 @@ jobs:
             app/build/reports/
             app/build/test-results/
           if-no-files-found: ignore
-          retention-days: 14
+          # 失敗調査用レポートも同じ短期保持とし、古い実行だけが自動的に期限切れになるようにする。
+          retention-days: 3

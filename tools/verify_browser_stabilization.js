@@ -9,6 +9,7 @@ const repository = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/d
 const webView = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt', 'utf8');
 const mainActivity = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/MainActivity.kt', 'utf8');
 const cargoToml = fs.readFileSync('app/src/main/rust/Cargo.toml', 'utf8');
+const androidCi = fs.readFileSync('.github/workflows/android-ci.yml', 'utf8');
 
 function requireText(source, text, label) {
   if (!source.includes(text)) throw new Error(`${label}: missing ${text}`);
@@ -93,6 +94,17 @@ forbidText(mainActivity, 'if (visible && normalWebContentBoundsReady) View.VISIB
 requireText(mainActivity, 'ホームタブでも既存WebViewをhostから外さない', 'home tab keeps background media session attached');
 forbidText(mainActivity, 'normalWebContentHost.removeAllViews()\n        // 次に通常ページへ戻る時', 'home tab must not detach media WebViews');
 requireText(cargoToml, 'version = "=0.13.3"', 'Brave adblock-rust version is exactly pinned');
+requireText(webView, 'WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, allowPlatformDarkening)', 'targetSdk 35 uses the supported algorithmic darkening API');
+requireText(webView, 'override fun onScaleChanged(view: WebView, oldScale: Float, newScale: Float)', 'scale changes are captured without the deprecated WebView scale getter');
+requireText(webView, 'fun scrollToBottom(tabId: String) = entries[tabId]?.webView?.pageDown(true)', 'bottom scrolling avoids the deprecated scale getter');
+forbidText(webView, 'databaseEnabled = false', 'deprecated WebSQL setting');
+forbidText(webView, 'WebSettingsCompat.setForceDark(', 'deprecated Force Dark setting');
+forbidText(webView, 'WebSettingsCompat.setForceDarkStrategy(', 'deprecated Force Dark strategy');
+forbidText(webView, '.scale', 'deprecated WebView scale getter');
+requireText(mainActivity, 'override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration)', 'PiP uses the Configuration-aware callback');
+forbidText(mainActivity, 'override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {', 'deprecated PiP boolean-only callback');
+requireText(androidCi, 'retention-days: 3', 'short artifact retention protects Actions storage');
+forbidText(androidCi, 'retention-days: 14', 'obsolete long artifact retention');
 
 requireText(models, 'skipDarkeningAlreadyDarkPages: Boolean = false', 'already-dark exclusion default');
 requireText(models, 'darkModeExcludedHosts: List<String> = emptyList()', 'manual dark exclusion model');

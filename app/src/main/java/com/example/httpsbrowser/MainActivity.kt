@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
 import android.content.Intent
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Rect
@@ -314,8 +315,8 @@ class MainActivity : ComponentActivity() {
         if (!isInPictureInPictureMode) pictureInPictureTransitionRequested = false
     }
 
-    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean) {
-        super.onPictureInPictureModeChanged(isInPictureInPictureMode)
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         pictureInPictureActive = isInPictureInPictureMode
         pictureInPictureTransitionRequested = false
         // PiP windowには動画だけを残す。操作ボタンやCompose下部バーはPiP中に合成しない。
