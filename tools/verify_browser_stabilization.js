@@ -20,6 +20,8 @@ function forbidText(source, text, label) {
 requireText(viewModel, 'beginAddressEditing(if (tab.isHome) "" else tab.displayText.ifBlank { tab.url })', 'Google query focus suggestions');
 requireText(viewModel, 'fun setAddressInput(value: String) = beginAddressEditing(value)', 'unified address editing');
 requireText(viewModel, 'return results.values.take(MAX_SUGGESTIONS)', 'suggestion count limit');
+requireText(viewModel, 'private fun fetchGoogleSuggestions(query: String)', 'bounded Google suggestion request path');
+requireText(viewModel, 'finally {\n            // 検索候補は短時間に連続して要求されるため、成功・失敗・キャンセルを問わず接続を解放する。\n            connection.disconnect()\n        }', 'Google suggestion connection cleanup');
 requireText(viewModel, 'if (uiState.selectedTab?.isHome == false) openHome()', 'home back fallback');
 requireText(controls, 'onSubmit: (String) -> Unit', 'IME latest input contract');
 requireText(controls, 'onSubmit(textFieldValue.text)', 'IME latest input call');

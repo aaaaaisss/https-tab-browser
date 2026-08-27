@@ -453,13 +453,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             readTimeout = 3_000
             setRequestProperty("User-Agent", "Mozilla/5.0 (Android) HTTPS-Tab-Browser/1.0")
         }
-        connection.inputStream.bufferedReader().use { reader ->
-            val array = JSONArray(reader.readText())
-            val suggestions = array.optJSONArray(1) ?: JSONArray()
-            List(suggestions.length()) { index -> suggestions.optString(index).trim() }
-                .filter(String::isNotBlank)
-                .distinct()
-                .take(MAX_REMOTE_SUGGESTIONS)
+        try {
+            connection.inputStream.bufferedReader().use { reader ->
+                val array = JSONArray(reader.readText())
+                val suggestions = array.optJSONArray(1) ?: JSONArray()
+                List(suggestions.length()) { index -> suggestions.optString(index).trim() }
+                    .filter(String::isNotBlank)
+                    .distinct()
+                    .take(MAX_REMOTE_SUGGESTIONS)
+            }
+        } finally {
+            // 検索候補は短時間に連続して要求されるため、成功・失敗・キャンセルを問わず接続を解放する。
+            connection.disconnect()
         }
     }.getOrDefault(emptyList())
 
