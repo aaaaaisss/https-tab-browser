@@ -622,15 +622,6 @@ class BrowserWebViewRegistry(
         view.evaluateJavascript(VIDEO_DIMENSIONS_REPORTER_SCRIPT, null)
     }
 
-    /**
-     * ページ内のHTML5 videoにだけ、小さなPiPボタンを挿入する。クリック自体が文書内の
-     * transient user activationになるため、native側からの遅延evaluateJavascriptではなく
-     * 標準requestPictureInPicture APIを安全に要求できる。
-     */
-    private fun installInPageVideoControls(view: WebView) {
-        view.evaluateJavascript(IN_PAGE_VIDEO_CONTROLS_SCRIPT, null)
-    }
-
     private fun applyDeepDarkCss(view: WebView, enabled: Boolean, youtubePage: Boolean = false) {
         val css = when {
             !enabled -> ""
@@ -1130,7 +1121,6 @@ class BrowserWebViewRegistry(
                     )
                 }
                 installVideoDimensionsReporter(view)
-                installInPageVideoControls(view)
             }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
@@ -1151,7 +1141,6 @@ class BrowserWebViewRegistry(
                 youtubePage = isYoutubeDocumentUrl(url)
             )
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
-            installInPageVideoControls(view)
             if (entry != null) {
                 if (entry.settings.skipDarkeningAlreadyDarkPages) detectAlreadyDarkDocument(view, entry, url)
                 else releaseDarkRevealGuard(view, entry, url)
@@ -1906,67 +1895,6 @@ class BrowserWebViewRegistry(
                 if(track.kind==='subtitles'||track.kind==='captions') tracks.push({index:i,label:track.label||track.language||('字幕 '+(tracks.length+1)),language:track.language||'',kind:track.kind,showing:track.mode==='showing'});
               }
               return JSON.stringify({hasVideo:true,playbackRate:Number(video.playbackRate)||1,tracks:tracks});
-            })();
-        """.trimIndent()
-
-        /**
-         * ページ文書内のユーザー操作としてHTML5 PiPを要求する小型ボタン。
-         * Rootはpointer-eventsを通し、48dp未満の限定領域だけがタッチを受けるのでShortsの
-         * スワイプ・タップ領域をほとんど侵食しない。動画がなければ表示しない。
-         */
-        val IN_PAGE_VIDEO_CONTROLS_SCRIPT = """
-            (function(){
-              if(window.__nekoBrowserVideoControlsInstalled) return;
-              window.__nekoBrowserVideoControlsInstalled=true;
-              var root=null,pipButton=null,controlsButton=null,panel=null;
-              function target(){
-                var videos=Array.prototype.slice.call(document.querySelectorAll('video'));
-                videos.sort(function(a,b){
-                  var as=(a.paused?0:1000000000)+(a.clientWidth*a.clientHeight);
-                  var bs=(b.paused?0:1000000000)+(b.clientWidth*b.clientHeight);
-                  return bs-as;
-                });
-                return videos[0]||null;
-              }
-              function ensure(){
-                var video=target();
-                if(!video){if(root)root.style.display='none';return;}
-                if(!root){
-                  root=document.createElement('div');root.id='__https_browser_video_actions';
-                  root.style.cssText='position:fixed!important;left:max(8px,env(safe-area-inset-left))!important;top:max(56px,env(safe-area-inset-top))!important;z-index:2147483647!important;pointer-events:none!important;display:block!important;filter:none!important;';
-                  function actionButton(label,description){
-                    var item=document.createElement('button');item.type='button';item.textContent=label;item.setAttribute('aria-label',description);
-                    item.style.cssText='pointer-events:auto!important;min-width:42px!important;min-height:32px!important;margin:0 0 5px 0!important;padding:5px 10px!important;border:1px solid rgba(255,255,255,.55)!important;border-radius:18px!important;background:rgba(13,17,24,.78)!important;color:#fff!important;font:600 11px sans-serif!important;line-height:1!important;box-shadow:0 1px 4px rgba(0,0,0,.45)!important;filter:none!important;';
-                    return item;
-                  }
-                  pipButton=actionButton('PiP','ピクチャーインピクチャーで再生');
-                  pipButton.addEventListener('click',function(event){
-                    event.preventDefault();event.stopPropagation();var current=target();
-                    if(!current||!document.pictureInPictureEnabled){pipButton.textContent='不可';setTimeout(function(){pipButton.textContent='PiP';},1200);return;}
-                    try{current.disablePictureInPicture=false;current.removeAttribute('disablePictureInPicture');}catch(_e){}
-                    Promise.resolve(document.pictureInPictureElement===current?true:current.requestPictureInPicture()).catch(function(){pipButton.textContent='不可';setTimeout(function(){pipButton.textContent='PiP';},1200);});
-                  },true);
-                  controlsButton=actionButton('速度','速度と字幕');
-                  controlsButton.addEventListener('click',function(event){
-                    event.preventDefault();event.stopPropagation();var current=target();if(!current)return;
-                    if(panel){panel.remove();panel=null;return;}
-                    panel=document.createElement('div');panel.setAttribute('role','dialog');panel.setAttribute('aria-label','動画の速度と字幕');
-                    panel.style.cssText='pointer-events:auto!important;width:132px!important;max-height:55vh!important;overflow:auto!important;margin-top:1px!important;padding:7px!important;border:1px solid rgba(255,255,255,.5)!important;border-radius:10px!important;background:rgba(13,17,24,.92)!important;color:#fff!important;font:12px sans-serif!important;box-shadow:0 2px 10px rgba(0,0,0,.5)!important;filter:none!important;';
-                    function panelButton(label,active,click){var item=document.createElement('button');item.type='button';item.textContent=label;item.style.cssText='display:block!important;width:100%!important;margin:2px 0!important;padding:7px!important;border:0!important;border-radius:6px!important;background:'+(active?'#4e78c9':'#29303a')+'!important;color:#fff!important;font:12px sans-serif!important;text-align:left!important;filter:none!important;';item.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();click();});panel.appendChild(item);}
-                    var caption=document.createElement('div');caption.textContent='再生速度';caption.style.cssText='margin:2px 1px 4px!important;color:#d5dbea!important;font-weight:600!important;';panel.appendChild(caption);
-                    [0.5,0.75,1,1.25,1.5,1.75,2].forEach(function(rate){panelButton(rate+'×',Math.abs((current.playbackRate||1)-rate)<.01,function(){try{current.defaultPlaybackRate=rate;current.playbackRate=rate;}catch(_e){};panel.remove();panel=null;});});
-                    var tracks=current.textTracks||[];var subtitleTracks=[];for(var i=0;i<tracks.length;i++){if(tracks[i].kind==='subtitles'||tracks[i].kind==='captions')subtitleTracks.push({track:tracks[i],index:i});}
-                    if(subtitleTracks.length){var subtitleCaption=document.createElement('div');subtitleCaption.textContent='字幕';subtitleCaption.style.cssText='margin:8px 1px 4px!important;color:#d5dbea!important;font-weight:600!important;';panel.appendChild(subtitleCaption);panelButton('オフ',!subtitleTracks.some(function(item){return item.track.mode==='showing';}),function(){subtitleTracks.forEach(function(item){item.track.mode='disabled';});panel.remove();panel=null;});subtitleTracks.forEach(function(item){panelButton(item.track.label||item.track.language||('字幕 '+(item.index+1)),item.track.mode==='showing',function(){subtitleTracks.forEach(function(other){other.track.mode=other.index===item.index?'showing':'disabled';});panel.remove();panel=null;});});}
-                    root.appendChild(panel);
-                  },true);
-                  root.appendChild(pipButton);root.appendChild(controlsButton);(document.documentElement||document.body).appendChild(root);
-                }
-                root.style.display='block';
-              }
-              ensure();
-              new MutationObserver(ensure).observe(document.documentElement||document,{subtree:true,childList:true});
-              document.addEventListener('loadedmetadata',ensure,true);
-              document.addEventListener('playing',ensure,true);
             })();
         """.trimIndent()
 
