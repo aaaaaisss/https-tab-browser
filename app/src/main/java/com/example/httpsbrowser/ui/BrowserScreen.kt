@@ -64,6 +64,7 @@ import java.util.Locale
 import java.io.FileInputStream
 import java.net.URI
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -77,6 +78,13 @@ private data class PendingWebPermission(
 private data class FullscreenContent(
     val view: View,
     val callback: WebChromeClient.CustomViewCallback
+)
+
+/** ページ側から数値だけ受け取る、native動画操作の表示状態。 */
+private data class VideoPlaybackUiState(
+    val hasVideo: Boolean = false,
+    val isPlaying: Boolean = false,
+    val playbackRate: Float = 1f
 )
 
 /**
@@ -121,6 +129,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
     var pendingDownload by remember { mutableStateOf<BrowserDownloadRequest?>(null) }
+    var videoPlayback by remember(selectedTab?.id) {
+        mutableStateOf(VideoPlaybackUiState(playbackRate = state.settings.preferredVideoPlaybackRate))
+    }
+    // PiPボタンは既存videoの全画面を要求してから、従来のMainActivity PiP経路へ一度だけ渡す。
+    var enterPipAfterFullscreen by remember(selectedTab?.id) { mutableStateOf(false) }
     // 引き継ぎデータはURIへ直接保持せず、AndroidのStorage Access Frameworkでユーザーが選んだ場所だけを使う。
     var pendingTransferJson by remember { mutableStateOf<String?>(null) }
     var pendingTransferImport by remember { mutableStateOf<BrowserTransferPayload?>(null) }
@@ -291,7 +304,60 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, true) }
         viewModel.setFullscreen(true)
         // PiP、native fullscreen container、system barはActivityへ一元化する。
-        (activity as? MainActivity)?.showFullscreenCustomView(view, selectedTab?.id)
+        val hostActivity = activity as? MainActivity
+        hostActivity?.showFullscreenCustomView(view, selectedTab?.id)
+        if (enterPipAfterFullscreen) {
+            enterPipAfterFullscreen = false
+            if (hostActivity?.enterFullscreenPictureInPictureMode() != true) {
+                notice = "PiPを開始できませんでした。端末のPiP設定を確認してください。"
+            }
+        }
+    }
+
+    // 全画面APIがサイト側で拒否された場合、次の手動全画面で意図せずPiPへ入らないよう保留を解除する。
+    LaunchedEffect(enterPipAfterFullscreen) {
+        if (enterPipAfterFullscreen) {
+            delay(1_500)
+            if (enterPipAfterFullscreen && !state.isFullscreen) {
+                enterPipAfterFullscreen = false
+                notice = "この動画ではPiPを開始できませんでした。"
+            }
+        }
+    }
+
+    // native host内の小さな操作だけを更新する。WebViewの親子関係・DOM・CSS・viewportには触れない。
+    LaunchedEffect(selectedTab?.id, selectedTab?.isHome, state.isFullscreen, videoPlayback) {
+        val tab = selectedTab
+        val hostActivity = activity as? MainActivity
+        if (tab == null || tab.isHome || state.isFullscreen || !videoPlayback.hasVideo) {
+            hostActivity?.clearVideoQuickControls()
+        } else {
+            hostActivity?.setVideoQuickControls(
+                tabId = tab.id,
+                // video要素を検出できる間は、一時停止中でも速度設定とPiPの再操作を可能にする。
+                visible = videoPlayback.hasVideo,
+                playbackRate = videoPlayback.playbackRate,
+                onPipRequested = {
+                    enterPipAfterFullscreen = true
+                    registry.requestVideoFullscreenForPictureInPicture(tab.id) { requested ->
+                        if (!requested) {
+                            enterPipAfterFullscreen = false
+                            notice = "この動画ではPiPを開始できませんでした。動画を再生してからもう一度お試しください。"
+                        }
+                    }
+                },
+                onSpeedRequested = {
+                    registry.cycleVideoPlaybackRate(tab.id, videoPlayback.playbackRate) { updatedRate ->
+                        if (updatedRate == null) {
+                            notice = "再生速度を変更できませんでした。動画を再生してからもう一度お試しください。"
+                        } else {
+                            videoPlayback = videoPlayback.copy(playbackRate = updatedRate)
+                            viewModel.updateSettings { settings -> settings.copy(preferredVideoPlaybackRate = updatedRate) }
+                        }
+                    }
+                }
+            )
+        }
     }
 
     LaunchedEffect(selectedTab?.id, selectedTab?.isHome, selectedTab?.lastRequestedUrl, state.settings, rendererVersion) {
@@ -311,6 +377,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onHideFullscreen = ::handleWebViewHideFullscreen,
                 onVideoDimensions = { width, height ->
                     hostActivity.updatePictureInPictureVideoDimensions(tab.id, width, height)
+                },
+                onVideoPlaybackState = { hasVideo, isPlaying, playbackRate ->
+                    if (viewModel.uiState.selectedTabId == tab.id) {
+                        videoPlayback = VideoPlaybackUiState(hasVideo, isPlaying, playbackRate)
+                    }
                 },
                 onPermission = { origin, resources, reply ->
                     pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
@@ -756,6 +827,7 @@ private fun callbacksFor(
     onFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideFullscreen: () -> Unit,
     onVideoDimensions: (Int, Int) -> Unit,
+    onVideoPlaybackState: (Boolean, Boolean, Float) -> Unit,
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
     onLongPress: (String) -> Unit,
     showNotice: (String) -> Unit,
@@ -782,6 +854,8 @@ private fun callbacksFor(
     override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = onFullscreen(view, callback)
     override fun onHideFullscreen() = onHideFullscreen()
     override fun onVideoDimensions(tabId: String, width: Int, height: Int) = onVideoDimensions(width, height)
+    override fun onVideoPlaybackState(tabId: String, hasVideo: Boolean, isPlaying: Boolean, playbackRate: Float) =
+        onVideoPlaybackState(hasVideo, isPlaying, playbackRate)
     override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = onPermission(origin, resources, reply)
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id

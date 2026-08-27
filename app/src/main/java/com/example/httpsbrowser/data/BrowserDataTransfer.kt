@@ -32,6 +32,8 @@ object BrowserDataTransfer {
     private const val MAX_DARK_EXCLUSIONS = 200
     private const val MAX_TITLE_LENGTH = 160
     private const val MAX_URL_LENGTH = 2_048
+    private const val MIN_VIDEO_PLAYBACK_RATE = 0.25f
+    private const val MAX_VIDEO_PLAYBACK_RATE = 3f
 
     /** このアプリの全引き継ぎ対象を、portableなUTF-8 JSONとして作成する。 */
     fun exportJson(
@@ -57,6 +59,7 @@ object BrowserDataTransfer {
             })
             put("adBlockingEnabled", settings.adBlockingEnabled)
             put("aggressiveAdBlockingEnabled", settings.aggressiveAdBlockingEnabled)
+            put("preferredVideoPlaybackRate", settings.preferredVideoPlaybackRate)
             put("javascriptEnabled", settings.javascriptEnabled)
         })
         put("customFilterSources", JSONArray().apply {
@@ -144,6 +147,9 @@ object BrowserDataTransfer {
             darkModeExcludedHosts = excludedHosts,
             adBlockingEnabled = item.getBoolean("adBlockingEnabled"),
             aggressiveAdBlockingEnabled = item.getBoolean("aggressiveAdBlockingEnabled"),
+            preferredVideoPlaybackRate = item.getDouble("preferredVideoPlaybackRate").toFloat()
+                .takeIf { it in MIN_VIDEO_PLAYBACK_RATE..MAX_VIDEO_PLAYBACK_RATE }
+                ?: error("動画速度の値が不正です。"),
             javascriptEnabled = item.getBoolean("javascriptEnabled")
         )
     }

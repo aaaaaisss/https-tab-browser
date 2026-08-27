@@ -19,6 +19,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
@@ -47,11 +48,19 @@ class MainActivity : ComponentActivity() {
     private var normalWebContentReservesRightTouchRail = false
     /** Googleのページ内モーダルなど、通常WebViewをComposeより前面に置くページかを保持する。 */
     private var normalWebContentPlacedAboveCompose = false
+    private var normalWebContentTabId: String? = null
+    // 通常WebViewの子として置くが、WebView本体とは別Viewであり動画surfaceを再親子化しない。
+    private var videoQuickControls: LinearLayout? = null
+    private var videoQuickPipButton: TextView? = null
+    private var videoQuickSpeedButton: TextView? = null
+    private var onQuickPipRequested: (() -> Unit)? = null
+    private var onQuickSpeedRequested: (() -> Unit)? = null
     @Volatile private var fullscreenVideoView: View? = null
     private var fullscreenVideoTabId: String? = null
     private val videoDimensionsByTab = ConcurrentHashMap<String, VideoDimensions>()
     private var fullscreenContainer: FrameLayout? = null
     private var fullscreenPipButton: View? = null
+    private var fullscreenSpeedButton: TextView? = null
     private var pictureInPictureActive by mutableStateOf(false)
     @Volatile private var pictureInPictureTransitionRequested = false
 
@@ -75,6 +84,13 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
             clipChildren = true
             clipToPadding = true
+        }
+        videoQuickControls = createVideoQuickControls().also { controls ->
+            normalWebContentHost.addView(controls, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply { setMargins(14, 14, 0, 0) })
         }
         composeOverlayView = ComposeView(this).apply {
             setContent {
@@ -131,7 +147,10 @@ class MainActivity : ComponentActivity() {
     /** 選択タブの通常WebViewをnative hostへ接続し、Composeの再構成から親Viewを分離する。 */
     fun showNormalWebContent(registry: BrowserWebViewRegistry, tabId: String) {
         if (::normalWebContentHost.isInitialized.not()) return
+        normalWebContentTabId = tabId
         registry.attachToNativeHost(tabId, normalWebContentHost)
+        // 動画ボタンはWebViewの後に最前面へ戻す。WebView自身の親・surface・測定経路は変更しない。
+        videoQuickControls?.bringToFront()
         // Composeからページ矩形を受けるまで全画面の仮LayoutParamsを見せない。
         normalWebContentHost.visibility = if (normalWebContentBoundsReady) View.VISIBLE else View.INVISIBLE
         CrashDiagnostics.record("normal_webview_native_host_shown", "tab=$tabId")
@@ -143,7 +162,7 @@ class MainActivity : ComponentActivity() {
      */
     fun setNormalWebContentVisible(visible: Boolean) {
         if (::normalWebContentHost.isInitialized.not()) return
-        if (normalWebContentHost.childCount == 0) {
+        if (!hasAttachedNormalWebContent()) {
             normalWebContentHost.visibility = View.GONE
             return
         }
@@ -161,7 +180,7 @@ class MainActivity : ComponentActivity() {
     fun hideNormalWebContent() {
         if (::normalWebContentHost.isInitialized.not()) return
         composeOverlayView.bringToFront()
-        normalWebContentHost.visibility = if (normalWebContentHost.childCount > 0 && normalWebContentBoundsReady) {
+        normalWebContentHost.visibility = if (hasAttachedNormalWebContent() && normalWebContentBoundsReady) {
             View.VISIBLE
         } else {
             View.GONE
@@ -193,7 +212,7 @@ class MainActivity : ComponentActivity() {
         current.width = width
         current.height = height
         normalWebContentHost.layoutParams = current
-        if (normalWebContentHost.childCount > 0) {
+        if (hasAttachedNormalWebContent()) {
             // レイアウト更新時もhostを不可視化しない。IME・シート・タブ切替で
             // WebViewのサーフェスが破棄されると動画再生が止まる端末がある。
             normalWebContentHost.visibility = View.VISIBLE
@@ -209,19 +228,34 @@ class MainActivity : ComponentActivity() {
         if (fullscreenVideoView === view && fullscreenContainer != null) return
         hideFullscreenCustomView(fullscreenVideoView)
 
+        // 通常ページの小さな操作はPiP/全画面に持ち込まない。動画custom viewだけを表示する。
+        videoQuickControls?.visibility = View.GONE
         val container = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         (view.parent as? ViewGroup)?.removeView(view)
         container.addView(view, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        val pipButton = createPipButton()
-        container.addView(pipButton, FrameLayout.LayoutParams(
+        val fullscreenActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val pipButton = createPipButton()
+            val speedButton = createVideoQuickButton(
+                videoQuickSpeedButton?.text?.toString() ?: "1.0×",
+                "再生速度を変更"
+            ) { onQuickSpeedRequested?.invoke() }
+            fullscreenSpeedButton = speedButton
+            addView(pipButton)
+            addView(speedButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                marginStart = 6
+            })
+        }
+        container.addView(fullscreenActions, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END
-        ).apply { setMargins(0, 18, 18, 0) })
-        fullscreenPipButton = pipButton
+            Gravity.TOP or Gravity.START
+        ).apply { setMargins(18, 18, 0, 0) })
+        fullscreenPipButton = fullscreenActions
         appRoot.addView(container, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT
@@ -244,6 +278,7 @@ class MainActivity : ComponentActivity() {
         }
         fullscreenContainer = null
         fullscreenPipButton = null
+        fullscreenSpeedButton = null
         fullscreenVideoTabId = null
         // PiPまたは全画面終了後にだけ通常のCompose操作UIを戻す。
         if (::composeOverlayView.isInitialized) composeOverlayView.visibility = View.VISIBLE
@@ -321,6 +356,7 @@ class MainActivity : ComponentActivity() {
         pictureInPictureTransitionRequested = false
         // PiP windowには動画だけを残す。操作ボタンやCompose下部バーはPiP中に合成しない。
         fullscreenPipButton?.visibility = if (isInPictureInPictureMode) View.GONE else View.VISIBLE
+        if (isInPictureInPictureMode) videoQuickControls?.visibility = View.GONE
         if (isInPictureInPictureMode) {
             if (::composeOverlayView.isInitialized) composeOverlayView.visibility = View.GONE
         } else if (fullscreenContainer == null && ::composeOverlayView.isInitialized) {
@@ -344,6 +380,80 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         incomingUrl = httpsViewUrl(intent)
+    }
+
+    /**
+     * 動画再生中だけ通常WebViewの左上に出す最小のnative操作。ページDOM、CSS、viewportには触れない。
+     * PiP開始はBrowserScreen側が既存のfullscreen custom-view経路へ委譲し、速度は同じ動画要素へだけ適用する。
+     */
+    fun setVideoQuickControls(
+        tabId: String,
+        visible: Boolean,
+        playbackRate: Float,
+        onPipRequested: () -> Unit,
+        onSpeedRequested: () -> Unit
+    ) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            runOnUiThread { setVideoQuickControls(tabId, visible, playbackRate, onPipRequested, onSpeedRequested) }
+            return
+        }
+        if (tabId != normalWebContentTabId) return
+        onQuickPipRequested = onPipRequested
+        onQuickSpeedRequested = onSpeedRequested
+        val playbackRateLabel = formatPlaybackRate(playbackRate)
+        videoQuickSpeedButton?.text = playbackRateLabel
+        fullscreenSpeedButton?.text = playbackRateLabel
+        videoQuickControls?.let { controls ->
+            controls.visibility = if (visible && fullscreenContainer == null && !isInPictureInPictureMode) View.VISIBLE else View.GONE
+            if (controls.visibility == View.VISIBLE) controls.bringToFront()
+        }
+    }
+
+    /** ホーム・タブ切替・動画停止時はボタンだけを隠す。通常WebViewはhostに残す。 */
+    fun clearVideoQuickControls() {
+        onQuickPipRequested = null
+        onQuickSpeedRequested = null
+        videoQuickControls?.visibility = View.GONE
+    }
+
+    private fun hasAttachedNormalWebContent(): Boolean =
+        ::normalWebContentHost.isInitialized && (0 until normalWebContentHost.childCount)
+            .any { normalWebContentHost.getChildAt(it) !== videoQuickControls }
+
+    private fun createVideoQuickControls(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        visibility = View.GONE
+        val pip = createVideoQuickButton("PiP", "ピクチャーインピクチャーで再生") { onQuickPipRequested?.invoke() }
+        val speed = createVideoQuickButton("1.0×", "再生速度を変更") { onQuickSpeedRequested?.invoke() }
+        videoQuickPipButton = pip
+        videoQuickSpeedButton = speed
+        addView(pip)
+        addView(speed, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = 6
+        })
+    }
+
+    private fun createVideoQuickButton(label: String, description: String, onClick: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        contentDescription = description
+        setTextColor(Color.WHITE)
+        textSize = 13f
+        gravity = Gravity.CENTER
+        setPadding(14, 8, 14, 8)
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 40f
+            setColor(0xD20D1118.toInt())
+            setStroke(1, 0xAAFFFFFF.toInt())
+        }
+        setOnClickListener { onClick() }
+    }
+
+    private fun formatPlaybackRate(rate: Float): String = if (rate % 1f == 0f) {
+        "${rate.toInt()}.0×"
+    } else {
+        "%.2f".format(java.util.Locale.ROOT, rate).trimEnd('0').trimEnd('.') + "×"
     }
 
     private fun createPipButton(): TextView = TextView(this).apply {

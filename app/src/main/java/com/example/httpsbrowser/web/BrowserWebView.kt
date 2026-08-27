@@ -51,6 +51,8 @@ class BrowserWebViewRegistry(
         entry.callbacks = callbacks
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
+        val playbackRateChanged = entry.preferredVideoPlaybackRate != settings.preferredVideoPlaybackRate
+        entry.preferredVideoPlaybackRate = settings.preferredVideoPlaybackRate
         val aggressiveModeChanged = entry.aggressiveAdBlockingEnabled != settings.aggressiveAdBlockingEnabled
         entry.aggressiveAdBlockingEnabled = settings.aggressiveAdBlockingEnabled
         ensureYoutubePictureInPictureScript(entry)
@@ -85,6 +87,10 @@ class BrowserWebViewRegistry(
                     ),
                 youtubePage = isYoutubeDocumentUrl(url)
             )
+        }
+        if (playbackRateChanged && entry.loadedUrl != null) {
+            // 設定更新だけではWebViewを再読込しない。既存video要素がある時だけ安全に速度を反映する。
+            applyVideoPlaybackRate(entry.webView, entry.preferredVideoPlaybackRate, null)
         }
         if (aggressiveModeChanged && entry.loadedUrl != null) {
             // モード切替だけでは再読込せず、表示中文書へcosmetic規則を即時再適用する。
@@ -232,6 +238,40 @@ class BrowserWebViewRegistry(
         }
     }
 
+
+    /**
+     * 再生中・一時停止中の既存video要素へ、ユーザーが選んだ次の安全な速度を適用する。
+     * 任意HTMLの追加、CSS変更、network request、YouTube固有DOMには一切触れない。
+     */
+    fun cycleVideoPlaybackRate(tabId: String, currentRate: Float, onCompleted: (Float?) -> Unit) {
+        val entry = entries[tabId] ?: run { onCompleted(null); return }
+        val nextRate = nextPlaybackRate(currentRate)
+        val script = """
+            (function(){
+              var setter=window.__nekoBrowserSetVideoPlaybackRate;
+              return typeof setter==='function' && setter($nextRate);
+            })();
+        """.trimIndent()
+        entry.webView.evaluateJavascript(script) { result ->
+            if (result == "true") {
+                entry.preferredVideoPlaybackRate = nextRate
+                onCompleted(nextRate)
+            } else {
+                onCompleted(null)
+            }
+        }
+    }
+
+    /**
+     * 既存video要素自身の全画面APIを、ユーザーがnative PiPボタンを押した時だけ呼ぶ。
+     * 成功時のcustom view/PiPは従来のMainActivity単一Activity経路で扱い、surfaceを移動しない。
+     */
+    fun requestVideoFullscreenForPictureInPicture(tabId: String, onRequested: (Boolean) -> Unit) {
+        val entry = entries[tabId] ?: run { onRequested(false); return }
+        entry.webView.evaluateJavascript(REQUEST_VIDEO_FULLSCREEN_SCRIPT) { result ->
+            onRequested(result == "true")
+        }
+    }
 
     /** SPA遷移を含む実際の表示URL。共有とrenderer再作成ではタブ保存値より優先する。 */
     fun currentUrl(tabId: String): String? = entries[tabId]?.let { entry ->
@@ -425,6 +465,16 @@ class BrowserWebViewRegistry(
                     entries[tabId]?.callbacks?.onVideoDimensions(tabId, width, height)
                 }
             }
+
+            // ページ側から受けるのは存在・寸法・速度の数値だけであり、任意JS実行やURL操作は公開しない。
+            @JavascriptInterface
+            fun reportPlaybackState(hasVideo: Boolean, isPlaying: Boolean, width: Int, height: Int, playbackRate: Float) {
+                entries[tabId]?.let { entry ->
+                    val safeRate = playbackRate.takeIf { it in MIN_VIDEO_PLAYBACK_RATE..MAX_VIDEO_PLAYBACK_RATE } ?: 1f
+                    if (hasVideo && width > 0 && height > 0) entry.callbacks.onVideoDimensions(tabId, width, height)
+                    entry.callbacks.onVideoPlaybackState(tabId, hasVideo, isPlaying, safeRate)
+                }
+            }
         }, VIDEO_DIMENSIONS_BRIDGE_NAME)
         webViewClient = SecureClient(tabId)
         webChromeClient = SecureChromeClient(tabId)
@@ -557,8 +607,20 @@ class BrowserWebViewRegistry(
      * `<video>`の実符号化サイズを監視し、PiP用に横長・縦長をActivityへ通知する。
      * DOM変更・metadata・resize・再生開始のいずれでも再評価し、同じサイズはページ側で重複通知しない。
      */
-    private fun installVideoDimensionsReporter(view: WebView) {
-        view.evaluateJavascript(VIDEO_DIMENSIONS_REPORTER_SCRIPT, null)
+    private fun installVideoDimensionsReporter(entry: Entry) {
+        entry.webView.evaluateJavascript(VIDEO_DIMENSIONS_REPORTER_SCRIPT, null)
+        applyVideoPlaybackRate(entry.webView, entry.preferredVideoPlaybackRate, null)
+    }
+
+    /** videoがまだ見つからない時はfalseを返すだけで、ページへ副作用を残さない。 */
+    private fun applyVideoPlaybackRate(view: WebView, rate: Float, onApplied: ((Boolean) -> Unit)?) {
+        val safeRate = rate.takeIf { it in MIN_VIDEO_PLAYBACK_RATE..MAX_VIDEO_PLAYBACK_RATE } ?: 1f
+        view.evaluateJavascript("""
+            (function(){
+              var setter=window.__nekoBrowserSetVideoPlaybackRate;
+              return typeof setter==='function' && setter($safeRate);
+            })();
+        """.trimIndent()) { result -> onApplied?.invoke(result == "true") }
     }
 
     private fun applyDeepDarkCss(view: WebView, enabled: Boolean, youtubePage: Boolean = false) {
@@ -1039,7 +1101,7 @@ class BrowserWebViewRegistry(
                     youtubePage = isYoutubeDocumentUrl(url)
                 )
             }
-            installVideoDimensionsReporter(view)
+            entry?.let(::installVideoDimensionsReporter)
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
@@ -1258,6 +1320,7 @@ class BrowserWebViewRegistry(
         /** onScaleChangedで受け取るWebViewの最新拡大率。初期値は標準倍率。 */
         @Volatile var pageScale: Float = 1f,
         @Volatile var adBlockingEnabled: Boolean = true,
+        @Volatile var preferredVideoPlaybackRate: Float = 1f,
         @Volatile var isActive: Boolean = true,
         @Volatile private var backNavigationInFlight: Boolean = false,
         @Volatile private var queuedBackRequests: Int = 0,
@@ -1515,6 +1578,9 @@ class BrowserWebViewRegistry(
     private companion object {
         const val ABOUT_BLANK_URL = "about:blank"
         const val VIDEO_DIMENSIONS_BRIDGE_NAME = "NekoBrowserVideoDimensions"
+        const val MIN_VIDEO_PLAYBACK_RATE = 0.25f
+        const val MAX_VIDEO_PLAYBACK_RATE = 3f
+        private val VIDEO_PLAYBACK_RATE_STEPS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 2_000
         const val GENERIC_COSMETIC_DELAY_MS = 350L
@@ -1611,37 +1677,76 @@ class BrowserWebViewRegistry(
 
         // Brave Android PR #28593と同じく、YouTubeのページ側PiP阻害フラグを最小限だけ無効化する。
         // config未生成・対応外構造ではno-opとし、複数回のSPA遷移でも追加の要素を作らない。
+        private fun nextPlaybackRate(currentRate: Float): Float {
+            val safeRate = currentRate.takeIf { it in MIN_VIDEO_PLAYBACK_RATE..MAX_VIDEO_PLAYBACK_RATE } ?: 1f
+            return VIDEO_PLAYBACK_RATE_STEPS.firstOrNull { it > safeRate + 0.01f } ?: VIDEO_PLAYBACK_RATE_STEPS.first()
+        }
+
+        /**
+         * 既存video要素の属性とイベントを読むだけで、独自ボタン・style・viewport・network hookを追加しない。
+         * YouTube/Shortsを含むHTML5 video対応ページで同じ経路を使う。
+         */
         val VIDEO_DIMENSIONS_REPORTER_SCRIPT = """
             (function(){
               if(window.__nekoBrowserVideoDimensionsReporter) return;
               window.__nekoBrowserVideoDimensionsReporter=true;
-              var last='';
+              var preferredRate=1;
               function bestVideo(){
                 var videos=Array.prototype.slice.call(document.querySelectorAll('video'));
                 videos.sort(function(a,b){
-                  var as=(a.videoWidth||0)*(a.videoHeight||0),bs=(b.videoWidth||0)*(b.videoHeight||0);
-                  if(!a.paused) as+=1000000000;
-                  if(!b.paused) bs+=1000000000;
+                  var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();
+                  var as=(ar.width||0)*(ar.height||0),bs=(br.width||0)*(br.height||0);
+                  if(!a.paused&&!a.ended) as+=1000000000;
+                  if(!b.paused&&!b.ended) bs+=1000000000;
                   return bs-as;
                 });
-                return videos[0];
+                return videos[0]||null;
               }
               function report(){
                 var video=bestVideo();
-                if(!video || !video.videoWidth || !video.videoHeight) return;
-                var value=video.videoWidth+'x'+video.videoHeight;
-                if(value===last) return;
-                last=value;
-                try{window.NekoBrowserVideoDimensions.report(video.videoWidth,video.videoHeight);}catch(_e){}
+                var has=!!video,w=has?(video.videoWidth||0):0,h=has?(video.videoHeight||0):0;
+                var playing=has&&!video.paused&&!video.ended;
+                var rate=has&&isFinite(video.playbackRate)?video.playbackRate:preferredRate;
+                try{window.NekoBrowserVideoDimensions.reportPlaybackState(has,playing,w,h,rate);}catch(_e){}
               }
+              function applyRate(rate){
+                if(!(rate>=0.25&&rate<=3)) return false;
+                preferredRate=rate;
+                var video=bestVideo();
+                if(!video) { report(); return false; }
+                try{video.playbackRate=rate; video.defaultPlaybackRate=rate; report(); return true;}catch(_e){return false;}
+              }
+              window.__nekoBrowserSetVideoPlaybackRate=applyRate;
               function track(video){
                 if(!video || video.__nekoBrowserDimensionsTracked) return;
                 video.__nekoBrowserDimensionsTracked=true;
-                ['loadedmetadata','resize','playing','loadeddata'].forEach(function(name){video.addEventListener(name,report,{passive:true});});
+                ['loadedmetadata','resize','playing','pause','ended','ratechange','loadeddata'].forEach(function(name){video.addEventListener(name,function(){try{if(video.playbackRate!==preferredRate&&name!=='ratechange') video.playbackRate=preferredRate;}catch(_e){} report();},{passive:true});});
               }
-              function scan(){document.querySelectorAll('video').forEach(track);report();}
+              function scan(){document.querySelectorAll('video').forEach(track);var video=bestVideo();if(video&&video.playbackRate!==preferredRate){try{video.playbackRate=preferredRate;}catch(_e){}}report();}
               scan();
               new MutationObserver(scan).observe(document.documentElement||document,{subtree:true,childList:true});
+            })();
+        """.trimIndent()
+
+        /** native PiP操作から既存video要素の全画面を要求する。ページ要素の追加・削除は行わない。 */
+        val REQUEST_VIDEO_FULLSCREEN_SCRIPT = """
+            (function(){
+              var videos=Array.prototype.slice.call(document.querySelectorAll('video'));
+              videos.sort(function(a,b){
+                var ar=a.getBoundingClientRect(),br=b.getBoundingClientRect();
+                var as=(ar.width||0)*(ar.height||0),bs=(br.width||0)*(br.height||0);
+                if(!a.paused&&!a.ended) as+=1000000000;
+                if(!b.paused&&!b.ended) bs+=1000000000;
+                return bs-as;
+              });
+              var video=videos[0];
+              if(!video) return false;
+              try{
+                var request=video.webkitEnterFullscreen||video.requestFullscreen||video.webkitRequestFullscreen;
+                if(typeof request!=='function') return false;
+                request.call(video);
+                return true;
+              }catch(_e){return false;}
             })();
         """.trimIndent()
 
@@ -2040,6 +2145,7 @@ interface BrowserWebCallbacks {
     fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideFullscreen()
     fun onVideoDimensions(tabId: String, width: Int, height: Int)
+    fun onVideoPlaybackState(tabId: String, hasVideo: Boolean, isPlaying: Boolean, playbackRate: Float)
     fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit)
     fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit)
     fun onPopupRequested(): String?
@@ -2066,6 +2172,7 @@ interface BrowserWebCallbacks {
         override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = Unit
         override fun onHideFullscreen() = Unit
         override fun onVideoDimensions(tabId: String, width: Int, height: Int) = Unit
+        override fun onVideoPlaybackState(tabId: String, hasVideo: Boolean, isPlaying: Boolean, playbackRate: Float) = Unit
         override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = reply(false)
         override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = reply(false)
         override fun onPopupRequested(): String? = null

@@ -51,6 +51,8 @@ data class BrowserSettings(
     val adBlockingEnabled: Boolean = true,
     /** YouTube等で再生互換性より遮断率を優先する、既定OFFの強い遮断モード。 */
     val aggressiveAdBlockingEnabled: Boolean = false,
+    /** ユーザーが明示選択した動画速度。再生中のvideo要素だけへ適用し、初期値は標準速度。 */
+    val preferredVideoPlaybackRate: Float = 1f,
     val javascriptEnabled: Boolean = true
 )
 

@@ -162,6 +162,21 @@ requireText(screen, 'viewModel.canResumeSelectedTabFromHome()', 'home forward bu
 requireText(screen, 'if (selectedTab.isHome) viewModel.resumeSelectedTabFromHome()', 'home forward resumes page instead of synthesizing history');
 requireText(screen, 'else registry.goForward(selectedTab.id)', 'normal forward delegates to WebView history');
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
+requireText(models, 'preferredVideoPlaybackRate: Float = 1f', 'video speed preference defaults to 1.0x');
+requireText(repository, 'preferred_video_playback_rate', 'video speed preference is persisted');
+requireText(webView, 'fun cycleVideoPlaybackRate(tabId: String, currentRate: Float, onCompleted: (Float?) -> Unit)', 'native speed action reaches existing video only');
+requireText(webView, 'fun requestVideoFullscreenForPictureInPicture(tabId: String, onRequested: (Boolean) -> Unit)', 'native PiP action uses existing video fullscreen');
+requireText(webView, 'window.__nekoBrowserSetVideoPlaybackRate=applyRate', 'video speed reporter exposes a fixed-purpose setter only');
+requireText(webView, 'val REQUEST_VIDEO_FULLSCREEN_SCRIPT', 'PiP uses generic existing-video fullscreen request');
+forbidText(webView, 'createElement(\'button\')', 'video controls must not inject page buttons');
+requireText(screen, 'hostActivity?.setVideoQuickControls(', 'video controls use native host');
+requireText(screen, 'registry.requestVideoFullscreenForPictureInPicture(tab.id)', 'native PiP control requests current video fullscreen');
+requireText(screen, 'registry.cycleVideoPlaybackRate(tab.id, videoPlayback.playbackRate)', 'native speed control updates current video');
+requireText(mainActivity, 'fun setVideoQuickControls(', 'native host owns quick video controls');
+requireText(mainActivity, 'normalWebContentHost.addView(controls', 'quick controls stay in existing native host');
+requireText(mainActivity, 'videoQuickControls?.bringToFront()', 'quick controls do not displace the WebView surface');
+requireText(mainActivity, 'Gravity.TOP or Gravity.START', 'video controls are positioned at the top-left');
+requireText(mainActivity, 'if (isInPictureInPictureMode) videoQuickControls?.visibility = View.GONE', 'PiP hides in-app overlay controls');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, private-tab purple border, explicit transfer safeguards, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, private-tab purple border, explicit transfer safeguards, native video controls, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');

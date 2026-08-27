@@ -25,6 +25,7 @@ class BrowserRepository(private val context: Context) {
         val darkModeExcludedHosts = stringPreferencesKey("dark_mode_excluded_hosts")
         val adBlock = booleanPreferencesKey("ad_block")
         val aggressiveAdBlock = booleanPreferencesKey("aggressive_ad_block")
+        val preferredVideoPlaybackRate = stringPreferencesKey("preferred_video_playback_rate")
         val javascript = booleanPreferencesKey("javascript")
     }
 
@@ -52,6 +53,7 @@ class BrowserRepository(private val context: Context) {
                 darkModeExcludedHosts = decodeStringList(preferences[Keys.darkModeExcludedHosts]),
                 adBlockingEnabled = preferences[Keys.adBlock] ?: true,
                 aggressiveAdBlockingEnabled = preferences[Keys.aggressiveAdBlock] ?: false,
+                preferredVideoPlaybackRate = parsePlaybackRate(preferences[Keys.preferredVideoPlaybackRate]),
                 javascriptEnabled = preferences[Keys.javascript] ?: true
             )
         )
@@ -75,6 +77,7 @@ class BrowserRepository(private val context: Context) {
             preferences[Keys.darkModeExcludedHosts] = encodeStringList(state.settings.darkModeExcludedHosts).toString()
             preferences[Keys.adBlock] = state.settings.adBlockingEnabled
             preferences[Keys.aggressiveAdBlock] = state.settings.aggressiveAdBlockingEnabled
+            preferences[Keys.preferredVideoPlaybackRate] = state.settings.preferredVideoPlaybackRate.toString()
             preferences[Keys.javascript] = state.settings.javascriptEnabled
         }
     }
@@ -87,6 +90,9 @@ class BrowserRepository(private val context: Context) {
             if (!keepBookmarks) preferences.remove(Keys.bookmarks)
         }
     }
+
+    private fun parsePlaybackRate(raw: String?): Float = raw?.toFloatOrNull()
+        ?.takeIf { it in MIN_VIDEO_PLAYBACK_RATE..MAX_VIDEO_PLAYBACK_RATE } ?: 1f
 
     private fun decodeTabs(raw: String?): List<BrowserTab> = decodeArray(raw) { item ->
         BrowserTab(
@@ -164,6 +170,11 @@ class BrowserRepository(private val context: Context) {
             put("id", bookmark.id); put("title", bookmark.title); put("url", bookmark.url)
             put("createdAt", bookmark.createdAt)
         }) }
+    }
+
+    private companion object {
+        const val MIN_VIDEO_PLAYBACK_RATE = 0.25f
+        const val MAX_VIDEO_PLAYBACK_RATE = 3f
     }
 }
 
