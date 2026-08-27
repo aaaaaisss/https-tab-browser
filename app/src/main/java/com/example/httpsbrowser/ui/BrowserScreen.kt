@@ -34,6 +34,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -47,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
+import com.example.httpsbrowser.data.BrowserDataTransfer
+import com.example.httpsbrowser.data.BrowserTransferPayload
 import com.example.httpsbrowser.data.BrowserDownloadDispatcher
 import com.example.httpsbrowser.data.BrowserDownloadMode
 import com.example.httpsbrowser.data.BrowserDownloadRequest
@@ -60,6 +63,9 @@ import java.io.File
 import java.util.Locale
 import java.io.FileInputStream
 import java.net.URI
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private data class PendingWebPermission(
     val origin: String,
@@ -115,6 +121,11 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
     var pendingDownload by remember { mutableStateOf<BrowserDownloadRequest?>(null) }
+    // 引き継ぎデータはURIへ直接保持せず、AndroidのStorage Access Frameworkでユーザーが選んだ場所だけを使う。
+    var pendingTransferJson by remember { mutableStateOf<String?>(null) }
+    var pendingTransferImport by remember { mutableStateOf<BrowserTransferPayload?>(null) }
+    var isApplyingTransfer by remember { mutableStateOf(false) }
+    val screenScope = rememberCoroutineScope()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -140,6 +151,43 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         endAddressEditing()
         val prepared = viewModel.prepareNavigation(navigationInput) ?: return
         selectedTab?.let { tab -> registry.load(tab.id, prepared.url) }
+    }
+
+    val transferExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/html")
+    ) { destination ->
+        val transferJson = pendingTransferJson
+        pendingTransferJson = null
+        if (destination != null && transferJson != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(destination)?.bufferedWriter(Charsets.UTF_8)?.use { writer ->
+                    writer.write(transferJson)
+                } ?: error("保存先を開けませんでした。")
+            }.onSuccess {
+                notice = "引き継ぎデータを書き出しました。Cookie、履歴、Web Storage、開いているタブは含まれません。"
+            }.onFailure {
+                notice = "引き継ぎデータを書き出せませんでした: ${it.message ?: "保存先を確認してください。"}"
+            }
+        }
+    }
+
+    val transferImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { source ->
+        if (source != null) {
+            screenScope.launch {
+                val parsed = withContext(Dispatchers.IO) {
+                    runCatching {
+                        readTransferPayload(context, source)
+                    }
+                }
+                parsed.onSuccess { payload ->
+                    pendingTransferImport = payload
+                }.onFailure { error ->
+                    notice = "引き継ぎデータを読み込めませんでした: ${error.message ?: "ファイル形式を確認してください。"}"
+                }
+            }
+        }
     }
 
     val pageArchiveLauncher = rememberLauncherForActivityResult(
@@ -499,6 +547,17 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onDeleteBookmark = viewModel::removeBookmark,
                 onDeleteHistory = viewModel::removeHistory,
                 onClear = { viewModel.clearBrowsingData { registry.clearAllBrowsingData() }; viewModel.closeSettings() },
+                onExportTransfer = {
+                    screenScope.launch {
+                        val customSources = withContext(Dispatchers.IO) { listRepository.exportableCustomSources() }
+                        pendingTransferJson = viewModel.exportTransferData(customSources)
+                        transferExportLauncher.launch("https-tab-browser-transfer-${System.currentTimeMillis()}.html")
+                    }
+                },
+                onImportTransfer = {
+                    // HTML内のJSON payloadと、旧JSON形式のどちらも厳格なスキーマ検証で拒否する。
+                    transferImportLauncher.launch(arrayOf("text/html", "application/json", "text/plain"))
+                },
                 onDownloads = { viewModel.showSettingsPage(SettingsPage.DOWNLOADS) },
                 onShareDiagnostics = { runCatching { com.example.httpsbrowser.CrashDiagnostics.share(context) }.onFailure { notice = "診断情報を共有できませんでした。" } },
                 onNotice = { notice = it }
@@ -542,6 +601,45 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 else notice = "HTTPS URL または検索語を入力してください。"
             },
             onDismiss = { editingHomeBookmark = null }
+        )
+    }
+
+    pendingTransferImport?.let { payload ->
+        AlertDialog(
+            onDismissRequest = { if (!isApplyingTransfer) pendingTransferImport = null },
+            title = { Text("引き継ぎデータを反映しますか？") },
+            text = {
+                Text(
+                    "ブックマーク ${payload.bookmarks.size} 件、設定、追加フィルタ ${payload.customFilterSources.size} 件を置き換えます。\n\n" +
+                        "Cookie、ログイン状態、Web Storage、履歴、開いているタブ、ダウンロード済みファイル、フィルタ本文は変更しません。"
+                )
+            },
+            confirmButton = {
+                Button(
+                    enabled = !isApplyingTransfer,
+                    onClick = {
+                        screenScope.launch {
+                            isApplyingTransfer = true
+                            val replacement = withContext(Dispatchers.IO) {
+                                listRepository.replaceCustomSources(payload.customFilterSources)
+                            }
+                            replacement.onSuccess { enabledCount ->
+                                // 追加フィルタの取得・コンパイル完了後にだけ、DataStoreの設定とブックマークを反映する。
+                                viewModel.applyTransferPayload(payload)
+                                registry.refreshContentFiltering()
+                                pendingTransferImport = null
+                                notice = "引き継ぎデータを反映しました。追加フィルタは有効 ${enabledCount} 件です。"
+                            }.onFailure { error ->
+                                notice = "追加フィルタを更新できないため、引き継ぎは反映しませんでした: ${error.message ?: "接続とURLを確認してください。"}"
+                            }
+                            isApplyingTransfer = false
+                        }
+                    }
+                ) { Text(if (isApplyingTransfer) "反映中…" else "反映") }
+            },
+            dismissButton = {
+                TextButton(enabled = !isApplyingTransfer, onClick = { pendingTransferImport = null }) { Text("キャンセル") }
+            }
         )
     }
 
@@ -694,6 +792,23 @@ private fun callbacksFor(
     override fun onPageInteraction() = viewModel.stopAddressEditing()
     override fun onNotice(message: String) = showNotice(message)
 }
+
+private fun readTransferPayload(context: Context, source: Uri): BrowserTransferPayload {
+    context.contentResolver.openInputStream(source)?.use { input ->
+        val output = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            require(output.size() + count <= MAX_TRANSFER_FILE_BYTES) { "引き継ぎファイルが大きすぎます。" }
+            output.write(buffer, 0, count)
+        }
+        return BrowserDataTransfer.import(output.toByteArray().toString(Charsets.UTF_8)).getOrThrow()
+    }
+    error("選択したファイルを開けませんでした。")
+}
+
+private const val MAX_TRANSFER_FILE_BYTES = 1_000_000
 
 private fun requiredAndroidPermissions(resources: Set<String>): Array<String> = buildSet {
     if (PermissionRequest.RESOURCE_AUDIO_CAPTURE in resources) add(Manifest.permission.RECORD_AUDIO)

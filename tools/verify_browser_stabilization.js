@@ -6,6 +6,8 @@ const controls = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/
 const sheets = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/ui/BrowserSheets.kt', 'utf8');
 const models = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserModels.kt', 'utf8');
 const repository = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserRepository.kt', 'utf8');
+const transfer = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserDataTransfer.kt', 'utf8');
+const adBlocker = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/AdBlocker.kt', 'utf8');
 const webView = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt', 'utf8');
 const mainActivity = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/MainActivity.kt', 'utf8');
 const cargoToml = fs.readFileSync('app/src/main/rust/Cargo.toml', 'utf8');
@@ -62,6 +64,28 @@ requireText(webView, 'if (!goBack(tabId)) entry.callbacks.onBackHistoryExhausted
 requireText(screen, 'override fun onBackHistoryExhausted(tabId: String)', 'only the selected tab receives queued home fallback');
 forbidText(models, 'returnToHomeOnBack', 'obsolete tab-origin home fallback flag');
 forbidText(repository, 'returnToHomeOnBack', 'obsolete home fallback persistence');
+requireText(transfer, 'private const val FORMAT = "https-tab-browser-transfer"', 'transfer format discriminator');
+requireText(transfer, 'private const val SCHEMA_VERSION = 1', 'transfer schema version');
+requireText(transfer, 'private const val MAX_INPUT_BYTES = 1_000_000', 'transfer file-size safety limit');
+requireText(transfer, 'fun exportHtml(', 'transfer produces a self-contained HTML file');
+requireText(transfer, '<script id="https-tab-browser-transfer" type="application/json">', 'transfer HTML embeds inert JSON data only');
+requireText(transfer, 'if (trimmed.startsWith("{")) return trimmed', 'legacy JSON transfer remains import-compatible');
+requireText(transfer, 'sources.asSequence().filterNot(BlockListSource::builtIn)', 'transfer excludes built-in filter lists');
+requireText(transfer, 'require(uri.scheme.equals("https", ignoreCase = true)', 'transfer only accepts HTTPS URLs');
+forbidText(transfer, '"history"', 'transfer excludes browsing history');
+forbidText(transfer, '"tabs"', 'transfer excludes open tabs');
+requireText(adBlocker, 'suspend fun exportableCustomSources()', 'transfer exports custom filter definitions only');
+requireText(adBlocker, 'suspend fun replaceCustomSources(sources: List<TransferFilterSource>)', 'transfer replaces custom filter definitions atomically');
+requireText(adBlocker, 'normalized.filter(BlockListSource::enabled).forEach { source -> fetchToFile(source, source.id) }', 'filter retrieval completes before transfer replacement');
+requireText(adBlocker, 'if (enabled && !File(directory, "${target.id}.txt").isFile) fetchToFile(target, target.id)', 're-enabled imported filters are retrieved before compilation');
+requireText(sheets, 'Text("引き継ぎデータを書き出す")', 'transfer export UI');
+requireText(sheets, 'Text("引き継ぎデータを読み込む")', 'transfer import UI');
+requireText(screen, 'ActivityResultContracts.CreateDocument("text/html")', 'transfer HTML export uses a user-selected document destination');
+requireText(screen, 'transferExportLauncher.launch("https-tab-browser-transfer-${System.currentTimeMillis()}.html")', 'transfer HTML file name');
+requireText(screen, 'ActivityResultContracts.OpenDocument()', 'transfer import uses user-selected document source');
+requireText(screen, 'title = { Text("引き継ぎデータを反映しますか？") }', 'transfer requires confirmation before replacement');
+requireText(screen, 'listRepository.replaceCustomSources(payload.customFilterSources)', 'filters finish before data-state transfer application');
+requireText(screen, 'viewModel.applyTransferPayload(payload)', 'transfer applies bookmarks and settings only after filter success');
 requireText(sheets, 'label = "広告ブロック"', 'adblock label');
 requireText(sheets, 'label = "暗色化"', 'dark mode label');
 requireText(sheets, 'Text(if (highSelected) "normal" else "✓ normal")', 'normal mode selection');
@@ -140,4 +164,4 @@ requireText(screen, 'else registry.goForward(selectedTab.id)', 'normal forward d
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, private-tab purple border, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, private-tab purple border, explicit transfer safeguards, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');

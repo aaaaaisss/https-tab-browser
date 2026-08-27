@@ -65,6 +65,40 @@ class AdBlockListRepository(
 
     fun blockStatus(): AdBlockStatus = blocker.status()
 
+    /** 書き出し対象はユーザー追加のURL・表示名・有効状態だけで、組込みリストと取得済み本文は含めない。 */
+    suspend fun exportableCustomSources(): List<BlockListSource> = withContext(Dispatchers.IO) {
+        listSourcesInternal().filterNot(BlockListSource::builtIn)
+    }
+
+    /**
+     * 取り込み済みの追加フィルタ定義を置換する。検証済みPayload以外からは呼ばないが、
+     * ここでもHTTPS URLを再検証し、既存の組込みリストやそのローカル本文には影響させない。
+     * ルール本文はバックアップ対象外のため、次の更新処理でURLから再取得する。
+     */
+    suspend fun replaceCustomSources(sources: List<TransferFilterSource>): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(sources.size <= MAX_IMPORTED_CUSTOM_SOURCES) { "追加フィルタ数が上限を超えています。" }
+            val existing = listSourcesInternal()
+            val builtIns = existing.filter(BlockListSource::builtIn)
+            val normalized = sources.map { source ->
+                BlockListSource(
+                    name = source.name.trim().ifBlank { URI(validateHttpsUrl(source.sourceUrl)).host.orEmpty() },
+                    sourceUrl = validateHttpsUrl(source.sourceUrl),
+                    enabled = source.enabled,
+                    builtIn = false
+                )
+            }
+            require(normalized.map(BlockListSource::sourceUrl).distinct().size == normalized.size) { "追加フィルタURLが重複しています。" }
+            // 有効な新URLの本文を先に全取得する。取得エラーでは既存メタデータ・本文を一切変更しない。
+            normalized.filter(BlockListSource::enabled).forEach { source -> fetchToFile(source, source.id) }
+            // すべて取得できてから、旧追加リストの本文だけを削除する。組込みリストは保持する。
+            existing.filterNot(BlockListSource::builtIn).forEach { source -> File(directory, "${source.id}.txt").delete() }
+            saveSources(builtIns + normalized)
+            loadAndCompile()
+            normalized.count(BlockListSource::enabled)
+        }
+    }
+
     /** 初回導入時に公式・HTTPS の標準リストだけを登録する。ユーザー追加リストは変更しない。 */
     suspend fun ensureStandardLists(): List<BlockListSource> = withContext(Dispatchers.IO) {
         var sources = listSourcesInternal()
@@ -151,7 +185,12 @@ class AdBlockListRepository(
     }
 
     suspend fun setEnabled(id: String, enabled: Boolean) = withContext(Dispatchers.IO) {
-        saveSources(listSourcesInternal().map { if (it.id == id) it.copy(enabled = enabled) else it })
+        val sources = listSourcesInternal()
+        val target = sources.firstOrNull { it.id == id } ?: return@withContext
+        // 引き継ぎで無効状態のURLだけを復元した場合、本文はまだ存在しない。
+        // 後で有効化した時に空のフィルタとして扱わず、先にHTTPS URLから取得する。
+        if (enabled && !File(directory, "${target.id}.txt").isFile) fetchToFile(target, target.id)
+        saveSources(sources.map { if (it.id == id) it.copy(enabled = enabled) else it })
         loadAndCompile()
     }
 
@@ -231,6 +270,7 @@ class AdBlockListRepository(
     companion object {
         private const val UPDATE_INTERVAL_MS = 24L * 60L * 60L * 1000L
         private const val MAX_LIST_BYTES = 12 * 1024 * 1024
+        private const val MAX_IMPORTED_CUSTOM_SOURCES = 100
 
         val STANDARD_LISTS = listOf(
             BlockListSource(

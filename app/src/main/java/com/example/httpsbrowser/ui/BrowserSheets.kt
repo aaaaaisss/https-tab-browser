@@ -136,6 +136,8 @@ object BrowserSheets {
         onDeleteBookmark: (String) -> Unit,
         onDeleteHistory: (String) -> Unit,
         onClear: () -> Unit,
+        onExportTransfer: () -> Unit,
+        onImportTransfer: () -> Unit,
         onDownloads: () -> Unit,
         onShareDiagnostics: () -> Unit,
         onNotice: (String) -> Unit
@@ -148,7 +150,7 @@ object BrowserSheets {
                 SettingsPage.DOWNLOADS -> DownloadsPage(onBack)
                 SettingsPage.DARK_EXCLUSIONS -> DarkExclusionsPage(state.settings, onSettings, onBack)
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
-                SettingsPage.DATA -> DataPage(onClear, onBack)
+                SettingsPage.DATA -> DataPage(onClear, onExportTransfer, onImportTransfer, onBack)
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPage(onBack, onShareDiagnostics)
                 SettingsPage.OPEN_SOURCE_LICENSES -> OpenSourceLicensesPage(onBack)
             }
@@ -197,7 +199,7 @@ object BrowserSheets {
             item { NavigationItem("広告ブロック", Icons.Default.Security) { onOpenPage(SettingsPage.AD_BLOCK) } }
             item { NavigationItem("クラッシュ診断", Icons.Default.Security) { onOpenPage(SettingsPage.DIAGNOSTICS) } }
             item { NavigationItem("オープンソースライセンス", Icons.Default.Security) { onOpenPage(SettingsPage.OPEN_SOURCE_LICENSES) } }
-            item { NavigationItem("閲覧データの消去", Icons.Default.Delete) { onOpenPage(SettingsPage.DATA) } }
+            item { NavigationItem("閲覧データと引き継ぎ", Icons.Default.Delete) { onOpenPage(SettingsPage.DATA) } }
             item { TextButton(onClick = onDismiss, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) { Text("閉じる") } }
         }
     }
@@ -561,11 +563,24 @@ object BrowserSheets {
     }
 
     @Composable
-    private fun DataPage(onClear: () -> Unit, onBack: () -> Unit) {
+    private fun DataPage(
+        onClear: () -> Unit,
+        onExportTransfer: () -> Unit,
+        onImportTransfer: () -> Unit,
+        onBack: () -> Unit
+    ) {
         var confirmation by remember { mutableStateOf(false) }
-        PageHeader("閲覧データ", onBack)
+        PageHeader("閲覧データと引き継ぎ", onBack)
         Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-            Text("履歴、開いているタブ、WebView のキャッシュを消去します。ブックマークは残ります。")
+            Text("引き継ぎファイルにはブックマーク、設定、追加フィルタのURL・有効状態だけを入れます。Cookie、ログイン状態、Web Storage、履歴、開いているタブ、ダウンロード済みファイル、フィルタ本文は含みません。", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = onExportTransfer, modifier = Modifier.padding(top = 12.dp)) {
+                Icon(Icons.Default.Download, null); Spacer(Modifier.width(8.dp)); Text("引き継ぎデータを書き出す")
+            }
+            TextButton(onClick = onImportTransfer) {
+                Icon(Icons.AutoMirrored.Filled.OpenInNew, null); Spacer(Modifier.width(8.dp)); Text("引き継ぎデータを読み込む")
+            }
+            HorizontalDivider(Modifier.padding(vertical = 10.dp))
+            Text("閲覧データを消去すると、履歴、開いているタブ、WebView のキャッシュを削除します。ブックマークは残ります。", style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = { confirmation = true }, modifier = Modifier.padding(top = 12.dp)) {
                 Icon(Icons.Default.Delete, null); Spacer(Modifier.width(8.dp)); Text("閲覧データを消去")
             }

@@ -65,4 +65,6 @@ dependencies {
     // 2.11.2はAndroid 15以降のネットワーク制約・定期work再スケジュール修正を含む。
     implementation("androidx.work:work-runtime-ktx:2.11.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

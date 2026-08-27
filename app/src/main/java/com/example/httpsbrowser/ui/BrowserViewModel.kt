@@ -8,6 +8,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.httpsbrowser.data.AddressDisplayMode
+import com.example.httpsbrowser.data.BlockListSource
+import com.example.httpsbrowser.data.BrowserDataTransfer
+import com.example.httpsbrowser.data.BrowserTransferPayload
 import com.example.httpsbrowser.data.Bookmark
 import com.example.httpsbrowser.data.BrowserRepository
 import com.example.httpsbrowser.data.BrowserSettings
@@ -348,6 +351,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistSoon()
     }
 
+    /** Cookie・履歴・タブを含まない明示的な引き継ぎデータを作成する。 */
+    fun exportTransferData(customSources: List<BlockListSource>): String =
+        BrowserDataTransfer.exportHtml(uiState.bookmarks, uiState.settings, customSources)
+
+    /**
+     * 追加フィルタの置換成功後にだけ呼び出す。タブ・履歴・Cookie・Web Storageには触れない。
+     * アプリが直後に終了しても読み込み結果を失わないよう、通常の250ms遅延ではなく即時保存する。
+     */
+    fun applyTransferPayload(payload: BrowserTransferPayload) {
+        uiState = uiState.copy(bookmarks = payload.bookmarks, settings = payload.settings)
+        persistImmediately()
+    }
+
     fun addBookmark(title: String, url: String): Boolean {
         val prepared = buildNavigation(url) ?: return false
         val existing = uiState.bookmarks.firstOrNull { it.url == prepared.url }
@@ -410,9 +426,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun persistSoon() {
         persistJob?.cancel()
+        val stateToSave = uiState
         persistJob = viewModelScope.launch(Dispatchers.IO) {
             delay(250)
-            repository.save(uiState)
+            repository.save(stateToSave)
+        }
+    }
+
+    private fun persistImmediately() {
+        persistJob?.cancel()
+        val stateToSave = uiState
+        persistJob = viewModelScope.launch(Dispatchers.IO) {
+            repository.save(stateToSave)
         }
     }
 
