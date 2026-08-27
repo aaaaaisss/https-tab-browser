@@ -10,6 +10,7 @@ const webView = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/web/
 const mainActivity = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/MainActivity.kt', 'utf8');
 const cargoToml = fs.readFileSync('app/src/main/rust/Cargo.toml', 'utf8');
 const androidCi = fs.readFileSync('.github/workflows/android-ci.yml', 'utf8');
+const downloads = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/data/BrowserDownloads.kt', 'utf8');
 
 function requireText(source, text, label) {
   if (!source.includes(text)) throw new Error(`${label}: missing ${text}`);
@@ -122,6 +123,27 @@ requireText(webView, 'isDarkModeExcluded(settings, url)', 'manual dark exclusion
 requireText(webView, 'fun refreshContentFiltering()', 'post-compile adblock reapplication');
 requireText(webView, 'adblock_reapplied_after_engine_ready', 'engine-ready adblock diagnostic');
 requireText(screen, 'registry.refreshContentFiltering()', 'post-compile existing tab protection');
+requireText(webView, 'url.startsWith("blob:", ignoreCase = true)', 'HTTPS-page blob downloads use a dedicated safe path');
+requireText(webView, 'const val MAX_BLOB_DOWNLOAD_BYTES = 8 * 1024 * 1024', 'blob downloads have a strict size limit');
+requireText(webView, 'expectedOrigin != blobOrigin', 'blob download requires same HTTPS origin');
+requireText(webView, 'UUID.randomUUID().toString()', 'blob download bridge uses an unguessable one-time token');
+requireText(webView, 'BLOB_DOWNLOAD_BRIDGE_NAME', 'blob bridge is explicitly scoped');
+requireText(webView, 'fun requestVideoControlState(tabId: String', 'video controls query only the current tab');
+requireText(webView, 'fun setVideoPlaybackRate(tabId: String, rate: Float)', 'video playback rate has a dedicated bounded API');
+requireText(webView, 'fun setVideoSubtitleTrack(tabId: String, index: Int?)', 'video subtitles have a dedicated API');
+requireText(webView, 'const val MIN_VIDEO_PLAYBACK_RATE = 0.5f', 'video speed lower bound');
+requireText(webView, 'const val MAX_VIDEO_PLAYBACK_RATE = 2.0f', 'video speed upper bound');
+requireText(webView, 'override fun onReceivedIcon(view: WebView, icon: Bitmap)', 'received site favicon is captured from WebView');
+requireText(controls, 'object BrowserFaviconStore', 'favicon cache prevents repeated network fallback');
+requireText(controls, 'connection.disconnect()', 'favicon network fallback releases connections');
+requireText(sheets, 'fun VideoControlsDialog(', 'speed and subtitle dialog is available from UI');
+requireText(controls, 'DropdownMenuItem(text = { Text("動画の操作") }', 'video controls are exposed in page menu');
+requireText(mainActivity, 'Gravity.TOP or Gravity.START', 'fullscreen PiP button is placed at top-left');
+requireText(screen, 'pendingDownload != null || videoControls != null', 'download and video dialogs stay above native WebView');
+requireText(webView, 'historyTraversalTargetUrl', 'history traversal avoids resetting retained page state');
+requireText(webView, 'if (entry.activeDocumentUrl != url)', 'stale page-finished callbacks are ignored');
+requireText(webView, 'entry.settings.skipDarkeningAlreadyDarkPages ||', 'already-dark mode skips document-start inversion');
+requireText(downloads, 'BrowserDownloadRequest(', 'direct HTTPS downloads remain modeled separately from blobs');
 requireText(webView, 'entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages', 'existing-dark runtime suppression');
 requireText(webView, 'private fun canNavigateHistory(view: WebView, direction: Int)', 'single WebView history predicate');
 requireText(webView, 'fun canGoForward(tabId: String)', 'normal-page forward availability comes from WebView history');
@@ -137,4 +159,4 @@ requireText(screen, 'else registry.goForward(selectedTab.id)', 'normal forward d
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization, safe blob downloads, HTML5 video controls, top-left PiP, favicon cache, retained history state, and dark-page exclusion: OK');

@@ -52,6 +52,7 @@ import com.example.httpsbrowser.data.BrowserDownloadMode
 import com.example.httpsbrowser.data.BrowserDownloadRequest
 import com.example.httpsbrowser.data.AdBlockUpdateWorker
 import com.example.httpsbrowser.data.SettingsPage
+import com.example.httpsbrowser.web.BrowserVideoControlState
 import com.example.httpsbrowser.web.BrowserWebCallbacks
 import com.example.httpsbrowser.web.BrowserWebViewRegistry
 import android.webkit.PermissionRequest
@@ -71,6 +72,12 @@ private data class PendingWebPermission(
 private data class FullscreenContent(
     val view: View,
     val callback: WebChromeClient.CustomViewCallback
+)
+
+private data class PendingLocalDownload(
+    val file: File,
+    val fileName: String,
+    val mimeType: String
 )
 
 /**
@@ -114,7 +121,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var homeBookmarkEditMode by remember { mutableStateOf(false) }
     var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
+    var pendingBlobDownload by remember { mutableStateOf<PendingLocalDownload?>(null) }
     var pendingDownload by remember { mutableStateOf<BrowserDownloadRequest?>(null) }
+    var videoControls by remember(selectedTab?.id) { mutableStateOf<BrowserVideoControlState?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -161,6 +170,25 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         archive?.delete()
     }
 
+    val blobDownloadLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*")
+    ) { destination ->
+        val pending = pendingBlobDownload
+        pendingBlobDownload = null
+        if (destination != null && pending != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(destination)?.use { output ->
+                    FileInputStream(pending.file).use { input -> input.copyTo(output) }
+                } ?: error("保存先を開けませんでした。")
+            }.onSuccess {
+                notice = "ファイルを保存しました。"
+            }.onFailure {
+                notice = "ファイルを保存できませんでした: ${it.message ?: "保存先を確認してください。"}"
+            }
+        }
+        pending?.file?.delete()
+    }
+
     LaunchedEffect(Unit) {
         // Fulgurisの帰属と対応ソースは設定内「オープンソースライセンス」で常時閲覧可能にする。
         listRepository.ensureStandardLists()
@@ -196,11 +224,13 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         externalAppUrl,
         notice,
         addBookmarkDialog,
-        editingHomeBookmark
+        editingHomeBookmark,
+        pendingDownload,
+        videoControls
     ) {
         val overlayVisible = state.isTabSheetVisible || state.isSettingsSheetVisible ||
             pendingPermission != null || longPressedLink != null || linkShortcutUrl != null || externalAppUrl != null ||
-            notice != null || addBookmarkDialog || editingHomeBookmark != null
+            notice != null || addBookmarkDialog || editingHomeBookmark != null || pendingDownload != null || videoControls != null
         (activity as? MainActivity)?.setNormalWebContentVisible(!overlayVisible)
     }
 
@@ -274,6 +304,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     rendererVersion++
                 },
                 onDownloadRequested = { pendingDownload = it },
+                onBlobDownloadReady = { sourcePath, fileName, mimeType ->
+                    pendingBlobDownload = PendingLocalDownload(File(sourcePath), fileName, mimeType)
+                    blobDownloadLauncher.launch(fileName)
+                },
                 onPageArchiveReady = { sourcePath, fileName ->
                     pendingPageArchive = File(sourcePath)
                     pageArchiveLauncher.launch(fileName)
@@ -433,6 +467,15 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                 if (!selectedTab.isHome) registry.savePageArchive(selectedTab.id, selectedTab.title)
                             },
                             onShare = { viewModel.stopAddressEditing(); if (!selectedTab.isHome) shareUrl(context, registry.currentUrl(selectedTab.id) ?: selectedTab.url) },
+                            onVideoControls = {
+                                viewModel.stopAddressEditing()
+                                if (!selectedTab.isHome) {
+                                    registry.requestVideoControlState(selectedTab.id) { controlState ->
+                                        if (controlState == null) notice = "このページでは操作できるHTML5動画が見つかりませんでした。"
+                                        else videoControls = controlState
+                                    }
+                                }
+                            },
                             onSettings = { viewModel.stopAddressEditing(); viewModel.openSettings() }
                         )
                         TabBar(
@@ -601,6 +644,24 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         )
     }
 
+    videoControls?.let { controls ->
+        val tabId = selectedTab?.takeIf { !it.isHome }?.id
+        BrowserSheets.VideoControlsDialog(
+            controls = controls,
+            onSetPlaybackRate = { rate ->
+                if (tabId != null) registry.setVideoPlaybackRate(tabId, rate)
+                videoControls = controls.copy(playbackRate = rate)
+            },
+            onSetSubtitleTrack = { index ->
+                if (tabId != null) registry.setVideoSubtitleTrack(tabId, index)
+                videoControls = controls.copy(subtitleTracks = controls.subtitleTracks.map { track ->
+                    track.copy(isShowing = index != null && track.index == index)
+                })
+            },
+            onDismiss = { videoControls = null }
+        )
+    }
+
     longPressedLink?.let { url ->
         AlertDialog(
             onDismissRequest = { longPressedLink = null },
@@ -664,6 +725,7 @@ private fun callbacksFor(
     onExternalApp: (String) -> Unit,
     onRendererGone: () -> Unit,
     onDownloadRequested: (BrowserDownloadRequest) -> Unit,
+    onBlobDownloadReady: (String, String, String) -> Unit,
     onPageArchiveReady: (String, String) -> Unit
 ) = object : BrowserWebCallbacks {
     override fun onPageStarted(tabId: String, url: String) = viewModel.onPageStarted(tabId, url)
@@ -676,6 +738,9 @@ private fun callbacksFor(
         if (viewModel.uiState.selectedTabId == tabId) viewModel.returnSelectedTabToHome()
     }
     override fun onProgress(tabId: String, progress: Int) = onProgress(progress)
+    override fun onFavicon(tabId: String, url: String, icon: android.graphics.Bitmap) {
+        BrowserFaviconStore.put(url, icon)
+    }
     override fun onScrollPosition(tabId: String, fraction: Float) = onScrollPosition(fraction)
     override fun onHttpsUpgrade(url: String) = registry.load(tabId, url)
     override fun onBlockedNavigation(url: String) = showNotice("HTTPS 接続のみ許可されています。\n$url")
@@ -689,6 +754,7 @@ private fun callbacksFor(
     override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id
     override fun onLinkLongPressed(url: String) = onLongPress(url)
     override fun onDownloadRequested(request: BrowserDownloadRequest) = onDownloadRequested(request)
+    override fun onBlobDownloadReady(sourcePath: String, fileName: String, mimeType: String) = onBlobDownloadReady(sourcePath, fileName, mimeType)
     override fun onPageArchiveReady(sourcePath: String, fileName: String) = onPageArchiveReady(sourcePath, fileName)
     override fun onExternalAppRequested(url: String) = onExternalApp(url)
     override fun onPageInteraction() = viewModel.stopAddressEditing()

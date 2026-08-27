@@ -219,8 +219,8 @@ class MainActivity : ComponentActivity() {
         container.addView(pipButton, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END
-        ).apply { setMargins(0, 18, 18, 0) })
+            Gravity.TOP or Gravity.START
+        ).apply { setMargins(18, 18, 0, 0) })
         fullscreenPipButton = pipButton
         appRoot.addView(container, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,

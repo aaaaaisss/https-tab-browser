@@ -31,20 +31,44 @@ import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserDownloadRequest
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BraveAdBlockEngine
+import java.io.BufferedOutputStream
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.FileOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.net.URI
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+
+data class BrowserVideoSubtitleTrack(
+    val index: Int,
+    val label: String,
+    val language: String,
+    val kind: String,
+    val isShowing: Boolean
+)
+
+data class BrowserVideoControlState(
+    val playbackRate: Float,
+    val subtitleTracks: List<BrowserVideoSubtitleTrack>
+)
 
 class BrowserWebViewRegistry(
     private val context: Context,
     private val blocker: BraveAdBlockEngine
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
+    private val pendingBlobDownloads = ConcurrentHashMap<String, PendingBlobDownload>()
+
+    private data class PendingBlobDownload(
+        val tabId: String,
+        val origin: String,
+        val fileName: String,
+        val mimeType: String
+    )
 
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
@@ -137,6 +161,7 @@ class BrowserWebViewRegistry(
                 entry.cancelBackNavigation()
                 entry.loadedUrl = url
                 entry.documentIsAlreadyDark = false
+                entry.historyTraversalTargetUrl = null
                 entry.rearmPageLifecycle(url)
                 // shouldInterceptRequest はUIスレッド外から呼ばれ得るため、
                 // コールバック内で WebView.url を読む代わりに遷移前に親URLを保持する。
@@ -157,6 +182,7 @@ class BrowserWebViewRegistry(
         entry.cancelBackNavigation()
         val url = entry.webView.url.orEmpty()
         entry.activeDocumentUrl = url
+        entry.historyTraversalTargetUrl = null
         beginDarkRevealGuard(entry.webView, entry, url)
         entry.rearmPageLifecycle(url)
         entry.webView.reload()
@@ -179,7 +205,7 @@ class BrowserWebViewRegistry(
         val history = view.copyBackForwardList()
         val targetUrl = history.getItemAtIndex(history.currentIndex - 1).url
         entry.activeDocumentUrl = targetUrl
-        beginDarkRevealGuard(view, entry, targetUrl)
+        entry.historyTraversalTargetUrl = targetUrl
         entry.rearmPageLifecycle(targetUrl)
         view.goBack()
         return true
@@ -238,6 +264,30 @@ class BrowserWebViewRegistry(
         entry.webView.url?.takeIf(::isHttps)
             ?: entry.activeDocumentUrl?.takeIf(::isHttps)
             ?: entry.loadedUrl?.takeIf(::isHttps)
+    }
+
+    /**
+     * 現在文書のHTML5 videoだけを対象に、再生速度とページ提供字幕を読み出す。
+     * YouTube固有のプレーヤー設定やPiP surfaceには触れない。
+     */
+    fun requestVideoControlState(tabId: String, onResult: (BrowserVideoControlState?) -> Unit) {
+        val entry = entries[tabId] ?: run { onResult(null); return }
+        entry.webView.evaluateJavascript(VIDEO_CONTROL_STATE_SCRIPT) { raw ->
+            onResult(parseVideoControlState(raw))
+        }
+    }
+
+    /** ページが実装するvideo要素の速度を、利用者が選んだ安全な範囲へ変更する。 */
+    fun setVideoPlaybackRate(tabId: String, rate: Float) {
+        val entry = entries[tabId] ?: return
+        val safeRate = rate.coerceIn(MIN_VIDEO_PLAYBACK_RATE, MAX_VIDEO_PLAYBACK_RATE)
+        entry.webView.evaluateJavascript(videoPlaybackRateScript(safeRate), null)
+    }
+
+    /** ページ提供の字幕/キャプショントラックを一つだけ表示する。nullなら全字幕を消す。 */
+    fun setVideoSubtitleTrack(tabId: String, index: Int?) {
+        val entry = entries[tabId] ?: return
+        entry.webView.evaluateJavascript(videoSubtitleTrackScript(index), null)
     }
 
     /**
@@ -302,7 +352,7 @@ class BrowserWebViewRegistry(
             val history = view.copyBackForwardList()
             val targetUrl = history.getItemAtIndex(history.currentIndex + 1).url
             entry.activeDocumentUrl = targetUrl
-            beginDarkRevealGuard(view, entry, targetUrl)
+            entry.historyTraversalTargetUrl = targetUrl
             entry.rearmPageLifecycle(targetUrl)
             view.goForward()
             view.post { notifyHistoryState(tabId, view) }
@@ -319,6 +369,7 @@ class BrowserWebViewRegistry(
     }
 
     fun remove(tabId: String) {
+        pendingBlobDownloads.entries.removeIf { it.value.tabId == tabId }
         entries.remove(tabId)?.let { entry ->
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
@@ -365,6 +416,7 @@ class BrowserWebViewRegistry(
         }
         CookieManager.getInstance().removeAllCookies(null)
         CookieManager.getInstance().flush()
+        pendingBlobDownloads.clear()
         destroyAll()
     }
 
@@ -426,6 +478,14 @@ class BrowserWebViewRegistry(
                 }
             }
         }, VIDEO_DIMENSIONS_BRIDGE_NAME)
+        // HTTPS文書のユーザー操作で発生した同一origin blobだけを、一回限りのtokenで受け取る。
+        // 任意URL読み込みやネイティブへのファイルパス指定は公開しない。
+        addJavascriptInterface(object {
+            @JavascriptInterface
+            fun receive(token: String, mimeType: String, base64: String) {
+                receiveBlobDownload(tabId, this@apply, token, mimeType, base64)
+            }
+        }, BLOB_DOWNLOAD_BRIDGE_NAME)
         webViewClient = SecureClient(tabId)
         webChromeClient = SecureChromeClient(tabId)
         setDownloadListener(SecureDownloadListener(tabId))
@@ -480,7 +540,8 @@ class BrowserWebViewRegistry(
         videoPage: Boolean,
         documentIsAlreadyDark: Boolean = false,
         url: String = ""
-    ): Boolean = settings.forceDarkPages && !videoPage && !documentIsAlreadyDark && !isDarkModeExcluded(settings, url)
+    ): Boolean = settings.forceDarkPages && !settings.skipDarkeningAlreadyDarkPages &&
+        !videoPage && !documentIsAlreadyDark && !isDarkModeExcluded(settings, url)
 
     /** 動画サイト上書きはページ本文のCSS反転だけを有効にする。Shortsは映像面を優先して常に除外する。 */
     private fun shouldApplyPageCssDarkening(
@@ -538,7 +599,7 @@ class BrowserWebViewRegistry(
     /** ページ開始時はnative WebView背景の黒を保ち、document-start CSS/暗色判定後にだけ本文を見せる。 */
     private fun beginDarkRevealGuard(view: WebView, entry: Entry, url: String) {
         val shouldGuard = entry.settings.forceDarkPages && !isVideoPlaybackDocumentUrl(url) &&
-            !isDarkModeExcluded(entry.settings, url)
+            !isDarkModeExcluded(entry.settings, url) && entry.historyTraversalTargetUrl != url
         entry.darkRevealPending = shouldGuard
         view.alpha = if (shouldGuard) 0f else 1f
     }
@@ -663,7 +724,11 @@ class BrowserWebViewRegistry(
     private fun prepareDarkDocumentStartScript(entry: Entry, url: String) {
         runCatching { entry.darkDocumentStartScriptHandler?.remove() }
         entry.darkDocumentStartScriptHandler = null
-        if (!shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url), url)) return
+        // 既存dark判定を有効にした場合、実DOMを読むまでは反転CSSを注入しない。
+        // 先行反転→解除の白/反転フラッシュを避け、明るい文書だけ判定後に暗色化する。
+        if (entry.settings.skipDarkeningAlreadyDarkPages ||
+            !shouldApplyPageCssDarkening(entry.settings, isVideoPlaybackDocumentUrl(url), url)
+        ) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
         val originRule = documentStartOriginRule(url) ?: return
         runCatching {
@@ -984,27 +1049,31 @@ class BrowserWebViewRegistry(
             val entry = entries[tabId] ?: return
             // YouTube等のSPAはmain-frame loadを発生させずURLだけをhistory APIで更新する。
             // 共有・アドレスバー・renderer再作成用のタブURLをここで最新化する。
+            val isHistoryTraversal = entry.historyTraversalTargetUrl == url
             entry.loadedUrl = url
             entry.activeDocumentUrl = url
-            configure(
-                view,
-                entry.settings,
-                isVideoPlaybackDocumentUrl(url),
-                entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages,
-                url
-            )
-            applyDeepDarkCss(
-                view,
-                enabled = !entry.fullscreenVideoDarkeningSuppressed &&
-                    shouldApplyPageCssDarkening(
-                        entry.settings,
-                        isVideoPlaybackDocumentUrl(url),
-                        url,
-                        entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
-                    ),
-                youtubePage = isYoutubeDocumentUrl(url)
-            )
-            detectAlreadyDarkDocument(view, entry, url)
+            if (!isHistoryTraversal) {
+                configure(
+                    view,
+                    entry.settings,
+                    isVideoPlaybackDocumentUrl(url),
+                    entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages,
+                    url
+                )
+                applyDeepDarkCss(
+                    view,
+                    enabled = !entry.settings.skipDarkeningAlreadyDarkPages &&
+                        !entry.fullscreenVideoDarkeningSuppressed &&
+                        shouldApplyPageCssDarkening(
+                            entry.settings,
+                            isVideoPlaybackDocumentUrl(url),
+                            url,
+                            entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
+                        ),
+                    youtubePage = isYoutubeDocumentUrl(url)
+                )
+                detectAlreadyDarkDocument(view, entry, url)
+            }
             entry.callbacks.onVisitedHistory(tabId, url)
             notifyHistoryState(tabId, view)
             completeBackNavigation(tabId, entry, view)
@@ -1019,7 +1088,11 @@ class BrowserWebViewRegistry(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
-            entry?.documentIsAlreadyDark = false
+            val isHistoryTraversal = entry?.historyTraversalTargetUrl == url
+            if (entry != null) {
+                // skip設定時は未判定をtrue扱いにし、明るいと判明した時だけCSSを後適用する。
+                entry.documentIsAlreadyDark = entry.settings.skipDarkeningAlreadyDarkPages
+            }
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
             entry?.youtubeCosmeticAppliedUrl = null
@@ -1027,28 +1100,43 @@ class BrowserWebViewRegistry(
             entry?.activeDocumentUrl = url
             entry?.rearmPageLifecycle(url)
             view.setBackgroundColor(android.graphics.Color.BLACK)
-            entry?.let { beginDarkRevealGuard(view, it, url) }
-            // 121e47bと同じく、遷移先が動画文書かどうかに応じて標準暗色化を再設定する。
-            entry?.let {
-                configure(view, it.settings, isVideoPlaybackDocumentUrl(url), url = url)
-                // commit可視化まで待つとbodyの初期白背景が一瞬現れることがあるため、開始時にも適用する。
-                applyDeepDarkCss(
-                    view,
-                    enabled = !it.fullscreenVideoDarkeningSuppressed &&
-                        shouldApplyPageCssDarkening(it.settings, isVideoPlaybackDocumentUrl(url), url),
-                    youtubePage = isYoutubeDocumentUrl(url)
-                )
+            if (!isHistoryTraversal) {
+                entry?.let { beginDarkRevealGuard(view, it, url) }
+                // 121e47bと同じく、遷移先が動画文書かどうかに応じて標準暗色化を再設定する。
+                entry?.let {
+                    configure(
+                        view,
+                        it.settings,
+                        isVideoPlaybackDocumentUrl(url),
+                        it.documentIsAlreadyDark && it.settings.skipDarkeningAlreadyDarkPages,
+                        url
+                    )
+                    // 既存dark判定を有効にした時は、判定完了まで反転CSSを先行注入しない。
+                    applyDeepDarkCss(
+                        view,
+                        enabled = !it.settings.skipDarkeningAlreadyDarkPages &&
+                            !it.fullscreenVideoDarkeningSuppressed &&
+                            shouldApplyPageCssDarkening(it.settings, isVideoPlaybackDocumentUrl(url), url),
+                        youtubePage = isYoutubeDocumentUrl(url)
+                    )
+                }
+                installVideoDimensionsReporter(view)
             }
-            installVideoDimensionsReporter(view)
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
         override fun onPageCommitVisible(view: WebView, url: String) {
             val entry = entries[tabId]
+            if (entry?.historyTraversalTargetUrl == url) {
+                // WebViewが保持している履歴文書のscroll/DOM状態をそのまま見せる。
+                super.onPageCommitVisible(view, url)
+                return
+            }
             // 121e47bの暗色化経路を、動画上書き設定を含めて初回可視化時から適用する。
             applyDeepDarkCss(
                 view,
-                enabled = entry?.let { !it.fullscreenVideoDarkeningSuppressed &&
+                enabled = entry?.let { !it.settings.skipDarkeningAlreadyDarkPages &&
+                    !it.fullscreenVideoDarkeningSuppressed &&
                     shouldApplyPageCssDarkening(it.settings, isVideoPlaybackDocumentUrl(url), url) } == true,
                 youtubePage = isYoutubeDocumentUrl(url)
             )
@@ -1062,30 +1150,40 @@ class BrowserWebViewRegistry(
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId] ?: return
+            // 新しい遷移が開始済みなら、古い文書の完了callbackでUI/暗色化状態を巻き戻さない。
+            if (entry.activeDocumentUrl != url) {
+                CrashDiagnostics.record("page_finished_stale", "url=$url\\nactive=${entry.activeDocumentUrl.orEmpty()}")
+                return
+            }
             // FulgurisがYouTube/キャッシュ復帰で行うのと同じく、progress=100の最初の完了だけを
             // 採用する。重複したonPageFinishedでCSS注入・Cookie flush・履歴通知を繰り返さない。
             if (!entry.tryCompletePageLifecycle(view.progress)) {
                 CrashDiagnostics.record("page_finished_skipped", "url=$url\\nprogress=${view.progress}")
                 return
             }
-            applyDeepDarkCss(
-                view,
-                enabled = !entry.fullscreenVideoDarkeningSuppressed &&
-                    shouldApplyPageCssDarkening(
-                        entry.settings,
-                        isVideoPlaybackDocumentUrl(url),
-                        url,
-                        entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
-                    ),
-                youtubePage = isYoutubeDocumentUrl(url)
-            )
-            applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
-            if (entry.settings.skipDarkeningAlreadyDarkPages) detectAlreadyDarkDocument(view, entry, url)
-            else releaseDarkRevealGuard(view, entry, url)
-            if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url, entry)
-            scheduleCookieFlush(view, entry)
+            val isHistoryTraversal = entry.historyTraversalTargetUrl == url
+            if (!isHistoryTraversal) {
+                applyDeepDarkCss(
+                    view,
+                    enabled = !entry.settings.skipDarkeningAlreadyDarkPages &&
+                        !entry.fullscreenVideoDarkeningSuppressed &&
+                        shouldApplyPageCssDarkening(
+                            entry.settings,
+                            isVideoPlaybackDocumentUrl(url),
+                            url,
+                            entry.documentIsAlreadyDark && entry.settings.skipDarkeningAlreadyDarkPages
+                        ),
+                    youtubePage = isYoutubeDocumentUrl(url)
+                )
+                applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
+                if (entry.settings.skipDarkeningAlreadyDarkPages) detectAlreadyDarkDocument(view, entry, url)
+                else releaseDarkRevealGuard(view, entry, url)
+                if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url, entry)
+                scheduleCookieFlush(view, entry)
+            }
             entry.callbacks.onPageFinished(tabId, url, view.title)
             notifyHistoryState(tabId, view)
+            if (isHistoryTraversal) entry.historyTraversalTargetUrl = null
             // SPA以外ではonPageFinishedを履歴遷移完了の保険として扱う。ただし、連打で既に
             // 次の戻る要求へ進んだ後の古いcallbackでは、その新しい要求を完了扱いにしない。
             if (entry.activeDocumentUrl == url) completeBackNavigation(tabId, entry, view)
@@ -1149,6 +1247,12 @@ class BrowserWebViewRegistry(
             entries[tabId]?.callbacks?.onProgress(tabId, newProgress)
         }
 
+        override fun onReceivedIcon(view: WebView, icon: Bitmap) {
+            super.onReceivedIcon(view, icon)
+            val url = view.url?.takeIf(::isHttps) ?: return
+            entries[tabId]?.callbacks?.onFavicon(tabId, url, icon)
+        }
+
         override fun onShowCustomView(view: View, callback: CustomViewCallback) {
             entries[tabId]?.callbacks?.onShowFullscreen(view, callback)
         }
@@ -1199,11 +1303,15 @@ class BrowserWebViewRegistry(
             url: String, userAgent: String, contentDisposition: String,
             mimeType: String, contentLength: Long
         ) {
-            if (!isHttps(url)) {
-                entries[tabId]?.callbacks?.onBlockedNavigation(url)
+            val entry = entries[tabId] ?: return
+            if (url.startsWith("blob:", ignoreCase = true)) {
+                requestBlobDownload(tabId, entry, url, contentDisposition, mimeType)
                 return
             }
-            val entry = entries[tabId] ?: return
+            if (!isHttps(url)) {
+                entry.callbacks.onBlockedNavigation(url)
+                return
+            }
             val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
             entry.callbacks.onDownloadRequested(
                 BrowserDownloadRequest(
@@ -1255,6 +1363,8 @@ class BrowserWebViewRegistry(
         @Volatile var aggressiveAdBlockingEnabled: Boolean = false,
         @Volatile var fullscreenVideoDarkeningSuppressed: Boolean = false,
         @Volatile var activeDocumentUrl: String? = null,
+        /** WebView実履歴で復元中のURL。設定再注入によるscroll/DOM状態の巻き戻しを防ぐ。 */
+        @Volatile var historyTraversalTargetUrl: String? = null,
         /** onScaleChangedで受け取るWebViewの最新拡大率。初期値は標準倍率。 */
         @Volatile var pageScale: Float = 1f,
         @Volatile var adBlockingEnabled: Boolean = true,
@@ -1484,6 +1594,160 @@ class BrowserWebViewRegistry(
         else -> false
     }
 
+    /** HTTPS文書の同一origin blobだけを、保存用途で読み出してよいか検査する。 */
+    private fun blobDownloadOrigin(blobUrl: String): String? = runCatching {
+        val nested = URI(blobUrl.removePrefix("blob:"))
+        if (!nested.scheme.equals("https", ignoreCase = true) || nested.host.isNullOrBlank()) return null
+        originOf(nested)
+    }.getOrNull()
+
+    private fun originOf(uri: URI): String {
+        val port = when {
+            uri.port < 0 || uri.port == 443 -> ""
+            else -> ":${uri.port}"
+        }
+        return "https://${uri.host.lowercase(Locale.ROOT)}$port"
+    }
+
+    private fun requestBlobDownload(
+        tabId: String,
+        entry: Entry,
+        blobUrl: String,
+        contentDisposition: String,
+        mimeType: String
+    ) {
+        val document = entry.webView.url?.takeIf(::isHttps) ?: entry.activeDocumentUrl?.takeIf(::isHttps)
+        val documentUri = document?.let { runCatching { URI(it) }.getOrNull() }
+        val expectedOrigin = documentUri?.let(::originOf)
+        val blobOrigin = blobDownloadOrigin(blobUrl)
+        if (expectedOrigin == null || blobOrigin == null || expectedOrigin != blobOrigin) {
+            entry.callbacks.onBlockedNavigation(blobUrl)
+            return
+        }
+        val token = UUID.randomUUID().toString()
+        val fileName = safeDownloadFileName(URLUtil.guessFileName("download", contentDisposition, mimeType))
+        pendingBlobDownloads[token] = PendingBlobDownload(tabId, expectedOrigin, fileName, mimeType.ifBlank { "application/octet-stream" })
+        val script = """
+            (function(){
+              var url=${JSONObject.quote(blobUrl)},token=${JSONObject.quote(token)},max=$MAX_BLOB_DOWNLOAD_BYTES;
+              fetch(url).then(function(response){return response.blob();}).then(function(blob){
+                if(!blob||blob.size>max) throw new Error('too_large');
+                var reader=new FileReader();
+                reader.onerror=function(){throw new Error('read_failed');};
+                reader.onload=function(){
+                  var value=String(reader.result||''),comma=value.indexOf(',');
+                  if(comma<0) throw new Error('invalid_data');
+                  window.$BLOB_DOWNLOAD_BRIDGE_NAME.receive(token,blob.type||'',value.substring(comma+1));
+                };
+                reader.readAsDataURL(blob);
+              }).catch(function(){
+                try{window.$BLOB_DOWNLOAD_BRIDGE_NAME.receive(token,'','');}catch(_e){}
+              });
+            })();
+        """.trimIndent()
+        entry.webView.evaluateJavascript(script, null)
+    }
+
+    private fun receiveBlobDownload(tabId: String, view: WebView, token: String, mimeType: String, base64: String) {
+        val pending = pendingBlobDownloads.remove(token) ?: return
+        if (pending.tabId != tabId || base64.isBlank() || base64.length > MAX_BLOB_DOWNLOAD_BYTES * 4 / 3 + 8) {
+            view.post { entries[tabId]?.callbacks?.onNotice("このページが作成したファイルを安全に読み出せませんでした。") }
+            return
+        }
+        val currentOrigin = view.url?.takeIf(::isHttps)?.let { runCatching { originOf(URI(it)) }.getOrNull() }
+        if (currentOrigin != pending.origin) {
+            view.post { entries[tabId]?.callbacks?.onNotice("ページ遷移後のため、ファイル保存を中止しました。") }
+            return
+        }
+        val bytes = runCatching { Base64.decode(base64, Base64.DEFAULT) }.getOrNull()
+            ?.takeIf { it.isNotEmpty() && it.size <= MAX_BLOB_DOWNLOAD_BYTES }
+        if (bytes == null) {
+            view.post { entries[tabId]?.callbacks?.onNotice("このページが作成したファイルを安全に読み出せませんでした。") }
+            return
+        }
+        val file = runCatching {
+            val directory = File(context.cacheDir, "blob_downloads").apply { mkdirs() }
+            File(directory, "${UUID.randomUUID()}_${pending.fileName}").also { target ->
+                BufferedOutputStream(FileOutputStream(target)).use { it.write(bytes) }
+            }
+        }.getOrNull()
+        if (file == null) {
+            view.post { entries[tabId]?.callbacks?.onNotice("一時ファイルを作成できませんでした。") }
+            return
+        }
+        view.post {
+            val current = entries[tabId]
+            if (current == null || !current.isActive) {
+                file.delete()
+            } else {
+                current.callbacks.onBlobDownloadReady(file.absolutePath, pending.fileName, mimeType.ifBlank { pending.mimeType })
+            }
+        }
+    }
+
+    private fun safeDownloadFileName(value: String): String = value
+        .replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_")
+        .trim()
+        .take(120)
+        .ifBlank { "download" }
+
+    private fun parseVideoControlState(raw: String?): BrowserVideoControlState? = runCatching {
+        val encoded = JSONTokener(raw ?: "").nextValue() as? String ?: return null
+        val state = JSONObject(encoded)
+        if (!state.optBoolean("hasVideo", false)) return null
+        val tracks = state.optJSONArray("tracks") ?: JSONArray()
+        BrowserVideoControlState(
+            playbackRate = state.optDouble("playbackRate", 1.0).toFloat().coerceIn(
+                MIN_VIDEO_PLAYBACK_RATE,
+                MAX_VIDEO_PLAYBACK_RATE
+            ),
+            subtitleTracks = List(tracks.length()) { index ->
+                val track = tracks.optJSONObject(index) ?: JSONObject()
+                BrowserVideoSubtitleTrack(
+                    index = track.optInt("index", index),
+                    label = track.optString("label").ifBlank { "字幕 ${index + 1}" },
+                    language = track.optString("language"),
+                    kind = track.optString("kind"),
+                    isShowing = track.optBoolean("showing", false)
+                )
+            }
+        )
+    }.getOrNull()
+
+    private fun videoPlaybackRateScript(rate: Float): String = """
+        (function(){
+          var videos=Array.prototype.slice.call(document.querySelectorAll('video'));
+          if(!videos.length) return false;
+          videos.sort(function(a,b){
+            var as=(a.paused?0:1000000000)+(a.clientWidth*a.clientHeight);
+            var bs=(b.paused?0:1000000000)+(b.clientWidth*b.clientHeight);
+            return bs-as;
+          });
+          var video=videos[0];
+          try{video.defaultPlaybackRate=$rate;video.playbackRate=$rate;return true;}catch(_e){return false;}
+        })();
+    """.trimIndent()
+
+    private fun videoSubtitleTrackScript(index: Int?): String {
+        val safeIndex = index?.takeIf { it >= 0 } ?: -1
+        return """
+            (function(){
+              var videos=Array.prototype.slice.call(document.querySelectorAll('video'));
+              if(!videos.length) return false;
+              videos.sort(function(a,b){
+                var as=(a.paused?0:1000000000)+(a.clientWidth*a.clientHeight);
+                var bs=(b.paused?0:1000000000)+(b.clientWidth*b.clientHeight);
+                return bs-as;
+              });
+              var tracks=videos[0].textTracks;
+              for(var i=0;i<tracks.length;i++){
+                if(tracks[i].kind==='subtitles'||tracks[i].kind==='captions') tracks[i].mode=(i===$safeIndex?'showing':'disabled');
+              }
+              return true;
+            })();
+        """.trimIndent()
+    }
+
     private fun resourceTypeFor(request: WebResourceRequest): String {
         if (request.isForMainFrame) return "document"
         val headers = request.requestHeaders
@@ -1515,6 +1779,10 @@ class BrowserWebViewRegistry(
     private companion object {
         const val ABOUT_BLANK_URL = "about:blank"
         const val VIDEO_DIMENSIONS_BRIDGE_NAME = "NekoBrowserVideoDimensions"
+        const val BLOB_DOWNLOAD_BRIDGE_NAME = "NekoBrowserBlobDownload"
+        const val MAX_BLOB_DOWNLOAD_BYTES = 8 * 1024 * 1024
+        const val MIN_VIDEO_PLAYBACK_RATE = 0.5f
+        const val MAX_VIDEO_PLAYBACK_RATE = 2.0f
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 2_000
         const val GENERIC_COSMETIC_DELAY_MS = 350L
@@ -1611,6 +1879,24 @@ class BrowserWebViewRegistry(
 
         // Brave Android PR #28593と同じく、YouTubeのページ側PiP阻害フラグを最小限だけ無効化する。
         // config未生成・対応外構造ではno-opとし、複数回のSPA遷移でも追加の要素を作らない。
+        val VIDEO_CONTROL_STATE_SCRIPT = """
+            (function(){
+              var videos=Array.prototype.slice.call(document.querySelectorAll('video'));
+              if(!videos.length) return JSON.stringify({hasVideo:false});
+              videos.sort(function(a,b){
+                var as=(a.paused?0:1000000000)+(a.clientWidth*a.clientHeight);
+                var bs=(b.paused?0:1000000000)+(b.clientWidth*b.clientHeight);
+                return bs-as;
+              });
+              var video=videos[0],tracks=[];
+              for(var i=0;i<video.textTracks.length;i++){
+                var track=video.textTracks[i];
+                if(track.kind==='subtitles'||track.kind==='captions') tracks.push({index:i,label:track.label||track.language||('字幕 '+(tracks.length+1)),language:track.language||'',kind:track.kind,showing:track.mode==='showing'});
+              }
+              return JSON.stringify({hasVideo:true,playbackRate:Number(video.playbackRate)||1,tracks:tracks});
+            })();
+        """.trimIndent()
+
         val VIDEO_DIMENSIONS_REPORTER_SCRIPT = """
             (function(){
               if(window.__nekoBrowserVideoDimensionsReporter) return;
@@ -2032,6 +2318,7 @@ interface BrowserWebCallbacks {
     /** 連打キューがWebView履歴を使い切った時だけ、選択中タブを独自ホームへ戻す。 */
     fun onBackHistoryExhausted(tabId: String)
     fun onProgress(tabId: String, progress: Int)
+    fun onFavicon(tabId: String, url: String, icon: Bitmap)
     fun onScrollPosition(tabId: String, fraction: Float)
     fun onHttpsUpgrade(url: String)
     fun onBlockedNavigation(url: String)
@@ -2045,6 +2332,8 @@ interface BrowserWebCallbacks {
     fun onPopupRequested(): String?
     fun onLinkLongPressed(url: String)
     fun onDownloadRequested(request: BrowserDownloadRequest)
+    /** HTTPS文書の同一origin blobを上限付きで一時保存した後、ユーザーが保存先を選ぶ。 */
+    fun onBlobDownloadReady(sourcePath: String, fileName: String, mimeType: String)
     fun onPageArchiveReady(sourcePath: String, fileName: String)
     fun onExternalAppRequested(url: String)
     fun onPageInteraction()
@@ -2058,6 +2347,7 @@ interface BrowserWebCallbacks {
         override fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean) = Unit
         override fun onBackHistoryExhausted(tabId: String) = Unit
         override fun onProgress(tabId: String, progress: Int) = Unit
+        override fun onFavicon(tabId: String, url: String, icon: Bitmap) = Unit
         override fun onScrollPosition(tabId: String, fraction: Float) = Unit
         override fun onHttpsUpgrade(url: String) = Unit
         override fun onBlockedNavigation(url: String) = Unit
@@ -2071,6 +2361,7 @@ interface BrowserWebCallbacks {
         override fun onPopupRequested(): String? = null
         override fun onLinkLongPressed(url: String) = Unit
         override fun onDownloadRequested(request: BrowserDownloadRequest) = Unit
+        override fun onBlobDownloadReady(sourcePath: String, fileName: String, mimeType: String) = Unit
         override fun onPageArchiveReady(sourcePath: String, fileName: String) = Unit
         override fun onExternalAppRequested(url: String) = Unit
         override fun onPageInteraction() = Unit

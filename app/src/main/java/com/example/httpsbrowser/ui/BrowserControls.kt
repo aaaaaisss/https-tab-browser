@@ -62,6 +62,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -95,12 +96,42 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URI
+import java.util.LinkedHashMap
 import kotlin.math.roundToInt
 
 private val BottomBarBlack = Color(0xFF05070A)
 private val BottomBarButton = Color(0xFF1C2531)
 private val BottomBarButtonEmphasis = Color(0xFF2C5C92)
 private val BottomBarText = Color(0xFFF2F6FC)
+
+/**
+ * ページ読込中にWebViewが提供したfaviconをorigin単位で短期キャッシュする。
+ * 外部faviconサービスには送信せず、既存のHTTPS `/favicon.ico` fallbackも維持する。
+ */
+object BrowserFaviconStore {
+    private const val MAX_ICONS = 64
+    private val icons = object : LinkedHashMap<String, ImageBitmap>(MAX_ICONS, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>?): Boolean = size > MAX_ICONS
+    }
+    private var revision by mutableIntStateOf(0)
+
+    fun get(url: String): ImageBitmap? {
+        revision // ComposeがWebChromeClientによるicon到着を再描画として観測する。
+        return synchronized(icons) { icons[keyFor(url)] }
+    }
+
+    fun put(url: String, bitmap: android.graphics.Bitmap) {
+        val key = keyFor(url) ?: return
+        synchronized(icons) { icons[key] = bitmap.asImageBitmap() }
+        revision++
+    }
+
+    private fun keyFor(url: String): String? = runCatching {
+        val uri = URI(url)
+        if (!uri.scheme.equals("https", ignoreCase = true) || uri.host.isNullOrBlank()) null
+        else "https://${uri.host.lowercase()}${if (uri.port < 0 || uri.port == 443) "" else ":${uri.port}"}"
+    }.getOrNull()
+}
 
 @Composable
 fun AddressBar(
@@ -284,6 +315,7 @@ fun NavigationRow(
     onDownloads: () -> Unit,
     onSavePage: () -> Unit,
     onShare: () -> Unit,
+    onVideoControls: () -> Unit,
     onSettings: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -304,6 +336,7 @@ fun NavigationRow(
                 DropdownMenuItem(text = { Text("ダウンロード") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onDownloads() })
                 DropdownMenuItem(text = { Text("ページを保存") }, leadingIcon = { Icon(Icons.Default.Download, null) }, onClick = { menuExpanded = false; onSavePage() })
                 DropdownMenuItem(text = { Text("共有") }, leadingIcon = { Icon(Icons.Default.Share, null) }, onClick = { menuExpanded = false; onShare() })
+                DropdownMenuItem(text = { Text("動画の操作") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { menuExpanded = false; onVideoControls() })
                 DropdownMenuItem(text = { Text("設定") }, leadingIcon = { Icon(Icons.Default.Settings, null) }, onClick = { menuExpanded = false; onSettings() })
             }
         }
@@ -432,9 +465,16 @@ fun RightEdgeScrollRail(
 
 @Composable
 fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
-    var favicon by remember(url) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(url) {
-        favicon = withContext(Dispatchers.IO) { loadFavicon(url) }
+    val receivedFavicon = BrowserFaviconStore.get(url)
+    var favicon by remember(url) { mutableStateOf<ImageBitmap?>(receivedFavicon) }
+    LaunchedEffect(url, receivedFavicon) {
+        if (receivedFavicon != null) {
+            favicon = receivedFavicon
+        } else {
+            val loaded = withContext(Dispatchers.IO) { loadFavicon(url) }
+            if (loaded != null) BrowserFaviconStore.put(url, loaded)
+            favicon = loaded?.asImageBitmap()
+        }
     }
     Box(
         modifier = modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xFF5E5E5E)),
@@ -459,17 +499,23 @@ fun BookmarkFavicon(url: String, title: String, modifier: Modifier = Modifier) {
     }
 }
 
-private fun loadFavicon(pageUrl: String): ImageBitmap? = runCatching {
-    val pageUri = URI(pageUrl)
+private fun loadFavicon(pageUrl: String): android.graphics.Bitmap? {
+    val pageUri = runCatching { URI(pageUrl) }.getOrNull() ?: return null
     if (!pageUri.scheme.equals("https", ignoreCase = true) || pageUri.host.isNullOrBlank()) return null
     val faviconUri = URI("https", null, pageUri.host, pageUri.port, "/favicon.ico", null, null)
-    val connection = (faviconUri.toURL().openConnection() as HttpURLConnection).apply {
-        connectTimeout = 3_000
-        readTimeout = 3_000
-        setRequestProperty("User-Agent", "Mozilla/5.0 (Android) HTTPS-Tab-Browser/1.0")
+    val connection = runCatching { faviconUri.toURL().openConnection() as HttpURLConnection }.getOrNull() ?: return null
+    return try {
+        connection.connectTimeout = 3_000
+        connection.readTimeout = 3_000
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) HTTPS-Tab-Browser/1.0")
+        if (connection.responseCode !in 200..299 || connection.contentLength > 512 * 1024) null
+        else connection.inputStream.use { input -> BitmapFactory.decodeStream(input) }
+    } catch (_: Exception) {
+        null
+    } finally {
+        connection.disconnect()
     }
-    connection.inputStream.use { input -> BitmapFactory.decodeStream(input)?.asImageBitmap() }
-}.getOrNull()
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
