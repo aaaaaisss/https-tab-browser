@@ -9,9 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -58,7 +56,6 @@ import com.example.httpsbrowser.data.BrowserSettings
 import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BrowserUiState
 import com.example.httpsbrowser.data.SettingsPage
-import com.example.httpsbrowser.web.BrowserVideoControlState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -562,55 +559,6 @@ object BrowserSheets {
         }
         HorizontalDivider()
     }
-
-    @Composable
-    fun VideoControlsDialog(
-        controls: BrowserVideoControlState,
-        onSetPlaybackRate: (Float) -> Unit,
-        onSetSubtitleTrack: (Int?) -> Unit,
-        onDismiss: () -> Unit
-    ) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text("動画の操作") },
-            text = {
-                Column {
-                    Text("再生速度", style = MaterialTheme.typography.titleSmall)
-                    Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                        listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f).forEach { rate ->
-                            TextButton(onClick = { onSetPlaybackRate(rate) }) {
-                                Text(if (rate == controls.playbackRate) "✓ ${formatPlaybackRate(rate)}" else formatPlaybackRate(rate))
-                            }
-                        }
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    Text("字幕", style = MaterialTheme.typography.titleSmall)
-                    if (controls.subtitleTracks.isEmpty()) {
-                        Text("この動画はページ提供の字幕トラックを検出できませんでした。", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
-                    } else {
-                        TextButton(onClick = { onSetSubtitleTrack(null) }) { Text(if (controls.subtitleTracks.none { it.isShowing }) "✓ オフ" else "オフ") }
-                        controls.subtitleTracks.forEach { track ->
-                            TextButton(onClick = { onSetSubtitleTrack(track.index) }) {
-                                val name = buildString {
-                                    append(track.label)
-                                    if (track.language.isNotBlank() && track.language != track.label) append(" (${track.language})")
-                                }
-                                Text(if (track.isShowing) "✓ $name" else name)
-                            }
-                        }
-                    }
-                    Text(
-                        "ページが提供するHTML5動画と字幕だけを操作します。動画サービス独自の設定やPiP小窓の配置は変更しません。",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
-                }
-            },
-            confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } }
-        )
-    }
-
-    private fun formatPlaybackRate(rate: Float): String = if (rate == 1f) "標準" else "${rate}×"
 
     @Composable
     private fun DataPage(onClear: () -> Unit, onBack: () -> Unit) {

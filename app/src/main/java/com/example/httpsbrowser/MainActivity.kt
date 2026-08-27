@@ -20,7 +20,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -220,8 +219,8 @@ class MainActivity : ComponentActivity() {
         container.addView(pipButton, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.START
-        ).apply { setMargins(18, 18, 0, 0) })
+            Gravity.TOP or Gravity.END
+        ).apply { setMargins(0, 18, 18, 0) })
         fullscreenPipButton = pipButton
         appRoot.addView(container, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -296,13 +295,6 @@ class MainActivity : ComponentActivity() {
             CrashDiagnostics.record("pip_enter_failed", "enterPictureInPictureMode=false")
         } else {
             CrashDiagnostics.record("pip_enter_requested", "source=explicit\napi=${Build.VERSION.SDK_INT}")
-            // 端末側が状態callbackを返さない場合でも、PiPボタンを再試行不能なまま残さない。
-            appRoot.postDelayed({
-                if (!isInPictureInPictureMode && pictureInPictureTransitionRequested) {
-                    pictureInPictureTransitionRequested = false
-                    CrashDiagnostics.record("pip_enter_timeout", "callback_missing=true")
-                }
-            }, PIP_TRANSITION_TIMEOUT_MS)
         }
         return entered
     }
@@ -360,23 +352,15 @@ class MainActivity : ComponentActivity() {
         setTextColor(Color.WHITE)
         textSize = 13f
         gravity = Gravity.CENTER
-        isClickable = true
-        isFocusable = true
-        setPadding(dp(16), dp(8), dp(16), dp(8))
+        setPadding(16, 8, 16, 8)
         background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 40f
             setColor(0xC20D1118.toInt())
             setStroke(1, 0x88FFFFFF.toInt())
         }
-        setOnClickListener {
-            if (!enterFullscreenPictureInPictureMode()) {
-                Toast.makeText(this@MainActivity, "この動画ではPiPを開始できませんでした。", Toast.LENGTH_SHORT).show()
-            }
-        }
+        setOnClickListener { enterFullscreenPictureInPictureMode() }
     }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
     private fun supportsPictureInPicture(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
@@ -460,6 +444,5 @@ class MainActivity : ComponentActivity() {
         const val MIN_PIP_ASPECT_RATIO = 1f / 2.39f
         const val MAX_PIP_ASPECT_RATIO = 2.39f
         const val REQUEST_OPEN_BROWSER_FROM_PIP = 4_021
-        const val PIP_TRANSITION_TIMEOUT_MS = 2_000L
     }
 }
