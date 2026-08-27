@@ -101,6 +101,8 @@ private val BottomBarBlack = Color(0xFF05070A)
 private val BottomBarButton = Color(0xFF1C2531)
 private val BottomBarButtonEmphasis = Color(0xFF2C5C92)
 private val BottomBarText = Color(0xFFF2F6FC)
+/** プライベートタブは選択状態にかかわらず紫枠で明示する。 */
+private val PrivateTabBorder = Color(0xFFB58CFF)
 
 @Composable
 fun AddressBar(
@@ -340,11 +342,19 @@ fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) ->
         Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             tabs.forEach { tab ->
                 val selected = tab.id == selectedTabId
+                // プライベート状態はタブモデルが既に持つ表示専用情報であり、WebView・履歴・Cookieの
+                // 経路には一切触れない。未選択でも紫枠を残し、タブ切替時にも判別できるようにする。
+                val tabBorderWidth = if (selected || tab.isPrivate) 2.dp else 1.dp
+                val tabBorderColor = when {
+                    tab.isPrivate -> PrivateTabBorder
+                    selected -> Color(0xFF66B5FF)
+                    else -> Color(0xFF394554)
+                }
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
                         .background(if (selected) Color(0xFF18375B) else Color(0xFF1A2029))
-                        .then(if (selected) Modifier.border(2.dp, Color(0xFF66B5FF), RoundedCornerShape(12.dp)) else Modifier.border(1.dp, Color(0xFF394554), RoundedCornerShape(12.dp)))
+                        .border(tabBorderWidth, tabBorderColor, RoundedCornerShape(12.dp))
                         .clickable { onSelect(tab.id) }
                         .padding(start = 8.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically

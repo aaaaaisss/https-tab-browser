@@ -48,6 +48,9 @@ requireText(controls, 'modifier = Modifier.size(38.dp)', 'smaller home shortcut 
 requireText(controls, 'contentScale = ContentScale.Fit', 'favicon avoids crop enlargement');
 requireText(controls, 'Modifier.fillMaxSize().padding(4.dp).clip(RoundedCornerShape(7.dp))', 'favicon uses rounded-corner inset');
 requireText(controls, 'modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xFF5E5E5E))', 'square favicon base is rounded');
+requireText(controls, 'private val PrivateTabBorder = Color(0xFFB58CFF)', 'private tab purple border color');
+requireText(controls, 'tab.isPrivate -> PrivateTabBorder', 'private tab border takes precedence when selected or unselected');
+requireText(controls, 'val tabBorderWidth = if (selected || tab.isPrivate) 2.dp else 1.dp', 'private tab keeps a visible border when unselected');
 requireText(screen, 'selectedTab?.isHome == false -> {\n                if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)\n                else returnSelectedTabToHome()\n            }', 'system back always falls through to home after WebView history is exhausted');
 requireText(screen, 'val canReturnToHome = !selectedTab.isHome', 'normal-page back stays available while history callbacks are pending');
 requireText(screen, 'canGoBack = canReturnToHome', 'back button does not depend on a stale history mirror');
@@ -137,4 +140,4 @@ requireText(screen, 'else registry.goForward(selectedTab.id)', 'normal forward d
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, private-tab purple border, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
