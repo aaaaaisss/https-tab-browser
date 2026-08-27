@@ -133,6 +133,8 @@ class BrowserWebViewRegistry(
     fun load(tabId: String, url: String) {
         entries[tabId]?.let { entry ->
             if (isHttps(url)) {
+                // 新規遷移はユーザーの意図を優先し、連打で残った旧ページへの戻る要求を破棄する。
+                entry.cancelBackNavigation()
                 entry.loadedUrl = url
                 entry.documentIsAlreadyDark = false
                 entry.rearmPageLifecycle(url)
@@ -152,6 +154,7 @@ class BrowserWebViewRegistry(
     }
 
     fun reload(tabId: String) = entries[tabId]?.let { entry ->
+        entry.cancelBackNavigation()
         val url = entry.webView.url.orEmpty()
         entry.activeDocumentUrl = url
         beginDarkRevealGuard(entry.webView, entry, url)
@@ -159,17 +162,27 @@ class BrowserWebViewRegistry(
         entry.webView.reload()
     }
 
-    /** キャッシュ復帰を含む履歴遷移でも、実際のWebView履歴を唯一の基準にして再arm・同期する。 */
-    fun goBack(tabId: String) = entries[tabId]?.let { entry ->
-        entry.webView.takeIf { canNavigateHistory(it, -1) }?.let { view ->
-            val history = view.copyBackForwardList()
-            val targetUrl = history.getItemAtIndex(history.currentIndex - 1).url
-            entry.activeDocumentUrl = targetUrl
-            beginDarkRevealGuard(view, entry, targetUrl)
-            entry.rearmPageLifecycle(targetUrl)
-            view.goBack()
-            view.post { notifyHistoryState(tabId, view) }
+    /**
+     * 戻る要求をWebViewの遷移完了ごとに一件ずつ処理する。連打時に古いBackForwardListを読んで
+     * 操作を落とさず、履歴を使い切った場合はcallbackでホームへ戻す。
+     *
+     * @return 要求を受理した場合はtrue。開始時点で履歴がない場合だけfalse。
+     */
+    fun goBack(tabId: String): Boolean {
+        val entry = entries[tabId] ?: return false
+        if (!entry.beginBackNavigation()) return true
+        val view = entry.webView
+        if (!canNavigateHistory(view, -1)) {
+            entry.cancelBackNavigation()
+            return false
         }
+        val history = view.copyBackForwardList()
+        val targetUrl = history.getItemAtIndex(history.currentIndex - 1).url
+        entry.activeDocumentUrl = targetUrl
+        beginDarkRevealGuard(view, entry, targetUrl)
+        entry.rearmPageLifecycle(targetUrl)
+        view.goBack()
+        return true
     }
 
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.let { canNavigateHistory(it, -1) } == true
@@ -188,6 +201,15 @@ class BrowserWebViewRegistry(
             canGoBack = canNavigateHistory(view, -1),
             canGoForward = canNavigateHistory(view, 1)
         )
+    }
+
+    /** WebViewが戻る先を反映した後だけ、連打で積んだ次の戻る要求を実行する。 */
+    private fun completeBackNavigation(tabId: String, entry: Entry, view: WebView) {
+        if (!entry.completeBackNavigation()) return
+        view.post {
+            if (!entry.isActive) return@post
+            if (!goBack(tabId)) entry.callbacks.onBackHistoryExhausted(tabId)
+        }
     }
 
     /** 全画面custom video surfaceへページCSSの反転が及ばないよう、表示中だけ暗色CSSを外す。 */
@@ -995,6 +1017,7 @@ class BrowserWebViewRegistry(
             detectAlreadyDarkDocument(view, entry, url)
             entry.callbacks.onVisitedHistory(tabId, url)
             notifyHistoryState(tabId, view)
+            completeBackNavigation(tabId, entry, view)
         }
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
@@ -1067,6 +1090,9 @@ class BrowserWebViewRegistry(
             scheduleCookieFlush(view, entry)
             entry.callbacks.onPageFinished(tabId, url, view.title)
             notifyHistoryState(tabId, view)
+            // SPA以外ではonPageFinishedを履歴遷移完了の保険として扱う。ただし、連打で既に
+            // 次の戻る要求へ進んだ後の古いcallbackでは、その新しい要求を完了扱いにしない。
+            if (entry.activeDocumentUrl == url) completeBackNavigation(tabId, entry, view)
         }
 
         override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
@@ -1235,6 +1261,8 @@ class BrowserWebViewRegistry(
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true,
+        @Volatile private var backNavigationInFlight: Boolean = false,
+        @Volatile private var queuedBackRequests: Int = 0,
         @Volatile private var lifecycleUrl: String? = null,
         @Volatile private var pageFinishedDone: Boolean = false
     ) {
@@ -1254,6 +1282,37 @@ class BrowserWebViewRegistry(
             if (pageFinishedDone || progress != 100) return false
             pageFinishedDone = true
             return true
+        }
+
+        /** 同一WebViewの戻る遷移を重ねず、連打分は小さく保留する。 */
+        @Synchronized
+        fun beginBackNavigation(): Boolean {
+            if (backNavigationInFlight) {
+                queuedBackRequests = (queuedBackRequests + 1).coerceAtMost(MAX_QUEUED_BACK_REQUESTS)
+                return false
+            }
+            backNavigationInFlight = true
+            return true
+        }
+
+        @Synchronized
+        fun cancelBackNavigation() {
+            backNavigationInFlight = false
+            queuedBackRequests = 0
+        }
+
+        /** 現在の遷移が反映された後に、保留された次の一回を実行するか返す。 */
+        @Synchronized
+        fun completeBackNavigation(): Boolean {
+            if (!backNavigationInFlight) return false
+            backNavigationInFlight = false
+            if (queuedBackRequests <= 0) return false
+            queuedBackRequests -= 1
+            return true
+        }
+
+        companion object {
+            private const val MAX_QUEUED_BACK_REQUESTS = 12
         }
     }
 
@@ -1972,6 +2031,8 @@ interface BrowserWebCallbacks {
     fun onVisitedHistory(tabId: String, url: String)
     fun onTitle(tabId: String, title: String)
     fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean)
+    /** 連打キューがWebView履歴を使い切った時だけ、選択中タブを独自ホームへ戻す。 */
+    fun onBackHistoryExhausted(tabId: String)
     fun onProgress(tabId: String, progress: Int)
     fun onScrollPosition(tabId: String, fraction: Float)
     fun onHttpsUpgrade(url: String)
@@ -1997,6 +2058,7 @@ interface BrowserWebCallbacks {
         override fun onVisitedHistory(tabId: String, url: String) = Unit
         override fun onTitle(tabId: String, title: String) = Unit
         override fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean) = Unit
+        override fun onBackHistoryExhausted(tabId: String) = Unit
         override fun onProgress(tabId: String, progress: Int) = Unit
         override fun onScrollPosition(tabId: String, fraction: Float) = Unit
         override fun onHttpsUpgrade(url: String) = Unit

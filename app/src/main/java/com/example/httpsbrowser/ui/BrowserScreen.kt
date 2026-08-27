@@ -303,11 +303,13 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 homeBookmarkEditMode = false
                 homeBookmarkSelection = emptySet()
             }
-            // 戻る・進むはWebViewの履歴を使う。loadUrlを呼ばないため、ページ再読み込みを避けられる。
-            selectedTab?.isHome == false && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)
-            // ホームからURLバー経由で開いたブックマーク等は、履歴を使い切った時だけ独自ホームへ戻す。
-            selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()
-            // 通常ページの履歴が尽きた時は、Android戻るとして終了する。
+            // 通常ページでは、WebView実履歴を最後まで使い切った次の戻るで必ず独自ホームへ戻る。
+            // タブの生成起点・callback到着順・過去のミラー状態には依存させない。
+            selectedTab?.isHome == false -> {
+                if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
+                else returnSelectedTabToHome()
+            }
+            // ホームではAndroidの通常戻るとして終了する。
             else -> activity?.finish()
         }
     }
@@ -396,24 +398,24 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                     // IME表示中はURLバーと横の翻訳・更新ボタンだけをキーボード直上に固定する。
                     // 操作列とタブバーを同時に再計測しないため、キーボードにめり込んだり戻ったりしない。
                     if (!state.isAddressFocused) {
-                        // ボタン表示も実行可否も同じWebView履歴から判定する。ViewModelの値は再構成を促すミラーであり、
-                        // ホーム用に履歴を別管理しない。
-                        val actualCanGoBack = !selectedTab.isHome && registry.canGoBack(selectedTab.id)
+                        // 通常ページの戻るはWebView履歴の有無を問わず有効にする。履歴が尽きた時は必ずホームへ戻すため、
+                        // callback到着の遅れでボタン自体が押せなくなる状態を作らない。
+                        val canReturnToHome = !selectedTab.isHome
                         val actualCanGoForward = if (selectedTab.isHome) {
                             viewModel.canResumeSelectedTabFromHome()
                         } else {
                             registry.canGoForward(selectedTab.id)
                         }
                         NavigationRow(
-                            canGoBack = actualCanGoBack || (selectedTab.returnToHomeOnBack && !selectedTab.isHome),
+                            canGoBack = canReturnToHome,
                             canGoForward = actualCanGoForward,
                             onTabs = { endAddressEditing(); viewModel.toggleTabSheet() },
                             onBack = {
                                 viewModel.stopAddressEditing()
                                 if (!selectedTab.isHome) {
-                                    // 履歴があればWebViewの復元を使い、履歴を使い切ったホーム起点遷移だけホームへ戻す。
+                                    // 履歴があればWebViewを戻し、尽きていれば起点を問わず独自ホームへ戻る。
                                     if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)
-                                    else if (selectedTab.returnToHomeOnBack) returnSelectedTabToHome()
+                                    else returnSelectedTabToHome()
                                 }
                             },
                             onSearch = viewModel::startAddressEditing,
@@ -669,6 +671,10 @@ private fun callbacksFor(
     override fun onVisitedHistory(tabId: String, url: String) = viewModel.onVisitedHistory(tabId, url)
     override fun onTitle(tabId: String, title: String) = viewModel.onTitleChanged(tabId, title)
     override fun onHistoryState(tabId: String, canGoBack: Boolean, canGoForward: Boolean) = viewModel.onHistoryStateChanged(tabId, canGoBack, canGoForward)
+    override fun onBackHistoryExhausted(tabId: String) {
+        // 非選択タブの遅延callbackが現在のタブをホームへ戻さないよう、tabIdを必ず照合する。
+        if (viewModel.uiState.selectedTabId == tabId) viewModel.returnSelectedTabToHome()
+    }
     override fun onProgress(tabId: String, progress: Int) = onProgress(progress)
     override fun onScrollPosition(tabId: String, fraction: Float) = onScrollPosition(fraction)
     override fun onHttpsUpgrade(url: String) = registry.load(tabId, url)

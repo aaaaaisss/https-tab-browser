@@ -47,16 +47,17 @@ requireText(controls, 'modifier = Modifier.size(38.dp)', 'smaller home shortcut 
 requireText(controls, 'contentScale = ContentScale.Fit', 'favicon avoids crop enlargement');
 requireText(controls, 'Modifier.fillMaxSize().padding(4.dp).clip(RoundedCornerShape(7.dp))', 'favicon uses rounded-corner inset');
 requireText(controls, 'modifier.clip(RoundedCornerShape(10.dp)).background(Color(0xFF5E5E5E))', 'square favicon base is rounded');
-const systemBackHome = screen.indexOf('selectedTab?.returnToHomeOnBack == true -> returnSelectedTabToHome()');
-const systemBackHistory = screen.indexOf('selectedTab?.isHome == false && registry.canGoBack(selectedTab.id) -> registry.goBack(selectedTab.id)');
-if (systemBackHome < 0 || systemBackHistory < 0 || systemBackHistory > systemBackHome) {
-  throw new Error('Chromium history back must run before bookmark home fallback');
-}
-const navigationBackHistory = screen.indexOf('if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)');
-const navigationBackHome = screen.indexOf('else if (selectedTab.returnToHomeOnBack) returnSelectedTabToHome()');
-if (navigationBackHistory < 0 || navigationBackHome < 0 || navigationBackHistory > navigationBackHome) {
-  throw new Error('navigation-row must use Chromium history before home fallback');
-}
+requireText(screen, 'selectedTab?.isHome == false -> {\n                if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)\n                else returnSelectedTabToHome()\n            }', 'system back always falls through to home after WebView history is exhausted');
+requireText(screen, 'val canReturnToHome = !selectedTab.isHome', 'normal-page back stays available while history callbacks are pending');
+requireText(screen, 'canGoBack = canReturnToHome', 'back button does not depend on a stale history mirror');
+requireText(screen, 'if (registry.canGoBack(selectedTab.id)) registry.goBack(selectedTab.id)\n                                    else returnSelectedTabToHome()', 'navigation-row falls through to home after history exhaustion');
+requireText(webView, 'fun goBack(tabId: String): Boolean', 'back requests report whether they were accepted');
+requireText(webView, 'fun beginBackNavigation(): Boolean', 'rapid back requests are serialized per WebView');
+requireText(webView, 'queuedBackRequests = (queuedBackRequests + 1).coerceAtMost(MAX_QUEUED_BACK_REQUESTS)', 'rapid back request queue is bounded');
+requireText(webView, 'if (!goBack(tabId)) entry.callbacks.onBackHistoryExhausted(tabId)', 'queued back exhaustion triggers explicit home fallback');
+requireText(screen, 'override fun onBackHistoryExhausted(tabId: String)', 'only the selected tab receives queued home fallback');
+forbidText(models, 'returnToHomeOnBack', 'obsolete tab-origin home fallback flag');
+forbidText(repository, 'returnToHomeOnBack', 'obsolete home fallback persistence');
 requireText(sheets, 'label = "広告ブロック"', 'adblock label');
 requireText(sheets, 'label = "暗色化"', 'dark mode label');
 requireText(sheets, 'Text(if (highSelected) "normal" else "✓ normal")', 'normal mode selection');
@@ -124,4 +125,4 @@ requireText(screen, 'else registry.goForward(selectedTab.id)', 'normal forward d
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization settings, address focus recovery, retained home forward history, shortcut UI, long-press actions, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');
+console.log('Browser stabilization settings, address focus recovery, serialized home back fallback, retained home forward history, shortcut UI, long-press actions, Google popup scrolling, safe bounds, renderer notice removal, and dark-page exclusion: OK');

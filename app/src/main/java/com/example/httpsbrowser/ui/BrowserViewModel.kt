@@ -179,9 +179,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 lastRequestedUrl = prepared.url,
                 displayText = prepared.displayText,
                 displayMode = prepared.displayMode,
-                isHome = false,
-                // 独自ホームから開いたブックマーク・検索・URLは、WebView履歴の次にホームへ戻す。
-                returnToHomeOnBack = tab.isHome || tab.returnToHomeOnBack
+                isHome = false
             )
         }
         suggestionJob?.cancel()
@@ -209,7 +207,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 displayText = "",
                 displayMode = AddressDisplayMode.URL,
                 isHome = true,
-                returnToHomeOnBack = false,
                 canGoBack = false,
                 canGoForward = false
             )
@@ -235,8 +232,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 title = prepared.displayText.ifBlank { prepared.url },
                 displayText = prepared.displayText,
                 displayMode = prepared.displayMode,
-                isHome = false,
-                returnToHomeOnBack = true
+                isHome = false
             )
         }
         uiState = uiState.copy(addressInput = prepared.displayText, isAddressFocused = false, isSuggestionPanelVisible = false, suggestions = emptyList())
@@ -342,7 +338,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun setFullscreen(value: Boolean) { uiState = uiState.copy(isFullscreen = value) }
 
-    /** WebView履歴が尽きたホーム起点ページを、独自ホームへ確実に戻す。 */
+    /** 通常ページのWebView履歴が尽きたら、起点を問わず独自ホームへ戻る。 */
     fun returnSelectedTabToHome() {
         if (uiState.selectedTab?.isHome == false) openHome()
     }

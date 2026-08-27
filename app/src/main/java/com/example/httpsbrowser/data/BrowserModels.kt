@@ -15,9 +15,8 @@ data class BrowserTab(
     val lastRequestedUrl: String = "",
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
+    /** ホームはWebView履歴に入れず、通常ページの履歴が尽きた時だけ表示するアプリ内オーバーレイ。 */
     val isHome: Boolean = true,
-    /** 独自ホームから開いたページは、WebView履歴が尽きた次の戻る操作でホームへ復帰する。 */
-    val returnToHomeOnBack: Boolean = false,
     /**
      * シークレットタブは履歴・タブ復元へ保存しない。
      * Android System WebViewがmulti-profileを提供しない端末では、Cookie等を通常タブと完全分離できない。
