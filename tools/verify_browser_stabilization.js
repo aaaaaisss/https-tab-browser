@@ -133,12 +133,18 @@ requireText(webView, 'fun setVideoPlaybackRate(tabId: String, rate: Float)', 'vi
 requireText(webView, 'fun setVideoSubtitleTrack(tabId: String, index: Int?)', 'video subtitles have a dedicated API');
 requireText(webView, 'const val MIN_VIDEO_PLAYBACK_RATE = 0.5f', 'video speed lower bound');
 requireText(webView, 'const val MAX_VIDEO_PLAYBACK_RATE = 2.0f', 'video speed upper bound');
+requireText(webView, 'IN_PAGE_VIDEO_CONTROLS_SCRIPT', 'small in-page video action controls are installed');
+requireText(webView, "root.id='__https_browser_video_actions'", 'in-page video controls use a stable singleton root');
+requireText(webView, "controlsButton=actionButton('速度','速度と字幕')", 'speed and subtitles are exposed next to in-page PiP');
+requireText(webView, 'current.requestPictureInPicture()', 'PiP request runs inside a page user action');
 requireText(webView, 'override fun onReceivedIcon(view: WebView, icon: Bitmap)', 'received site favicon is captured from WebView');
 requireText(controls, 'object BrowserFaviconStore', 'favicon cache prevents repeated network fallback');
 requireText(controls, 'connection.disconnect()', 'favicon network fallback releases connections');
 requireText(sheets, 'fun VideoControlsDialog(', 'speed and subtitle dialog is available from UI');
 requireText(controls, 'DropdownMenuItem(text = { Text("動画の操作") }', 'video controls are exposed in page menu');
 requireText(mainActivity, 'Gravity.TOP or Gravity.START', 'fullscreen PiP button is placed at top-left');
+requireText(mainActivity, 'PIP_TRANSITION_TIMEOUT_MS', 'PiP state can recover when the platform callback is absent');
+requireText(mainActivity, 'pip_enter_timeout', 'PiP timeout is diagnosable');
 requireText(screen, 'pendingDownload != null || videoControls != null', 'download and video dialogs stay above native WebView');
 requireText(webView, 'historyTraversalTargetUrl', 'history traversal avoids resetting retained page state');
 requireText(webView, 'if (entry.activeDocumentUrl != url)', 'stale page-finished callbacks are ignored');
@@ -159,4 +165,4 @@ requireText(screen, 'else registry.goForward(selectedTab.id)', 'normal forward d
 requireText(webView, 'isVideoPlaybackDocumentUrl(url) || isDarkModeExcluded(entry.settings, url)', 'video and manual exclusion path');
 forbidText(screen, 'このページの描画プロセスが終了しました。タブを再作成しています。', 'renderer restart modal');
 
-console.log('Browser stabilization, safe blob downloads, HTML5 video controls, top-left PiP, favicon cache, retained history state, and dark-page exclusion: OK');
+console.log('Browser stabilization, safe blob downloads, in-page HTML5 video controls, recoverable PiP, favicon cache, retained history state, and dark-page exclusion: OK');
