@@ -1780,7 +1780,8 @@ class BrowserWebViewRegistry(
         const val ABOUT_BLANK_URL = "about:blank"
         const val VIDEO_DIMENSIONS_BRIDGE_NAME = "NekoBrowserVideoDimensions"
         const val BLOB_DOWNLOAD_BRIDGE_NAME = "NekoBrowserBlobDownload"
-        const val MAX_BLOB_DOWNLOAD_BYTES = 8 * 1024 * 1024
+        // Data URLへの一時展開を伴うため上限は設ける。24 MiBなら17 MiB級APK等を保存できる。
+        const val MAX_BLOB_DOWNLOAD_BYTES = 24 * 1024 * 1024
         const val MIN_VIDEO_PLAYBACK_RATE = 0.5f
         const val MAX_VIDEO_PLAYBACK_RATE = 2.0f
         const val MAX_STATIC_COSMETIC_SELECTORS = 500

@@ -124,7 +124,7 @@ requireText(webView, 'fun refreshContentFiltering()', 'post-compile adblock reap
 requireText(webView, 'adblock_reapplied_after_engine_ready', 'engine-ready adblock diagnostic');
 requireText(screen, 'registry.refreshContentFiltering()', 'post-compile existing tab protection');
 requireText(webView, 'url.startsWith("blob:", ignoreCase = true)', 'HTTPS-page blob downloads use a dedicated safe path');
-requireText(webView, 'const val MAX_BLOB_DOWNLOAD_BYTES = 8 * 1024 * 1024', 'blob downloads have a strict size limit');
+requireText(webView, 'const val MAX_BLOB_DOWNLOAD_BYTES = 24 * 1024 * 1024', 'blob downloads have a strict size limit');
 requireText(webView, 'expectedOrigin != blobOrigin', 'blob download requires same HTTPS origin');
 requireText(webView, 'UUID.randomUUID().toString()', 'blob download bridge uses an unguessable one-time token');
 requireText(webView, 'BLOB_DOWNLOAD_BRIDGE_NAME', 'blob bridge is explicitly scoped');
