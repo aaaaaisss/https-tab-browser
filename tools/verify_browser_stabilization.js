@@ -176,6 +176,8 @@ requireText(mainActivity, 'fun setVideoQuickControls(', 'native host owns quick 
 requireText(mainActivity, 'fun enterInlinePictureInPictureMode(tabId: String)', 'inline PiP does not require fullscreen');
 requireText(screen, 'hostActivity?.enterInlinePictureInPictureMode(tab.id)', 'Shorts and inline videos use inline PiP');
 requireText(webView, 'selectors.take(if (aggressive) MAX_AGGRESSIVE_YOUTUBE_SELECTORS else MAX_STATIC_COSMETIC_SELECTORS)', 'High mode keeps expanded cosmetic selector coverage');
+requireText(webView, 'aggressive = entry?.aggressiveAdBlockingEnabled == true', 'High mode reaches page-commit cosmetic filtering');
+requireText(webView, 'aggressive = entry.aggressiveAdBlockingEnabled', 'High mode reaches page-finished cosmetic filtering');
 requireText(mainActivity, 'normalWebContentHost.addView(controls', 'quick controls stay in existing native host');
 requireText(mainActivity, 'videoQuickControls?.bringToFront()', 'quick controls do not displace the WebView surface');
 requireText(mainActivity, 'Gravity.TOP or Gravity.START', 'video controls are positioned at the top-left');

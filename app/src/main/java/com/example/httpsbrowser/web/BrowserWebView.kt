@@ -1115,7 +1115,13 @@ class BrowserWebViewRegistry(
                     shouldApplyPageCssDarkening(it.settings, isVideoPlaybackDocumentUrl(url), url) } == true,
                 youtubePage = isYoutubeDocumentUrl(url)
             )
-            applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = false)
+            applyBraveCosmeticFilters(
+                view,
+                url,
+                entry?.adBlockingEnabled == true,
+                includeGeneric = false,
+                aggressive = entry?.aggressiveAdBlockingEnabled == true
+            )
             if (entry != null) {
                 if (entry.settings.skipDarkeningAlreadyDarkPages) detectAlreadyDarkDocument(view, entry, url)
                 else releaseDarkRevealGuard(view, entry, url)
@@ -1142,7 +1148,13 @@ class BrowserWebViewRegistry(
                     ),
                 youtubePage = isYoutubeDocumentUrl(url)
             )
-            applyBraveCosmeticFilters(view, url, entry.adBlockingEnabled, includeGeneric = true)
+            applyBraveCosmeticFilters(
+                view,
+                url,
+                entry.adBlockingEnabled,
+                includeGeneric = true,
+                aggressive = entry.aggressiveAdBlockingEnabled
+            )
             if (entry.settings.skipDarkeningAlreadyDarkPages) detectAlreadyDarkDocument(view, entry, url)
             else releaseDarkRevealGuard(view, entry, url)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url, entry)
