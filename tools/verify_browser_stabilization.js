@@ -170,9 +170,12 @@ requireText(webView, 'window.__nekoBrowserSetVideoPlaybackRate=applyRate', 'vide
 requireText(webView, 'val REQUEST_VIDEO_FULLSCREEN_SCRIPT', 'PiP uses generic existing-video fullscreen request');
 forbidText(webView, 'createElement(\'button\')', 'video controls must not inject page buttons');
 requireText(screen, 'hostActivity?.setVideoQuickControls(', 'video controls use native host');
-requireText(screen, 'registry.requestVideoFullscreenForPictureInPicture(tab.id)', 'native PiP control requests current video fullscreen');
+forbidText(screen, 'registry.requestVideoFullscreenForPictureInPicture(tab.id)', 'inline PiP no longer depends on fullscreen request');
 requireText(screen, 'registry.cycleVideoPlaybackRate(tab.id, videoPlayback.playbackRate)', 'native speed control updates current video');
 requireText(mainActivity, 'fun setVideoQuickControls(', 'native host owns quick video controls');
+requireText(mainActivity, 'fun enterInlinePictureInPictureMode(tabId: String)', 'inline PiP does not require fullscreen');
+requireText(screen, 'hostActivity?.enterInlinePictureInPictureMode(tab.id)', 'Shorts and inline videos use inline PiP');
+requireText(webView, 'selectors.take(if (aggressive) MAX_AGGRESSIVE_YOUTUBE_SELECTORS else MAX_STATIC_COSMETIC_SELECTORS)', 'High mode keeps expanded cosmetic selector coverage');
 requireText(mainActivity, 'normalWebContentHost.addView(controls', 'quick controls stay in existing native host');
 requireText(mainActivity, 'videoQuickControls?.bringToFront()', 'quick controls do not displace the WebView surface');
 requireText(mainActivity, 'Gravity.TOP or Gravity.START', 'video controls are positioned at the top-left');

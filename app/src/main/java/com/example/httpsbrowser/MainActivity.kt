@@ -317,6 +317,23 @@ class MainActivity : ComponentActivity() {
     fun shouldRetainFullscreenCustomView(): Boolean =
         pictureInPictureActive || pictureInPictureTransitionRequested
 
+    /**
+     * 全画面化していない動画ページ用のPiP。WebViewを別Activityへ移さず、現在Activityの
+     * WebView hostをそのままPiP対象にする。AndroidはActivity単位でPiP化するため、ページ全体が
+     * PiPに入るが、Shorts・縦動画を含め全画面依存を避けられる。
+     */
+    fun enterInlinePictureInPictureMode(tabId: String): Boolean {
+        if (!supportsPictureInPicture() || isInPictureInPictureMode || pictureInPictureTransitionRequested || tabId != normalWebContentTabId) return false
+        val bounds = Rect()
+        if (!normalWebContentHost.getGlobalVisibleRect(bounds) || bounds.width() <= 0 || bounds.height() <= 0) return false
+        pictureInPictureTransitionRequested = true
+        val entered = runCatching {
+            enterPictureInPictureMode(buildInlinePictureInPictureParams(bounds, tabId))
+        }.getOrDefault(false)
+        if (!entered) pictureInPictureTransitionRequested = false
+        return entered
+    }
+
     /** 全画面中だけ使う明示PiP操作。API 26以上ではauto-enterへ依存せず直接開始する。 */
     fun enterFullscreenPictureInPictureMode(): Boolean {
         val videoView = fullscreenVideoView
@@ -479,6 +496,18 @@ class MainActivity : ComponentActivity() {
     private fun updatePictureInPictureParams(videoView: View?) {
         if (!supportsPictureInPicture()) return
         runCatching { setPictureInPictureParams(buildPictureInPictureParams(videoView)) }
+    }
+
+    private fun buildInlinePictureInPictureParams(bounds: Rect, tabId: String): PictureInPictureParams {
+        val builder = PictureInPictureParams.Builder().setSourceRectHint(bounds)
+        val dimensions = videoDimensionsByTab[tabId]
+        val width = dimensions?.width ?: bounds.width()
+        val height = dimensions?.height ?: bounds.height()
+        val ratio = width.toFloat() / height.toFloat()
+        if (ratio in MIN_PIP_ASPECT_RATIO..MAX_PIP_ASPECT_RATIO) builder.setAspectRatio(Rational(width, height))
+        builder.setActions(listOf(createOpenBrowserRemoteAction()))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setAutoEnterEnabled(false).setSeamlessResizeEnabled(true)
+        return builder.build()
     }
 
     private fun buildPictureInPictureParams(videoView: View?): PictureInPictureParams {

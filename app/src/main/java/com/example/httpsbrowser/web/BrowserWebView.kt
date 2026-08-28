@@ -846,7 +846,8 @@ class BrowserWebViewRegistry(
         if (entry.cosmeticAppliedUrl != url) {
             entry.cosmeticAppliedUrl = url
             val selectors = resources.optJSONArray("hide_selectors").toStringList()
-            val staticCss = selectors.take(MAX_STATIC_COSMETIC_SELECTORS)
+            // Highでは汎用広告規則を広く適用する。通常モードのYouTube保護上限は変更しない。
+            val staticCss = selectors.take(if (aggressive) MAX_AGGRESSIVE_YOUTUBE_SELECTORS else MAX_STATIC_COSMETIC_SELECTORS)
                 .joinToString(",")
                 .takeIf { it.isNotBlank() }
                 ?.plus("{display:none!important;visibility:hidden!important;}")

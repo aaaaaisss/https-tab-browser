@@ -338,12 +338,9 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 visible = videoPlayback.hasVideo,
                 playbackRate = videoPlayback.playbackRate,
                 onPipRequested = {
-                    enterPipAfterFullscreen = true
-                    registry.requestVideoFullscreenForPictureInPicture(tab.id) { requested ->
-                        if (!requested) {
-                            enterPipAfterFullscreen = false
-                            notice = "この動画ではPiPを開始できませんでした。動画を再生してからもう一度お試しください。"
-                        }
+                    // Activity単位のinline PiPを使う。全画面化・動画surface移動・別Activity起動は行わない。
+                    if (hostActivity?.enterInlinePictureInPictureMode(tab.id) != true) {
+                        notice = "この動画ではPiPを開始できませんでした。端末のPiP設定を確認してください。"
                     }
                 },
                 onSpeedRequested = {
