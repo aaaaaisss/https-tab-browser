@@ -2054,8 +2054,9 @@ class BrowserWebViewRegistry(
         // #player、video、ytm-player、grid/layoutコンテナは意図的に含めない。
         val DEEP_DARK_CSS = "html{background:#000!important;color-scheme:dark!important}" +
             "body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}" +
-            "img,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}" +
-            "video,video::-webkit-media-controls-panel,video::-webkit-media-controls-enclosure{filter:invert(1) hue-rotate(180deg)!important}" +
+            // 写真・サムネイル・canvas・埋め込みメディアは反転しない。ページ本文の暗色化を優先しつつ、
+            // 内容そのものの色を壊す誤判定を避ける。動画は既存のsurface保護とも一致する。
+            "img,canvas,iframe,svg,picture,object,embed,video,video::-webkit-media-controls-panel,video::-webkit-media-controls-enclosure{filter:none!important}" +
             "input,textarea,select{background:#e8e8e8!important;color:#111!important}"
         // YouTubeは反転ではなく前景・背景を直接指定し、動画surfaceは常にfilter:noneで保護する。
         val YOUTUBE_PAGE_DARK_CSS = "html,body,ytd-app,ytm-app{background:#0f0f0f!important;color:#f1f1f1!important;color-scheme:dark!important}" +

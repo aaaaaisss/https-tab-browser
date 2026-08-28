@@ -101,6 +101,15 @@ private fun shouldShowRightEdgeScrollRail(url: String): Boolean {
     return !(host.startsWith("google.") || host.contains(".google."))
 }
 
+/** Google画像検索は画像詳細を同じ/search文書内で展開するため、native前面化による座標ずれを避ける。 */
+private fun isGoogleImagesSurface(url: String): Boolean = runCatching {
+    val uri = URI(url)
+    val host = uri.host?.lowercase().orEmpty()
+    val query = uri.rawQuery.orEmpty().lowercase()
+    (host == "google.com" || host.endsWith(".google.com")) && uri.path == "/search" &&
+        (query.split('&').any { it == "tbm=isch" || it == "udm=2" || it.startsWith("tbm=isch=") || it.startsWith("udm=2=") })
+}.getOrDefault(false)
+
 @Composable
 fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     val context = LocalContext.current
@@ -457,7 +466,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                     width = coordinates.size.width,
                                     height = coordinates.size.height,
                                     reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url),
-                                    placeAboveCompose = isGoogleWebSurface(selectedTab.url)
+                                    // Google画像はCompose下のnative hostへ戻し、透明Composeから全域を
+                                    // WebViewへ転送する。画像詳細後の縦スクロールと幅計算を保つ。
+                                    placeAboveCompose = isGoogleWebSurface(selectedTab.url) &&
+                                        !isGoogleImagesSurface(selectedTab.url)
                                 )
                             }
                         }

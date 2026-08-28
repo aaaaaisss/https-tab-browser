@@ -146,6 +146,9 @@ requireText(webView, 'beginDarkRevealGuard(view, it, url)', 'black reveal guard 
 requireText(webView, 'beginDarkRevealGuard(entry.webView, entry, url)', 'black reveal guard before navigation');
 requireText(webView, 'releaseDarkRevealGuard(view, entry, url)', 'reveal guard release');
 requireText(webView, 'isDarkModeExcluded(settings, url)', 'manual dark exclusion runtime matching');
+requireText(webView, 'img,canvas,iframe,svg,picture,object,embed,video,video::-webkit-media-controls-panel,video::-webkit-media-controls-enclosure{filter:none!important}', 'dark mode preserves photo and media colors');
+requireText(screen, 'private fun isGoogleImagesSurface(url: String)', 'Google Images surface detection');
+requireText(screen, '!isGoogleImagesSurface(selectedTab.url)', 'Google Images avoids native front-layer coordinate mismatch');
 requireText(webView, 'fun refreshContentFiltering()', 'post-compile adblock reapplication');
 requireText(webView, 'adblock_reapplied_after_engine_ready', 'engine-ready adblock diagnostic');
 requireText(screen, 'registry.refreshContentFiltering()', 'post-compile existing tab protection');
