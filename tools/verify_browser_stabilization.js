@@ -11,6 +11,7 @@ const adBlocker = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/da
 const webView = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/web/BrowserWebView.kt', 'utf8');
 const mainActivity = fs.readFileSync('app/src/main/java/com/example/httpsbrowser/MainActivity.kt', 'utf8');
 const cargoToml = fs.readFileSync('app/src/main/rust/Cargo.toml', 'utf8');
+const rustAdblock = fs.readFileSync('app/src/main/rust/src/lib.rs', 'utf8');
 const androidCi = fs.readFileSync('.github/workflows/android-ci.yml', 'utf8');
 
 function requireText(source, text, label) {
@@ -179,6 +180,7 @@ requireText(mainActivity, 'fun setVideoQuickControls(', 'native host owns quick 
 requireText(mainActivity, 'fun enterInlinePictureInPictureMode(tabId: String)', 'inline PiP does not require fullscreen');
 requireText(screen, 'hostActivity?.enterInlinePictureInPictureMode(tab.id)', 'Shorts and inline videos use inline PiP');
 requireText(webView, 'selectors.take(if (aggressive) MAX_AGGRESSIVE_YOUTUBE_SELECTORS else MAX_STATIC_COSMETIC_SELECTORS)', 'High mode keeps expanded cosmetic selector coverage');
+requireText(rustAdblock, 'selectors.into_iter().take(2_000)', 'generic cosmetic selector coverage is not truncated at 500');
 requireText(webView, 'aggressive = entry?.aggressiveAdBlockingEnabled == true', 'High mode reaches page-commit cosmetic filtering');
 requireText(webView, 'aggressive = entry.aggressiveAdBlockingEnabled', 'High mode reaches page-finished cosmetic filtering');
 requireText(mainActivity, 'normalWebContentHost.addView(controls', 'quick controls stay in existing native host');

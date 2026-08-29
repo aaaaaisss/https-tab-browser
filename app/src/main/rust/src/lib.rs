@@ -274,7 +274,7 @@ pub extern "system" fn Java_com_example_httpsbrowser_data_NativeAdBlockEngine_na
         get_engine(handle)
             .map(|engine| engine.hidden_class_id_selectors(&classes, &ids, &exceptions))
             .filter(|selectors| !selectors.is_empty())
-            .map(|selectors| selectors.into_iter().take(500).collect::<Vec<_>>())
+            .map(|selectors| selectors.into_iter().take(2_000).collect::<Vec<_>>())
             .map(|selectors| format!("{}{{display:none!important;visibility:hidden!important;}}", selectors.join(",")))
             .unwrap_or_default()
     })).unwrap_or_default();
