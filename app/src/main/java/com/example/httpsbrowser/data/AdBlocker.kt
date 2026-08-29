@@ -107,10 +107,15 @@ class AdBlockListRepository(
         retiredBuiltIns.forEach { source -> File(directory, "${source.id}.txt").delete() }
         sources = sources.filterNot { it in retiredBuiltIns }
         STANDARD_LISTS.forEach { standard ->
-            if (sources.none { it.sourceUrl == standard.sourceUrl }) {
-                // 同梱snapshotにより、オフラインの初回起動でも直ちに指定2リストを利用できる。
+            val existing = sources.firstOrNull { it.sourceUrl == standard.sourceUrl }
+            if (existing == null) {
+                // 同梱snapshotにより、オフラインの初回起動でも直ちに標準リストを利用できる。
                 if (!copyBundledSnapshot(standard.id)) fetchToFile(standard, standard.id)
                 sources = sources + standard.copy(updatedAt = System.currentTimeMillis())
+            } else if (!File(directory, "${existing.id}.txt").let { it.isFile && it.length() > 0L }) {
+                // メタデータだけ残り本文が消えた端末では、enabledに関係なく本文を復旧する。
+                // これを放置するとNormal/Highの両方でnative engineが空になり、広告が全通過する。
+                if (!copyBundledSnapshot(standard.id)) fetchToFile(existing, existing.id)
             }
         }
         saveSources(sources)
