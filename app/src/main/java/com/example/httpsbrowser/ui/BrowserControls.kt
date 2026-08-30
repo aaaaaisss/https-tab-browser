@@ -343,8 +343,22 @@ fun TabBar(tabs: List<BrowserTab>, selectedTabId: String?, onSelect: (String) ->
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .background(if (selected) Color(0xFF18375B) else Color(0xFF1A2029))
-                        .then(if (selected) Modifier.border(2.dp, Color(0xFF66B5FF), RoundedCornerShape(12.dp)) else Modifier.border(1.dp, Color(0xFF394554), RoundedCornerShape(12.dp)))
+                        .background(
+                            when {
+                                tab.isPrivate && selected -> Color(0xFF3D235B)
+                                tab.isPrivate -> Color(0xFF2A1B38)
+                                selected -> Color(0xFF18375B)
+                                else -> Color(0xFF1A2029)
+                            }
+                        )
+                        .then(
+                            when {
+                                tab.isPrivate && selected -> Modifier.border(2.dp, Color(0xFFC084FC), RoundedCornerShape(12.dp))
+                                tab.isPrivate -> Modifier.border(1.dp, Color(0xFF7C4D9E), RoundedCornerShape(12.dp))
+                                selected -> Modifier.border(2.dp, Color(0xFF66B5FF), RoundedCornerShape(12.dp))
+                                else -> Modifier.border(1.dp, Color(0xFF394554), RoundedCornerShape(12.dp))
+                            }
+                        )
                         .clickable { onSelect(tab.id) }
                         .padding(start = 8.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically

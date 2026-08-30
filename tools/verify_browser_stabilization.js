@@ -44,6 +44,9 @@ requireText(screen, 'title = { Text("リンクの操作") }', 'organized long-pr
 requireText(screen, 'Text("キャンセル")', 'organized long-press menu dismissal');
 requireText(screen, 'title = "ホームショートカットに追加"', 'link shortcut editor reuse');
 requireText(controls, 'Color(0xFF5E5E5E)', 'neutral gray shortcut base color');
+requireText(controls, 'tab.isPrivate && selected -> Color(0xFF3D235B)', 'selected private tab purple background');
+requireText(controls, 'tab.isPrivate && selected -> Modifier.border(2.dp, Color(0xFFC084FC)', 'selected private tab purple border');
+requireText(controls, 'tab.isPrivate -> Color(0xFF2A1B38)', 'unselected private tab purple background');
 requireText(controls, 'modifier = Modifier.size(38.dp)', 'smaller home shortcut icon');
 requireText(controls, 'contentScale = ContentScale.Fit', 'favicon avoids crop enlargement');
 requireText(controls, 'Modifier.fillMaxSize().padding(4.dp).clip(RoundedCornerShape(7.dp))', 'favicon uses rounded-corner inset');
