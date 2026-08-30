@@ -34,7 +34,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -48,8 +47,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
-import com.example.httpsbrowser.data.BrowserDataTransfer
-import com.example.httpsbrowser.data.BrowserTransferPayload
 import com.example.httpsbrowser.data.BrowserDownloadDispatcher
 import com.example.httpsbrowser.data.BrowserDownloadMode
 import com.example.httpsbrowser.data.BrowserDownloadRequest
@@ -63,10 +60,6 @@ import java.io.File
 import java.util.Locale
 import java.io.FileInputStream
 import java.net.URI
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private data class PendingWebPermission(
     val origin: String,
@@ -78,13 +71,6 @@ private data class PendingWebPermission(
 private data class FullscreenContent(
     val view: View,
     val callback: WebChromeClient.CustomViewCallback
-)
-
-/** ページ側から数値だけ受け取る、native動画操作の表示状態。 */
-private data class VideoPlaybackUiState(
-    val hasVideo: Boolean = false,
-    val isPlaying: Boolean = false,
-    val playbackRate: Float = 1f
 )
 
 /**
@@ -100,15 +86,6 @@ private fun shouldShowRightEdgeScrollRail(url: String): Boolean {
     val host = runCatching { URI(url).host?.lowercase() }.getOrNull() ?: return true
     return !(host.startsWith("google.") || host.contains(".google."))
 }
-
-/** Google画像検索は画像詳細を同じ/search文書内で展開するため、native前面化による座標ずれを避ける。 */
-private fun isGoogleImagesSurface(url: String): Boolean = runCatching {
-    val uri = URI(url)
-    val host = uri.host?.lowercase().orEmpty()
-    val query = uri.rawQuery.orEmpty().lowercase()
-    (host == "google.com" || host.endsWith(".google.com")) && uri.path == "/search" &&
-        (query.split('&').any { it == "tbm=isch" || it == "udm=2" || it.startsWith("tbm=isch=") || it.startsWith("udm=2=") })
-}.getOrDefault(false)
 
 @Composable
 fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
@@ -138,16 +115,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
     var pendingDownload by remember { mutableStateOf<BrowserDownloadRequest?>(null) }
-    var videoPlayback by remember(selectedTab?.id) {
-        mutableStateOf(VideoPlaybackUiState(playbackRate = state.settings.preferredVideoPlaybackRate))
-    }
-    // PiPボタンは既存videoの全画面を要求してから、従来のMainActivity PiP経路へ一度だけ渡す。
-    var enterPipAfterFullscreen by remember(selectedTab?.id) { mutableStateOf(false) }
-    // 引き継ぎデータはURIへ直接保持せず、AndroidのStorage Access Frameworkでユーザーが選んだ場所だけを使う。
-    var pendingTransferJson by remember { mutableStateOf<String?>(null) }
-    var pendingTransferImport by remember { mutableStateOf<BrowserTransferPayload?>(null) }
-    var isApplyingTransfer by remember { mutableStateOf(false) }
-    val screenScope = rememberCoroutineScope()
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -173,43 +140,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         endAddressEditing()
         val prepared = viewModel.prepareNavigation(navigationInput) ?: return
         selectedTab?.let { tab -> registry.load(tab.id, prepared.url) }
-    }
-
-    val transferExportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/html")
-    ) { destination ->
-        val transferJson = pendingTransferJson
-        pendingTransferJson = null
-        if (destination != null && transferJson != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(destination)?.bufferedWriter(Charsets.UTF_8)?.use { writer ->
-                    writer.write(transferJson)
-                } ?: error("保存先を開けませんでした。")
-            }.onSuccess {
-                notice = "引き継ぎデータを書き出しました。Cookie、履歴、Web Storage、開いているタブは含まれません。"
-            }.onFailure {
-                notice = "引き継ぎデータを書き出せませんでした: ${it.message ?: "保存先を確認してください。"}"
-            }
-        }
-    }
-
-    val transferImportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { source ->
-        if (source != null) {
-            screenScope.launch {
-                val parsed = withContext(Dispatchers.IO) {
-                    runCatching {
-                        readTransferPayload(context, source)
-                    }
-                }
-                parsed.onSuccess { payload ->
-                    pendingTransferImport = payload
-                }.onFailure { error ->
-                    notice = "引き継ぎデータを読み込めませんでした: ${error.message ?: "ファイル形式を確認してください。"}"
-                }
-            }
-        }
     }
 
     val pageArchiveLauncher = rememberLauncherForActivityResult(
@@ -313,57 +243,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, true) }
         viewModel.setFullscreen(true)
         // PiP、native fullscreen container、system barはActivityへ一元化する。
-        val hostActivity = activity as? MainActivity
-        hostActivity?.showFullscreenCustomView(view, selectedTab?.id)
-        if (enterPipAfterFullscreen) {
-            enterPipAfterFullscreen = false
-            if (hostActivity?.enterFullscreenPictureInPictureMode() != true) {
-                notice = "PiPを開始できませんでした。端末のPiP設定を確認してください。"
-            }
-        }
-    }
-
-    // 全画面APIがサイト側で拒否された場合、次の手動全画面で意図せずPiPへ入らないよう保留を解除する。
-    LaunchedEffect(enterPipAfterFullscreen) {
-        if (enterPipAfterFullscreen) {
-            delay(1_500)
-            if (enterPipAfterFullscreen && !state.isFullscreen) {
-                enterPipAfterFullscreen = false
-                notice = "この動画ではPiPを開始できませんでした。"
-            }
-        }
-    }
-
-    // native host内の小さな操作だけを更新する。WebViewの親子関係・DOM・CSS・viewportには触れない。
-    LaunchedEffect(selectedTab?.id, selectedTab?.isHome, state.isFullscreen, videoPlayback) {
-        val tab = selectedTab
-        val hostActivity = activity as? MainActivity
-        if (tab == null || tab.isHome || state.isFullscreen || !videoPlayback.hasVideo) {
-            hostActivity?.clearVideoQuickControls()
-        } else {
-            hostActivity?.setVideoQuickControls(
-                tabId = tab.id,
-                // video要素を検出できる間は、一時停止中でも速度設定とPiPの再操作を可能にする。
-                visible = videoPlayback.hasVideo,
-                playbackRate = videoPlayback.playbackRate,
-                onPipRequested = {
-                    // Activity単位のinline PiPを使う。全画面化・動画surface移動・別Activity起動は行わない。
-                    if (hostActivity?.enterInlinePictureInPictureMode(tab.id) != true) {
-                        notice = "この動画ではPiPを開始できませんでした。端末のPiP設定を確認してください。"
-                    }
-                },
-                onSpeedRequested = {
-                    registry.cycleVideoPlaybackRate(tab.id, videoPlayback.playbackRate) { updatedRate ->
-                        if (updatedRate == null) {
-                            notice = "再生速度を変更できませんでした。動画を再生してからもう一度お試しください。"
-                        } else {
-                            videoPlayback = videoPlayback.copy(playbackRate = updatedRate)
-                            viewModel.updateSettings { settings -> settings.copy(preferredVideoPlaybackRate = updatedRate) }
-                        }
-                    }
-                }
-            )
-        }
+        (activity as? MainActivity)?.showFullscreenCustomView(view, selectedTab?.id)
     }
 
     LaunchedEffect(selectedTab?.id, selectedTab?.isHome, selectedTab?.lastRequestedUrl, state.settings, rendererVersion) {
@@ -383,11 +263,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onHideFullscreen = ::handleWebViewHideFullscreen,
                 onVideoDimensions = { width, height ->
                     hostActivity.updatePictureInPictureVideoDimensions(tab.id, width, height)
-                },
-                onVideoPlaybackState = { hasVideo, isPlaying, playbackRate ->
-                    if (viewModel.uiState.selectedTabId == tab.id) {
-                        videoPlayback = VideoPlaybackUiState(hasVideo, isPlaying, playbackRate)
-                    }
                 },
                 onPermission = { origin, resources, reply ->
                     pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
@@ -466,10 +341,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                                     width = coordinates.size.width,
                                     height = coordinates.size.height,
                                     reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url),
-                                    // Google画像はCompose下のnative hostへ戻し、透明Composeから全域を
-                                    // WebViewへ転送する。画像詳細後の縦スクロールと幅計算を保つ。
-                                    placeAboveCompose = isGoogleWebSurface(selectedTab.url) &&
-                                        !isGoogleImagesSurface(selectedTab.url)
+                                    placeAboveCompose = isGoogleWebSurface(selectedTab.url)
                                 )
                             }
                         }
@@ -627,17 +499,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onDeleteBookmark = viewModel::removeBookmark,
                 onDeleteHistory = viewModel::removeHistory,
                 onClear = { viewModel.clearBrowsingData { registry.clearAllBrowsingData() }; viewModel.closeSettings() },
-                onExportTransfer = {
-                    screenScope.launch {
-                        val customSources = withContext(Dispatchers.IO) { listRepository.exportableCustomSources() }
-                        pendingTransferJson = viewModel.exportTransferData(customSources)
-                        transferExportLauncher.launch("https-tab-browser-transfer-${System.currentTimeMillis()}.html")
-                    }
-                },
-                onImportTransfer = {
-                    // HTML内のJSON payloadと、旧JSON形式のどちらも厳格なスキーマ検証で拒否する。
-                    transferImportLauncher.launch(arrayOf("text/html", "application/json", "text/plain"))
-                },
                 onDownloads = { viewModel.showSettingsPage(SettingsPage.DOWNLOADS) },
                 onShareDiagnostics = { runCatching { com.example.httpsbrowser.CrashDiagnostics.share(context) }.onFailure { notice = "診断情報を共有できませんでした。" } },
                 onNotice = { notice = it }
@@ -681,45 +542,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 else notice = "HTTPS URL または検索語を入力してください。"
             },
             onDismiss = { editingHomeBookmark = null }
-        )
-    }
-
-    pendingTransferImport?.let { payload ->
-        AlertDialog(
-            onDismissRequest = { if (!isApplyingTransfer) pendingTransferImport = null },
-            title = { Text("引き継ぎデータを反映しますか？") },
-            text = {
-                Text(
-                    "ブックマーク ${payload.bookmarks.size} 件、設定、追加フィルタ ${payload.customFilterSources.size} 件を置き換えます。\n\n" +
-                        "Cookie、ログイン状態、Web Storage、履歴、開いているタブ、ダウンロード済みファイル、フィルタ本文は変更しません。"
-                )
-            },
-            confirmButton = {
-                Button(
-                    enabled = !isApplyingTransfer,
-                    onClick = {
-                        screenScope.launch {
-                            isApplyingTransfer = true
-                            val replacement = withContext(Dispatchers.IO) {
-                                listRepository.replaceCustomSources(payload.customFilterSources)
-                            }
-                            replacement.onSuccess { enabledCount ->
-                                // 追加フィルタの取得・コンパイル完了後にだけ、DataStoreの設定とブックマークを反映する。
-                                viewModel.applyTransferPayload(payload)
-                                registry.refreshContentFiltering()
-                                pendingTransferImport = null
-                                notice = "引き継ぎデータを反映しました。追加フィルタは有効 ${enabledCount} 件です。"
-                            }.onFailure { error ->
-                                notice = "追加フィルタを更新できないため、引き継ぎは反映しませんでした: ${error.message ?: "接続とURLを確認してください。"}"
-                            }
-                            isApplyingTransfer = false
-                        }
-                    }
-                ) { Text(if (isApplyingTransfer) "反映中…" else "反映") }
-            },
-            dismissButton = {
-                TextButton(enabled = !isApplyingTransfer, onClick = { pendingTransferImport = null }) { Text("キャンセル") }
-            }
         )
     }
 
@@ -836,7 +658,6 @@ private fun callbacksFor(
     onFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideFullscreen: () -> Unit,
     onVideoDimensions: (Int, Int) -> Unit,
-    onVideoPlaybackState: (Boolean, Boolean, Float) -> Unit,
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
     onLongPress: (String) -> Unit,
     showNotice: (String) -> Unit,
@@ -863,8 +684,6 @@ private fun callbacksFor(
     override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = onFullscreen(view, callback)
     override fun onHideFullscreen() = onHideFullscreen()
     override fun onVideoDimensions(tabId: String, width: Int, height: Int) = onVideoDimensions(width, height)
-    override fun onVideoPlaybackState(tabId: String, hasVideo: Boolean, isPlaying: Boolean, playbackRate: Float) =
-        onVideoPlaybackState(hasVideo, isPlaying, playbackRate)
     override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = onPermission(origin, resources, reply)
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id
@@ -875,23 +694,6 @@ private fun callbacksFor(
     override fun onPageInteraction() = viewModel.stopAddressEditing()
     override fun onNotice(message: String) = showNotice(message)
 }
-
-private fun readTransferPayload(context: Context, source: Uri): BrowserTransferPayload {
-    context.contentResolver.openInputStream(source)?.use { input ->
-        val output = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            require(output.size() + count <= MAX_TRANSFER_FILE_BYTES) { "引き継ぎファイルが大きすぎます。" }
-            output.write(buffer, 0, count)
-        }
-        return BrowserDataTransfer.import(output.toByteArray().toString(Charsets.UTF_8)).getOrThrow()
-    }
-    error("選択したファイルを開けませんでした。")
-}
-
-private const val MAX_TRANSFER_FILE_BYTES = 1_000_000
 
 private fun requiredAndroidPermissions(resources: Set<String>): Array<String> = buildSet {
     if (PermissionRequest.RESOURCE_AUDIO_CAPTURE in resources) add(Manifest.permission.RECORD_AUDIO)
