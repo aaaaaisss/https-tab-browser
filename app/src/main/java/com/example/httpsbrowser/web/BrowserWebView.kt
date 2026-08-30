@@ -851,7 +851,7 @@ class BrowserWebViewRegistry(
                 .joinToString(",")
                 .takeIf { it.isNotBlank() }
                 ?.plus("{display:none!important;visibility:hidden!important;}")
-                .orEmpty()
+                .orEmpty() + GENERIC_AD_SLOT_CSS
             view.evaluateJavascript(
                 """
                 (function(){
@@ -958,7 +958,7 @@ class BrowserWebViewRegistry(
                 classesJson = keys.optJSONArray("classes")?.toString() ?: "[]",
                 idsJson = keys.optJSONArray("ids")?.toString() ?: "[]",
                 exceptionsJson = exceptionsJson
-            )
+            ) + GENERIC_AD_SLOT_CSS
             view.evaluateJavascript(
                 """
                 (function(){
@@ -2066,6 +2066,18 @@ class BrowserWebViewRegistry(
             "input,textarea,select{background:#202020!important;color:#f1f1f1!important;border-color:#555!important}" +
             "video,video *,#player video,ytm-player video{filter:none!important;background:#000!important;color-scheme:normal!important}" +
             ".ytp-gradient-top,.ytp-gradient-bottom{filter:none!important}"
+        // 広告専用の標準マーカーだけを補助的に隠す。本文の画像・iframe全般やGoogle検索には適用しない。
+        // Braveのselector候補上限や広告iframeの遅延生成に左右されず、AdSenseの空枠・生成後枠を処理する。
+        val GENERIC_AD_SLOT_CSS = """
+            ins.adsbygoogle,
+            .ad-area:has(> .ad-wrap .adsbygoogle),
+            .ad-wrap:has(> .ad-responsive .adsbygoogle),
+            .ad-responsive:has(> .adsbygoogle),
+            iframe[id^="google_ads_iframe"],
+            iframe[src*='googlesyndication.com'],
+            iframe[src*='doubleclick.net']
+            {display:none!important;visibility:hidden!important;}
+        """.trimIndent()
         val YOUTUBE_AD_CSS = """
             #player-ads,.ytp-ad-overlay-container,.ytp-ad-module,
             ytd-display-ad-renderer,ytd-ad-slot-renderer,ytd-promoted-video-renderer,

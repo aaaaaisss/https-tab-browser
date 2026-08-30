@@ -181,6 +181,7 @@ requireText(mainActivity, 'fun enterInlinePictureInPictureMode(tabId: String)', 
 requireText(screen, 'hostActivity?.enterInlinePictureInPictureMode(tab.id)', 'Shorts and inline videos use inline PiP');
 requireText(webView, 'selectors.take(if (aggressive) MAX_AGGRESSIVE_YOUTUBE_SELECTORS else MAX_STATIC_COSMETIC_SELECTORS)', 'High mode keeps expanded cosmetic selector coverage');
 requireText(rustAdblock, 'selectors.into_iter().take(2_000)', 'generic cosmetic selector coverage is not truncated at 500');
+requireText(webView, 'ins.adsbygoogle', 'standard AdSense slots receive conservative cosmetic fallback');
 requireText(webView, 'aggressive = entry?.aggressiveAdBlockingEnabled == true', 'High mode reaches page-commit cosmetic filtering');
 requireText(webView, 'aggressive = entry.aggressiveAdBlockingEnabled', 'High mode reaches page-finished cosmetic filtering');
 requireText(mainActivity, 'normalWebContentHost.addView(controls', 'quick controls stay in existing native host');
