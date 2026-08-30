@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -379,7 +380,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                         }
                     }
                 if (!state.isFullscreen) {
-                    Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+                    Column(modifier = Modifier.fillMaxWidth().imePadding().background(MaterialTheme.colorScheme.surface)) {
                     if (state.isSuggestionPanelVisible) SuggestionPanel(state.suggestions) { suggestion ->
                         navigate(suggestion.url)
                     }

@@ -78,6 +78,7 @@ requireText(screen, 'private fun shouldShowRightEdgeScrollRail(url: String): Boo
 requireText(screen, 'host.startsWith("google.") || host.contains(".google.")', 'Google web surface detection');
 requireText(screen, 'if (!state.isFullscreen && shouldShowRightEdgeScrollRail(selectedTab.url))', 'edge rail suppression on Google web surfaces');
 requireText(screen, 'statusBarsPadding().navigationBarsPadding()', 'safe system-bar layout for page and bottom controls');
+requireText(screen, 'Modifier.fillMaxWidth().imePadding().background(MaterialTheme.colorScheme.surface)', 'address bar follows the keyboard without moving the WebView host');
 requireText(screen, 'reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url)', 'native touch rail follows page type');
 requireText(screen, 'placeAboveCompose = isGoogleWebSurface(selectedTab.url)', 'Google popup uses native front layer');
 requireText(mainActivity, 'normalWebContentReservesRightTouchRail', 'page-specific native rail reservation');
