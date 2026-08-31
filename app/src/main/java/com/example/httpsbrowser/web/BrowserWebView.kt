@@ -7,12 +7,14 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.DownloadListener
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -48,6 +50,7 @@ class BrowserWebViewRegistry(
         entry.callbacks = callbacks
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
+        ensureYoutubePictureInPictureScript(entry)
         // Fulguris由来のWebView設定だけを適用する。ページ内CSS/JS注入を使わないため、
         // タブ選択やダークモード切替で動画・履歴を再読み込みしない。
         configure(entry.webView, settings)
@@ -59,6 +62,39 @@ class BrowserWebViewRegistry(
             entry.webView.loadUrl(tab.lastRequestedUrl)
         }
         return entry.webView
+    }
+
+    /** Composeの再構成からWebViewを分離し、Activity直下のhostへ接続する。 */
+    fun attachToNativeHost(tabId: String, host: ViewGroup): Boolean {
+        val entry = entries[tabId] ?: return false
+        val view = entry.webView
+        if (view.parent !== host) {
+            (view.parent as? ViewGroup)?.removeView(view)
+            host.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        view.visibility = View.VISIBLE
+        view.bringToFront()
+        return true
+    }
+
+    fun detachFromNativeHost(tabId: String, host: ViewGroup? = null) {
+        val view = entries[tabId]?.webView ?: return
+        val parent = view.parent as? ViewGroup ?: return
+        if (host == null || parent === host) parent.removeView(view)
+    }
+
+    /** 全画面動画中はページ暗色化の再適用で映像面を壊さない。 */
+    fun setFullscreenVideoDarkeningSuppressed(tabId: String, suppressed: Boolean) {
+        val entry = entries[tabId] ?: return
+        if (entry.fullscreenVideoDarkeningSuppressed == suppressed) return
+        entry.fullscreenVideoDarkeningSuppressed = suppressed
+        if (!suppressed) {
+            val url = entry.activeDocumentUrl ?: entry.loadedUrl ?: return
+            configure(entry.webView, entry.settings)
+            CrashDiagnostics.record("video_dark_css_suppressed", "tab=$tabId\nsuppressed=false\nurl=$url")
+        } else {
+            CrashDiagnostics.record("video_dark_css_suppressed", "tab=$tabId\nsuppressed=true")
+        }
     }
 
     fun load(tabId: String, url: String) {
@@ -110,6 +146,8 @@ class BrowserWebViewRegistry(
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
+            runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
+            entry.youtubePictureInPictureScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             entry.webView.apply {
@@ -143,6 +181,33 @@ class BrowserWebViewRegistry(
         CookieManager.getInstance().removeAllCookies(null)
         CookieManager.getInstance().flush()
         destroyAll()
+    }
+
+    private fun ensureYoutubePictureInPictureScript(entry: Entry) {
+        if (entry.youtubePictureInPictureScriptHandler != null) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            CrashDiagnostics.record("youtube_pip_unlock_unsupported", "reason=document_start_api_unavailable")
+            return
+        }
+        val originRules = setOf(
+            "https://youtube.com", "https://*.youtube.com",
+            "https://youtube-nocookie.com", "https://*.youtube-nocookie.com"
+        )
+        runCatching {
+            WebViewCompat.addDocumentStartJavaScript(
+                entry.webView,
+                YOUTUBE_PIP_UNLOCK_SCRIPT,
+                originRules
+            )
+        }.onSuccess { handler ->
+            entry.youtubePictureInPictureScriptHandler = handler
+            CrashDiagnostics.record("youtube_pip_unlock_ready", "documentStart=true")
+        }.onFailure { throwable ->
+            CrashDiagnostics.record(
+                "youtube_pip_unlock_unsupported",
+                "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}"
+            )
+        }
     }
 
     private fun createWebView(tabId: String): WebView = object : WebView(context) {
@@ -189,6 +254,23 @@ class BrowserWebViewRegistry(
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         webViewClient = SecureClient(tabId)
         webChromeClient = SecureChromeClient(tabId)
+        addJavascriptInterface(object {
+            @JavascriptInterface
+            fun report(width: Int, height: Int) {
+                if (width <= 0 || height <= 0) return
+                entries[tabId]?.callbacks?.onVideoDimensions(tabId, width, height)
+            }
+
+            @JavascriptInterface
+            fun reportPlaybackState(hasVideo: Boolean, isPlaying: Boolean, width: Int, height: Int, playbackRate: Float) {
+                val entry = entries[tabId] ?: return
+                if (hasVideo && width > 0 && height > 0) {
+                    entry.callbacks.onVideoDimensions(tabId, width, height)
+                }
+                val safeRate = playbackRate.takeIf { it in 0.25f..3f } ?: 1f
+                entry.callbacks.onVideoPlaybackState(tabId, hasVideo, isPlaying, safeRate)
+            }
+        }, VIDEO_DIMENSIONS_BRIDGE_NAME)
         setDownloadListener(SecureDownloadListener(tabId))
         setOnTouchListener { _, event ->
             if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
@@ -458,6 +540,7 @@ class BrowserWebViewRegistry(
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
+            view.evaluateJavascript(VIDEO_DIMENSIONS_REPORTER_SCRIPT, null)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             entry?.let { scheduleCookieFlush(view, it) }
             entry?.callbacks?.onPageFinished(tabId, url, view.title)
@@ -595,9 +678,11 @@ class BrowserWebViewRegistry(
         var youtubeCosmeticAppliedUrl: String? = null,
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
+        var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
+        @Volatile var fullscreenVideoDarkeningSuppressed: Boolean = false,
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true
@@ -718,6 +803,89 @@ class BrowserWebViewRegistry(
     }
 
     private companion object {
+        const val VIDEO_DIMENSIONS_BRIDGE_NAME = "NekoBrowserVideo"
+        val YOUTUBE_PIP_UNLOCK_SCRIPT = """
+            (function(){
+              function modifyYtcfgFlags(){
+                try{
+                  if(!window.ytcfg || typeof window.ytcfg.get!=='function') return;
+                  var config=window.ytcfg.get('WEB_PLAYER_CONTEXT_CONFIGS');
+                  config=config&&config.WEB_PLAYER_CONTEXT_CONFIG_ID_MWEB_WATCH;
+                  if(!config || typeof config.serializedExperimentFlags!=='string') return;
+                  var flags=config.serializedExperimentFlags;
+                  [
+                    ['html5_picture_in_picture_blocking_ontimeupdate=true','html5_picture_in_picture_blocking_ontimeupdate=false'],
+                    ['html5_picture_in_picture_blocking_onresize=true','html5_picture_in_picture_blocking_onresize=false'],
+                    ['html5_picture_in_picture_blocking_document_fullscreen=true','html5_picture_in_picture_blocking_document_fullscreen=false'],
+                    ['html5_picture_in_picture_blocking_standard_api=true','html5_picture_in_picture_blocking_standard_api=false'],
+                    ['html5_picture_in_picture_logging_onresize=true','html5_picture_in_picture_logging_onresize=false']
+                  ].forEach(function(pair){flags=flags.replace(pair[0],pair[1]);});
+                  config.serializedExperimentFlags=flags;
+                }catch(_e){}
+              }
+              function unlock(video){
+                if(!video) return;
+                try{video.disablePictureInPicture=false;}catch(_e){}
+                try{video.removeAttribute('disablePictureInPicture');}catch(_e){}
+              }
+              function unlockAll(){document.querySelectorAll('video').forEach(unlock);}
+              function startVideos(){
+                unlockAll();
+                var root=document.documentElement||document;
+                new MutationObserver(function(records){
+                  records.forEach(function(record){
+                    if(record.type==='attributes' && record.target && record.target.tagName==='VIDEO') unlock(record.target);
+                    record.addedNodes&&record.addedNodes.forEach(function(node){
+                      if(node.nodeType!==1) return;
+                      if(node.tagName==='VIDEO') unlock(node);
+                      if(node.querySelectorAll) node.querySelectorAll('video').forEach(unlock);
+                    });
+                  });
+                }).observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['disablepictureinpicture']});
+              }
+              modifyYtcfgFlags();
+              if(!window.ytcfg){
+                document.addEventListener('load',function(event){
+                  if(event.target&&event.target.tagName==='SCRIPT') modifyYtcfgFlags();
+                },true);
+              }
+              if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',startVideos,{once:true}); else startVideos();
+            })();
+        """.trimIndent()
+        val VIDEO_DIMENSIONS_REPORTER_SCRIPT = """
+            (function(){
+              if (window.__nekoBrowserVideoReporterInstalled) return;
+              window.__nekoBrowserVideoReporterInstalled = true;
+              function report(){
+                try {
+                  var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
+                  var visible = videos.filter(function(v){
+                    var r=v.getBoundingClientRect();
+                    return r.width>2 && r.height>2;
+                  });
+                  var video = visible.sort(function(a,b){
+                    return b.getBoundingClientRect().width*b.getBoundingClientRect().height -
+                           a.getBoundingClientRect().width*a.getBoundingClientRect().height;
+                  })[0];
+                  var r = video && video.getBoundingClientRect();
+                  var w = video && (video.videoWidth || Math.round(r.width));
+                  var h = video && (video.videoHeight || Math.round(r.height));
+                  var has = !!video && w>0 && h>0;
+                  var playing = has && !video.paused && !video.ended && video.readyState>2;
+                  var rate = has ? Number(video.playbackRate || 1) : 1;
+                  if (window.NekoBrowserVideo) {
+                    window.NekoBrowserVideo.reportPlaybackState(!!has, !!playing, has?w:0, has?h:0, rate);
+                  }
+                } catch(e) {}
+              }
+              ['loadedmetadata','play','pause','ended','ratechange','resize'].forEach(function(name){
+                document.addEventListener(name, report, true);
+              });
+              new MutationObserver(report).observe(document.documentElement || document, {childList:true,subtree:true});
+              report();
+              setInterval(report, 1000);
+            })();
+        """.trimIndent()
         const val MAX_STATIC_COSMETIC_SELECTORS = 500
         const val GENERIC_COSMETIC_DELAY_MS = 350L
         const val COOKIE_FLUSH_DEBOUNCE_MS = 750L
@@ -811,6 +979,8 @@ interface BrowserWebCallbacks {
     fun onRendererGone(tabId: String)
     fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideFullscreen()
+    fun onVideoDimensions(tabId: String, width: Int, height: Int) = Unit
+    fun onVideoPlaybackState(tabId: String, hasVideo: Boolean, isPlaying: Boolean, playbackRate: Float) = Unit
     fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit)
     fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit)
     fun onPopupRequested(): String?

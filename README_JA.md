@@ -107,6 +107,13 @@ app/build/outputs/apk/debug/app-debug.apk
 | 権限 | カメラ、マイク、位置情報はサイト要求ごとに確認します。 |
 | データ | 履歴、ブックマーク、閲覧データ消去、ダウンロード管理を含みます。 |
 | ダークモード | WebView のアルゴリズム暗色化とアプリ UI のダークテーマに対応します。 |
+| PiP | 全画面動画をActivity直下のnative hostへ移し、Android 12以降の自動遷移、明示的なPiPボタン、動画実寸に基づくアスペクト比、PiP中の`onHideCustomView`順序逆転に対応します。 |
+
+### PiP移植の要点
+
+添付された修正版APKから、PiPに必要な部分をKotlinソースへ移植しました。WebViewをComposeの`AndroidView`だけで保持せず、Activity直下の`FrameLayout`へ接続するため、PiP遷移時のCompose再構成で動画の描画面が外れません。`MainActivity`が全画面custom view、`sourceRectHint`、動画寸法、`setAutoEnterEnabled`、PiP遷移中の保持フラグを一元管理し、`BrowserWebViewRegistry`がページ領域とWebViewのattachを担当します。
+
+Pythonの`pip`パッケージには依存していません。ここでいうPiPはAndroidのPicture-in-Pictureです。ビルド環境は従来どおりJDK 17、Android SDK Platform 35、Build Tools 35.0.0です。
 
 ## 6. 最初に動作確認する順序
 
@@ -119,7 +126,15 @@ app/build/outputs/apk/debug/app-debug.apk
 7. 動画サイトで全画面を選び、操作 UI が隠れることを確認します。
 8. 履歴・ブックマーク・閲覧データ消去を確認します。
 
-## 7. 注意点
+## 7. PiPの動作確認
+
+1. Android 8.0以降のPiP対応端末で動画サイトを開きます。
+2. HTML5動画を全画面表示し、全画面上の`PiP`ボタンを押します。Android 12以降では、ホームジェスチャー・ホームボタンによる自動PiP遷移も確認します。
+3. PiP中に動画が継続再生され、通常のWebView操作バーがPiP画面へ混入しないことを確認します。
+4. PiPを閉じた後、全画面動画と通常ブラウザへ戻り、戻る操作で全画面が終了することを確認します。
+5. 問題が起きた場合はアプリ内の診断ログに`pip_enter_requested`、`pip_entered`、`pip_custom_view_retained`、`pip_exited`が記録されます。
+
+## 8. 注意点
 
 広告ブロックはネットワークリクエストの URL 規則を対象にします。CSS による要素非表示、スクリプトレット、サイト固有の広告枠除去までは実装していません。また、HTTPS 専用のため、HTTPS を提供しないサイトには接続しません。
 

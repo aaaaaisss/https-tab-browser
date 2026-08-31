@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -28,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -37,14 +39,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.httpsbrowser.CrashDiagnostics
 import com.example.httpsbrowser.MainActivity
 import com.example.httpsbrowser.data.AdBlockListRepository
 import com.example.httpsbrowser.data.AdBlockUpdateWorker
@@ -55,6 +59,9 @@ import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import java.io.File
 import java.io.FileInputStream
+import java.net.URI
+import java.util.Locale
+import kotlin.math.roundToInt
 
 private data class PendingWebPermission(
     val origin: String,
@@ -146,38 +153,73 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         // レンダラはアプリ終了時またはタブを閉じた時に確実に破棄する。
         onDispose { }
     }
+
     DisposableEffect(Unit) { onDispose { registry.close() } }
 
     fun finishFullscreen(notifyPage: Boolean) {
         val content = fullscreenContent ?: return
-        // custom viewが消えた瞬間にPiP自動移行も無効化し、通常ページでPiPにならないようにする。
-        (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(null)
         fullscreenContent = null
-        (content.view.parent as? ViewGroup)?.removeView(content.view)
+        selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, false) }
+        (activity as? MainActivity)?.hideFullscreenCustomView(content.view)
         viewModel.setFullscreen(false)
-        if (notifyPage) content.callback.onCustomViewHidden()
-        activity?.let { WindowCompat.getInsetsController(it.window, it.window.decorView).show(WindowInsetsCompat.Type.systemBars()) }
+        if (notifyPage) runCatching { content.callback.onCustomViewHidden() }
     }
 
     fun handleWebViewHideFullscreen() {
         if ((activity as? MainActivity)?.shouldRetainFullscreenCustomView() == true) {
             // PiP遷移ではWebViewがonHideCustomViewを先に通知することがある。
-            // この時点でcustom viewを外すと通常の下部バーがPiPに入り、再生も止まる。
-            com.example.httpsbrowser.CrashDiagnostics.record("pip_custom_view_retained", "reason=webview_hide_during_pip")
+            // この時点でcustom viewを外すと通常のUIがPiPに入り、再生も止まる。
+            CrashDiagnostics.record("pip_custom_view_retained", "reason=webview_hide_during_pip")
             return
         }
         finishFullscreen(false)
     }
 
     fun enterFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) {
-        viewModel.setFullscreen(true)
+        if (fullscreenContent != null) {
+            runCatching { callback.onCustomViewHidden() }
+            CrashDiagnostics.record("fullscreen_duplicate_show", "ignored=true")
+            return
+        }
         fullscreenContent = FullscreenContent(view, callback)
-        (activity as? MainActivity)?.setFullscreenVideoForPictureInPicture(view)
-        activity?.let {
-            WindowCompat.getInsetsController(it.window, it.window.decorView).apply {
-                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                hide(WindowInsetsCompat.Type.systemBars())
-            }
+        selectedTab?.let { registry.setFullscreenVideoDarkeningSuppressed(it.id, true) }
+        viewModel.setFullscreen(true)
+        (activity as? MainActivity)?.showFullscreenCustomView(view, selectedTab?.id)
+    }
+
+    val pageTab = selectedTab?.takeIf { !it.isHome }
+    SideEffect {
+        val host = activity as? MainActivity
+        if (pageTab == null) {
+            host?.hideNormalWebContent()
+        } else {
+            // WebView本体はActivity直下のhostに一度だけ接続し、Compose再構成では状態だけ更新する。
+            registry.obtain(pageTab, state.settings, callbacksFor(
+                viewModel = viewModel,
+                registry = registry,
+                tabId = pageTab.id,
+                onProgress = { progress = it },
+                onScrollPosition = { scrollFraction = it },
+                onFullscreen = ::enterFullscreen,
+                onHideFullscreen = ::handleWebViewHideFullscreen,
+                onVideoDimensions = { id, width, height -> host?.updatePictureInPictureVideoDimensions(id, width, height) },
+                onPermission = { origin, resources, reply ->
+                    pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
+                },
+                onLongPress = { longPressedLink = it },
+                showNotice = { notice = it },
+                onExternalApp = { externalAppUrl = it },
+                onRendererGone = {
+                    viewModel.openHome()
+                    notice = "このページの描画プロセスが停止しました。ホームへ戻りました。"
+                },
+                onPageArchiveReady = { sourcePath, fileName ->
+                    pendingPageArchive = File(sourcePath)
+                    pageArchiveLauncher.launch(fileName)
+                }
+            ))
+            host?.showNormalWebContent(registry, pageTab.id)
+            host?.setNormalWebContentVisible(!state.isFullscreen)
         }
     }
 
@@ -224,65 +266,27 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                             }
                         )
                     } else {
-                        androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
-                            AndroidView(
-                                factory = {
-                                    registry.obtain(selectedTab, state.settings, callbacksFor(
-                                        viewModel = viewModel,
-                                        registry = registry,
-                                        tabId = selectedTab.id,
-                                        onProgress = { progress = it },
-                                        onScrollPosition = { scrollFraction = it },
-                                        onFullscreen = ::enterFullscreen,
-                                        onHideFullscreen = ::handleWebViewHideFullscreen,
-                                        onPermission = { origin, resources, reply ->
-                                            pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
-                                        },
-                                        onLongPress = { longPressedLink = it },
-                                        showNotice = { notice = it },
-                                        onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = {
-                                            // 同じクラッシュURLを自動再読込せず、操作可能なホームへ復帰する。
-                                            viewModel.openHome()
-                                            notice = "このページの描画プロセスが停止しました。ホームへ戻りました。"
-                                        },
-                                        onPageArchiveReady = { sourcePath, fileName ->
-                                            pendingPageArchive = File(sourcePath)
-                                            pageArchiveLauncher.launch(fileName)
+                                                    androidx.compose.runtime.key("${selectedTab.id}-$rendererVersion") {
+                                Spacer(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .onGloballyPositioned { coordinates ->
+                                            val position = coordinates.positionInRoot()
+                                            (activity as? MainActivity)?.setNormalWebContentBounds(
+                                                position.x.roundToInt(),
+                                                position.y.roundToInt(),
+                                                coordinates.size.width,
+                                                coordinates.size.height,
+                                                reserveRightTouchRail = shouldShowRightEdgeScrollRail(selectedTab.url),
+                                                placeAboveCompose = isGoogleWebSurface(selectedTab.url) && !isGoogleImagesSurface(selectedTab.url)
+                                            )
                                         }
-                                    ))
-                                },
-                                update = {
-                                    registry.obtain(selectedTab, state.settings, callbacksFor(
-                                        viewModel = viewModel,
-                                        registry = registry,
-                                        tabId = selectedTab.id,
-                                        onProgress = { progress = it },
-                                        onScrollPosition = { scrollFraction = it },
-                                        onFullscreen = ::enterFullscreen,
-                                        onHideFullscreen = ::handleWebViewHideFullscreen,
-                                        onPermission = { origin, resources, reply ->
-                                            pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
-                                        },
-                                        onLongPress = { longPressedLink = it },
-                                        showNotice = { notice = it },
-                                        onExternalApp = { externalAppUrl = it },
-                                        onRendererGone = {
-                                            // 同じクラッシュURLを自動再読込せず、操作可能なホームへ復帰する。
-                                            viewModel.openHome()
-                                            notice = "このページの描画プロセスが停止しました。ホームへ戻りました。"
-                                        },
-                                        onPageArchiveReady = { sourcePath, fileName ->
-                                            pendingPageArchive = File(sourcePath)
-                                            pageArchiveLauncher.launch(fileName)
+                                        .pointerInput(state.isAddressFocused) {
+                                            detectTapGestures(onTap = { if (state.isAddressFocused) viewModel.stopAddressEditing() })
                                         }
-                                    ))
-                                },
-                                modifier = Modifier.fillMaxSize().pointerInput(state.isAddressFocused) {
-                                    detectTapGestures(onTap = { if (state.isAddressFocused) viewModel.stopAddressEditing() })
-                                }
-                            )
-                        }
+                                )
+                            }
+
                         if (!state.isFullscreen) {
                             Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 4.dp)) {
                                 RightEdgeScrollRail(
@@ -338,22 +342,8 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
             }
         }
 
-        // normal WebViewの上にのみfullscreen custom viewを置く。PiP中も同じ描画階層を維持する。
-        if (state.isFullscreen) {
-            fullscreenContent?.let { content ->
-                AndroidView(
-                    factory = { FrameLayout(it).apply { setBackgroundColor(android.graphics.Color.BLACK) } },
-                    update = { host ->
-                        if (content.view.parent !== host) {
-                            (content.view.parent as? ViewGroup)?.removeView(content.view)
-                            host.removeAllViews()
-                            host.addView(content.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-        }
+        // fullscreen custom viewはActivity直下のnative hostで管理する。
+        // Compose側で再配置するとChromiumの映像面が切り替わるため、ここでは描画しない。
 
         if (!state.isFullscreen && selectedTab?.isHome == true && homeBookmarkEditMode) {
             BookmarkEditActionBar(
@@ -500,6 +490,7 @@ private fun callbacksFor(
     onScrollPosition: (Float) -> Unit,
     onFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideFullscreen: () -> Unit,
+    onVideoDimensions: (String, Int, Int) -> Unit,
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
     onLongPress: (String) -> Unit,
     showNotice: (String) -> Unit,
@@ -519,6 +510,7 @@ private fun callbacksFor(
     override fun onRendererGone(tabId: String) = onRendererGone()
     override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = onFullscreen(view, callback)
     override fun onHideFullscreen() = onHideFullscreen()
+    override fun onVideoDimensions(tabId: String, width: Int, height: Int) = onVideoDimensions(tabId, width, height)
     override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = onPermission(origin, resources, reply)
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id
@@ -536,6 +528,24 @@ private fun requiredAndroidPermissions(resources: Set<String>): Array<String> = 
     if (PermissionRequest.RESOURCE_VIDEO_CAPTURE in resources) add(Manifest.permission.CAMERA)
     if ("位置情報" in resources) add(Manifest.permission.ACCESS_FINE_LOCATION)
 }.toTypedArray()
+
+private fun isGoogleWebSurface(url: String): Boolean {
+    val host = runCatching { URI(url).host?.lowercase(Locale.ROOT) }.getOrNull().orEmpty()
+    return host == "google.com" || host.endsWith(".google.com") || host.startsWith("google.") || host.contains(".google.")
+}
+
+private fun isGoogleImagesSurface(url: String): Boolean {
+    val uri = runCatching { URI(url) }.getOrNull() ?: return false
+    val host = uri.host?.lowercase(Locale.ROOT).orEmpty()
+    val query = uri.rawQuery?.lowercase(Locale.ROOT).orEmpty()
+    return (host == "google.com" || host.endsWith(".google.com")) && uri.path == "/search" &&
+        query.split('&').any { it == "tbm=isch" || it == "udm=2" || it.startsWith("tbm=isch=") || it.startsWith("udm=2=") }
+}
+
+private fun shouldShowRightEdgeScrollRail(url: String): Boolean {
+    val host = runCatching { URI(url).host?.lowercase(Locale.ROOT) }.getOrNull() ?: return true
+    return !host.startsWith("google.") && !host.contains(".google.")
+}
 
 private fun shareUrl(context: Context, url: String) {
     context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
