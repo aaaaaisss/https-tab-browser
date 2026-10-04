@@ -272,18 +272,6 @@ class BrowserWebViewRegistry(
 
     // Recovered from the APK's createSafeBraveRedirectResponse/isSafeRedirectMimeType path.
     // Only data: resources with explicitly safe resource/mime combinations are reconstructed.
-    private companion object {
-        const val MAX_SAFE_REDIRECT_BYTES = 131072
-        const val MAX_SAFE_REDIRECT_DATA_URL_CHARS = 262144
-        val SAFE_REDIRECT_IMAGE_MIME_TYPES = setOf(
-            "image/gif", "image/jpeg", "image/png", "image/webp"
-        )
-        val SAFE_REDIRECT_SCRIPT_MIME_TYPES = setOf(
-            "application/javascript", "application/json", "application/octet-stream",
-            "application/wasm", "text/javascript", "text/plain"
-        )
-    }
-
     private fun isSafeRedirectMimeType(resourceType: String, mimeType: String): Boolean {
         return when (resourceType.lowercase()) {
             "stylesheet" -> mimeType == "text/css"
@@ -926,6 +914,16 @@ class BrowserWebViewRegistry(
     }
 
     private companion object {
+        const val MAX_SAFE_REDIRECT_BYTES = 131072
+        const val MAX_SAFE_REDIRECT_DATA_URL_CHARS = 262144
+        val SAFE_REDIRECT_IMAGE_MIME_TYPES = setOf(
+            "image/gif", "image/jpeg", "image/png", "image/webp"
+        )
+        val SAFE_REDIRECT_SCRIPT_MIME_TYPES = setOf(
+            "application/javascript", "application/json", "application/octet-stream",
+            "application/wasm", "text/javascript", "text/plain"
+        )
+
         const val VIDEO_DIMENSIONS_BRIDGE_NAME = "NekoBrowserVideo"
         val YOUTUBE_PIP_UNLOCK_SCRIPT = """
             (function(){
