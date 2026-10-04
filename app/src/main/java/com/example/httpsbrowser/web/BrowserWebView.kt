@@ -990,6 +990,14 @@ class BrowserWebViewRegistry(
     }
 
     /** APKにも存在するShorts文書判定。通常のYouTube文書判定とは別に保持する。 */
+    private fun isSafeYoutubeAdSelector(selector: String): Boolean {
+        val normalized = selector.trim().lowercase()
+        if (normalized.isBlank() || normalized.length > MAX_AGGRESSIVE_YOUTUBE_SELECTORS) return false
+        val adTokens = listOf("ad", "promoted", "sponsor", "masthead", "merchandise", "paid", "brand")
+        val layoutTokens = listOf("#player", "video", "iframe", "ytd-app", "ytm-app", "ytd-page-manager", "html", "body")
+        return adTokens.any(normalized::contains) && layoutTokens.any(normalized::contains)
+    }
+
     private fun isYoutubeShortsDocumentUrl(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         if (!isYoutubeDocumentUrl(url)) return false
