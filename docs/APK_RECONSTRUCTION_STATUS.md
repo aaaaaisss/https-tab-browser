@@ -175,3 +175,13 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - APK内で `YoutubeAdScripts` というクラスは確認されず、実際に確認できたYouTube document-startスクリプトを `BrowserWebView.kt` の定数へ移植。暫定ヘルパー `YoutubeAdScripts.kt` は削除。
 - これにより今回の対象3領域は「推測した別実装」ではなく、APKから回収したコード/定数を直接使う構成へ置換した。
 - GitHub Actionsは起動していない。作業ブランチは `apk-sync-20261004` のまま。
+
+
+## Latest APK source migration pass 17
+
+- APK DEXのメソッド/文字列照合を基準に、APK側に存在しない自作の動画再生状態ブリッジを削除。
+- `onVideoPlaybackState`、`VideoPlaybackUiState`、`reportPlaybackState`、再生/一時停止トグルUIを削除し、APKで確認できる `setVideoPlaybackRate` / `seekVideo` と動画寸法通知だけを残した。
+- `BrowserWebView.kt` のJavaScript bridgeもAPKで確認できる寸法通知へ戻した。
+- これは「同じ挙動を作る」ための追加ではなく、APKに実在するシンボルだけを残すための置換。
+- APKには `BrowserDownloads.kt`（504行）由来の `BrowserDownloadDispatcher` / `FastDownloadWorker` / `BrowserDownloadRequest` / `BrowserDownloadStatus` / `BrowserDownloadMode` が存在することを確認。ここは推測実装を入れず、DEXから元コードを回収して移植する対象として残す。
+- GitHub Actionsは起動していない。
