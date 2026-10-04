@@ -1063,6 +1063,55 @@ class BrowserWebViewRegistry(
         )
 
         const val VIDEO_DIMENSIONS_BRIDGE_NAME = "NekoBrowserVideo"
+        const val DEEP_DARK_CSS = "html{background:#000!important;color-scheme:dark!important}body{background:#fff!important;color:#111!important;filter:invert(1) hue-rotate(180deg)!important}img,canvas,iframe,svg,picture,object,embed{filter:invert(1) hue-rotate(180deg)!important}video,video::-webkit-media-controls-panel,video::-webkit-media-controls-enclosure{filter:invert(1) hue-rotate(180deg)!important}input,textarea,select{background:#e8e8e8!important;color:#111!important}"
+        val ALREADY_DARK_DOCUMENT_DETECTOR_SCRIPT = """(function(){
+          function parseColor(value){
+            var m=String(value||'').match(/rgba?\(\s*([\d.]+)[,\s]+\s*([\d.]+)[,\s]+\s*([\d.]+)(?:[,\s]+\s*([\d.]+))?\s*\)/i);
+            if(!m){
+              var hex=String(value||'').match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+              if(!hex) return null;
+              var raw=hex[1];
+              if(raw.length===3) raw=raw.replace(/(.)/g,'$1$1');
+              return [parseInt(raw.slice(0,2),16),parseInt(raw.slice(2,4),16),parseInt(raw.slice(4,6),16)];
+            }
+            var a=m[4]===undefined?1:parseFloat(m[4]);
+            return a>0.02?[parseFloat(m[1]),parseFloat(m[2]),parseFloat(m[3])]:null;
+          }
+          function luminance(rgb){return (0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2])/255;}
+          function backgroundOf(node){
+            var current=node;
+            for(var i=0;current&&i<8;i++,current=current.parentElement){
+              var color=parseColor(getComputedStyle(current).backgroundColor);
+              if(color) return luminance(color);
+            }
+            return null;
+          }
+          var bodyBackground=backgroundOf(document.body);
+          var background=bodyBackground===null?backgroundOf(document.documentElement):bodyBackground;
+          var rootStyle=getComputedStyle(document.documentElement);
+          var bodyStyle=document.body?getComputedStyle(document.body):null;
+          var scheme=(rootStyle.colorScheme+' '+(bodyStyle?bodyStyle.colorScheme:'')).toLowerCase();
+          var meta=document.querySelector('meta[name="theme-color"]');
+          var metaColor=meta?parseColor(meta.content):null;
+          if(background!==null) return background<=0.18||(background<=0.35&&scheme.indexOf('dark')!==-1);
+          return scheme.indexOf('dark')!==-1||(metaColor!==null&&luminance(metaColor)<=0.18);
+        })()"""
+        val YOUTUBE_PAGE_DARK_CSS = "html,body,ytd-app,ytm-app{background:#0f0f0f!important;color:#f1f1f1!important;color-scheme:dark!important}#masthead-container,#masthead,ytd-masthead,ytm-mobile-topbar-renderer,ytm-pivot-bar-renderer{background:#0f0f0f!important;color:#f1f1f1!important}ytd-app *,ytm-app *{border-color:#3f3f3f!important}ytd-app a,ytm-app a,ytd-app yt-formatted-string,ytm-app yt-formatted-string,ytd-app h1,ytd-app h2,ytd-app h3,ytd-app h4,ytd-app span,ytm-app span{color:#f1f1f1!important}input,textarea,select{background:#202020!important;color:#f1f1f1!important;border-color:#555!important}video,video *,#player video,ytm-player video{filter:none!important;background:#000!important;color-scheme:normal!important}.ytp-gradient-top,.ytp-gradient-bottom{filter:none!important}"
+        const val VIDEO_PLAYBACK_RATE_SCRIPT = """(function(rate){
+          window.__httpsBrowserPlaybackRate=rate;
+          function applyRate(){
+            document.querySelectorAll('video').forEach(function(v){if(v.playbackRate!==rate)v.playbackRate=rate;});
+          }
+          applyRate();
+          if(!window.__httpsBrowserPlaybackRateObserver){
+            var observer=new MutationObserver(applyRate);
+            observer.observe(document.documentElement||document,{childList:true,subtree:true});
+            document.addEventListener('loadedmetadata',applyRate,true);
+            document.addEventListener('canplay',applyRate,true);
+            window.__httpsBrowserPlaybackRateObserver=observer;
+          }
+        })(%f);"""
+
         val YOUTUBE_PIP_UNLOCK_SCRIPT = """
             (function(){
               function modifyYtcfgFlags(){
