@@ -1,15 +1,12 @@
 package com.example.httpsbrowser.web
 
-import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
-import android.webkit.DownloadListener
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
@@ -19,7 +16,6 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
-import android.webkit.URLUtil
 import androidx.webkit.SafeBrowsingResponseCompat
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewClientCompat
