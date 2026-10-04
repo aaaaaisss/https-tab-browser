@@ -249,7 +249,7 @@ class FastDownloadWorker(
             } else {
                 downloadNormal(url, fileName)
             }
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
             if (runAttemptCount + 1 >= MAX_RETRIES) createFailure(e.message.orEmpty()) else Result.retry()
         }
     }
