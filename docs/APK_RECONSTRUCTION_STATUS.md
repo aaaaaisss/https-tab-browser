@@ -165,3 +165,13 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - Added the APK-style `refreshContentFiltering()` path and invoke it when browser settings change, without reloading the page.
 - Added forward-history target capture alongside the restored back-history queue.
 - The APK also contains a separate advanced download subsystem (`BrowserDownloadDispatcher`, `FastDownloadWorker`, `BrowserDownloadRequest/Status/Mode`). The existing branch already has functional downloads through Android's download path, but that advanced dispatcher/worker implementation remains a distinct parity target and has not been guessed into the code.
+
+
+## Latest APK source migration pass 16
+
+- 方針を「挙動の再現」から「APKに存在するコードの移植・置換」へ変更。
+- APK DEXで直接確認できた `AdBlockInjector.inject(WebView)` の構成へ置換し、APKの広告CSS/YouTube JSON除去スクリプトを反映。
+- APKに存在する `MinimalAdBlockClient.createEmptyAdResponse()` を追加し、`shouldBlockMinimalAd` をAPKのクラス構成へ寄せた。
+- APK内で `YoutubeAdScripts` というクラスは確認されず、実際に確認できたYouTube document-startスクリプトを `BrowserWebView.kt` の定数へ移植。暫定ヘルパー `YoutubeAdScripts.kt` は削除。
+- これにより今回の対象3領域は「推測した別実装」ではなく、APKから回収したコード/定数を直接使う構成へ置換した。
+- GitHub Actionsは起動していない。作業ブランチは `apk-sync-20261004` のまま。
