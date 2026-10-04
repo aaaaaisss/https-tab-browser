@@ -1269,7 +1269,7 @@ class BrowserWebViewRegistry(
 (function(){
           if(window.__nekoBrowserYouTubeAdSanitizer) return;
           window.__nekoBrowserYouTubeAdSanitizer=true;
-          var adKeys=['adPlacements','playerAds','adSlots','adBreakHeartbeatParams'];
+          var adKeys=['adPlacements','playerAds','adSlots','adBreakHeartbeatParams','adReasons','promoted','ypc_spin_up'];
           function disablePlayerFields(value){
             if(!value || typeof value!=='object') return value;
             var roots=[value,value.playerResponse,value.response];
