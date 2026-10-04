@@ -436,15 +436,57 @@ class BrowserWebViewRegistry(
         }
     }
 
-    private fun configure(view: WebView, settings: BrowserSettings) {
+    private fun configure(view: WebView, entry: Entry, url: String = entry.activeDocumentUrl.orEmpty()) {
+        val settings = entry.settings
         view.settings.javaScriptEnabled = settings.javascriptEnabled
-        val applied = FulgurisDarkModeController.apply(view, settings.forceDarkPages)
-        CrashDiagnostics.record(
-            "dark_mode_configured",
-            "engine=fulguris_native\nforceRequested=${applied.forceDarkPages}\nappDark=${applied.appUsesDarkTheme}\nalgorithmic=${applied.algorithmicDarkening}\nforceDark=${applied.forceDark}\nforceDarkStrategy=${applied.forceDarkStrategy}"
-        )
+        val isVideoPage = isVideoPlaybackDocumentUrl(url)
+        val excluded = isDarkModeExcluded(settings, url)
+        val applyForceDark = settings.forceDarkPages && (!isVideoPage || settings.forceDarkVideoPages) && !excluded
+        val applied = FulgurisDarkModeController.apply(view, applyForceDark)
+        entry.appliedForceDark = applyForceDark
+        entry.appliedForceDarkVideoPages = settings.forceDarkVideoPages
+        entry.appliedSkipDarkeningAlreadyDarkPages = settings.skipDarkeningAlreadyDarkPages
+        entry.appliedDarkModeExcludedHosts = settings.darkModeExcludedHosts
+        CrashDiagnostics.record("dark_mode_configured", "engine=apk_compatible\nforceRequested=" + settings.forceDarkPages + "\nforceApplied=" + applyForceDark + "\nvideoPage=" + isVideoPage + "\nvideoForce=" + settings.forceDarkVideoPages + "\nalreadyDarkSkip=" + settings.skipDarkeningAlreadyDarkPages + "\nexcluded=" + excluded + "\nalgorithmic=" + applied.algorithmicDarkening + "\nforceDark=" + applied.forceDark + "\nforceDarkStrategy=" + applied.forceDarkStrategy)
     }
 
+    private fun isDarkModeExcluded(settings: BrowserSettings, url: String): Boolean {
+        val host = youtubeHost(url)?.removePrefix("www.").orEmpty()
+        if (host.isBlank()) return false
+        return settings.darkModeExcludedHosts.any {
+            val normalized = it.trim().lowercase().removePrefix("www.")
+            normalized.isNotBlank() && (host == normalized || host.endsWith("." + normalized))
+        }
+    }
+
+    private fun prepareDarkDocumentStartScript(entry: Entry, url: String) {
+        runCatching { entry.darkDocumentStartScriptHandler?.remove() }
+        entry.darkDocumentStartScriptHandler = null
+        if (!entry.settings.forceDarkPages || isDarkModeExcluded(entry.settings, url)) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val isVideo = isVideoPlaybackDocumentUrl(url)
+        if (isVideo && !entry.settings.forceDarkVideoPages) return
+        val css = if (isYoutubeDocumentUrl(url)) YOUTUBE_PAGE_DARK_CSS else DEEP_DARK_CSS
+        val script = "(function(){var alreadyDark=" + ALREADY_DARK_DOCUMENT_DETECTOR_SCRIPT + ";if(" + entry.settings.skipDarkeningAlreadyDarkPages + "&&alreadyDark)return;var id=\"__https_browser_deep_dark\";var style=document.getElementById(id);if(!style){style=document.createElement(\"style\");style.id=id;(document.documentElement||document.head).appendChild(style);}style.textContent=" + JSONObject.quote(css) + ";})();"
+        val originRules = originRulesFor(url)
+        if (originRules.isEmpty()) return
+        runCatching { WebViewCompat.addDocumentStartJavaScript(entry.webView, script, originRules) }
+            .onSuccess { entry.darkDocumentStartScriptHandler = it }
+            .onFailure { throwable -> CrashDiagnostics.record("dark_document_start_unsupported", throwable.javaClass.simpleName + ": " + throwable.message.orEmpty()) }
+    }
+
+    private fun originRulesFor(url: String): Set<String> {
+        val host = youtubeHost(url) ?: return emptySet()
+        return setOf("https://" + host, "https://*." + host)
+    }
+
+    private fun detectAlreadyDarkDocument(view: WebView, entry: Entry, url: String) {
+        if (!entry.settings.skipDarkeningAlreadyDarkPages) { entry.documentIsAlreadyDark = false; return }
+        view.evaluateJavascript(ALREADY_DARK_DOCUMENT_DETECTOR_SCRIPT) { raw ->
+            entry.documentIsAlreadyDark = raw == "true"
+            CrashDiagnostics.record("dark_document_detected", "url=" + url + "\nalreadyDark=" + entry.documentIsAlreadyDark)
+        }
+    }
     /**
      * 指定標準リストからBraveが解決したYouTube scriptletだけを、ページのJSより先に注入する。
      * 任意追加リストのscriptletにはRust側で権限を与えていないため、ここで返らない。
@@ -979,7 +1021,7 @@ class BrowserWebViewRegistry(
         }
     }
 
-    private fun resourceTypeFor(request: WebResourceRequest): String {
+    private fun applyVideoPlaybackRate(view: WebView, rate: Float) {\n        val safeRate = rate.coerceIn(0.25f, 3f)\n        view.evaluateJavascript(String.format(java.util.Locale.US, VIDEO_PLAYBACK_RATE_SCRIPT, safeRate), null)\n    }\n\n    private fun resourceTypeFor(request: WebResourceRequest): String {
         if (request.isForMainFrame) return "document"
         val headers = request.requestHeaders
         val destination = headers.entries.firstOrNull { it.key.equals("Sec-Fetch-Dest", ignoreCase = true) }?.value?.lowercase()
