@@ -736,7 +736,6 @@ class BrowserWebViewRegistry(
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
             entry?.rearmPageLifecycle(url)
-            entry?.backNavigationInFlight = false
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
             entry?.youtubeCosmeticAppliedUrl = null
@@ -756,6 +755,10 @@ class BrowserWebViewRegistry(
 
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
+            if (entry != null) {
+                if (entry.lifecycleUrl != url || entry.pageFinishedDone) return
+                entry.pageFinishedDone = true
+            }
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             AdBlockInjector.inject(view, entry?.settings?.aggressiveAdBlockingEnabled == true)
             entry?.let { applyVideoPlaybackRate(view, it.settings.videoPlaybackRate); releaseDarkRevealGuard(view, it, url); completeBackNavigation(tabId, it, view) }
