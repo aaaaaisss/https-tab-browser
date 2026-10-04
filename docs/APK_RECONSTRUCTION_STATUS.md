@@ -31,3 +31,18 @@ This file tracks **confirmed restoration separately from inferred reconstruction
 ## Workflow safety
 
 The repository workflow currently triggers on pushes to `main`. Work is therefore being kept on this branch and Actions are not manually dispatched.
+
+## Git-history correlation discovered
+
+Commit `362d91a5d622763f43fa055bbfff661ee58ef7cb` (`Port robust Android PiP video handling`) contains the same `BrowserWebViewRegistry` architecture and PiP/video code family visible in the APK. The current `main` is based on that line of development. This gives a reliable historical reference for the large WebView source rather than treating all of it as APK-only code.
+
+The APK nevertheless contains additional symbols not found in the repository history, notably:
+- `youtubeAdSanitizerScriptHandler`
+- `youtubeNoAdWarmPlayerScriptHandler`
+- `youtubeSabrPatchOnlyScriptHandler`
+- `youtubeCosmeticAggressiveApplied`
+- `MAX_AGGRESSIVE_YOUTUBE_SELECTORS`
+- `MAX_QUEUED_BACK_REQUESTS`
+- `MAX_SAFE_REDIRECT_BYTES`
+
+These remain pending because their exact compiled implementation should be reconstructed from APK evidence rather than guessed.
