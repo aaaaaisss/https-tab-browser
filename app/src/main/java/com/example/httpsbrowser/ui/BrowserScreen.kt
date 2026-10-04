@@ -148,6 +148,7 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         listRepository.loadAndCompile()
         AdBlockUpdateWorker.schedule(context.applicationContext)
     }
+    LaunchedEffect(state.settings) { registry.refreshContentFiltering() }
     LaunchedEffect(externalUrl) {
         externalUrl?.let(::navigate)
     }
