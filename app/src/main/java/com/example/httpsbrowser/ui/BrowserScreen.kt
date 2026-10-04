@@ -60,14 +60,7 @@ import android.webkit.WebChromeClient
 import java.io.File
 import java.io.FileInputStream
 import java.net.URI
-import java.util.Locale
 import kotlin.math.roundToInt
-
-private data class VideoPlaybackUiState(
-    val hasVideo: Boolean,
-    val isPlaying: Boolean,
-    val playbackRate: Float
-)
 
 private data class PendingWebPermission(
     val origin: String,
@@ -103,7 +96,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     var homeBookmarkEditMode by remember { mutableStateOf(false) }
     var homeBookmarkSelection by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingPageArchive by remember { mutableStateOf<File?>(null) }
-    var videoPlayback by remember(selectedTab?.id) { mutableStateOf<VideoPlaybackUiState?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -211,9 +203,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
                 onFullscreen = ::enterFullscreen,
                 onHideFullscreen = ::handleWebViewHideFullscreen,
                 onVideoDimensions = { id, width, height -> host?.updatePictureInPictureVideoDimensions(id, width, height) },
-                onVideoPlaybackState = { _, hasVideo, isPlaying, playbackRate ->
-                    videoPlayback = if (hasVideo && pageTab != null && shouldShowVideoControls(pageTab.url, state.settings.videoControlHosts, state.isFullscreen)) VideoPlaybackUiState(hasVideo, isPlaying, playbackRate) else null
-                },
                 onPermission = { origin, resources, reply ->
                     pendingPermission = PendingWebPermission(origin, resources, requiredAndroidPermissions(resources), reply)
                 },
