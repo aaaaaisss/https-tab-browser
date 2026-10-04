@@ -106,3 +106,10 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 
 - APK `BrowserWebViewRegistry` still contains dedicated dark-document-start infrastructure (`prepareDarkDocumentStartScript`, deep-dark CSS, already-dark detection, dark reveal guard). The current repository intentionally uses its newer Fulguris-native dark-mode path instead, so this APK-era implementation was not blindly reintroduced.
 - APK evidence also confirms the diagnostic/lifecycle names `youtube_pip_unlock_ready/unsupported`, `youtube_viewport_metrics`, and the three aggressive YouTube script readiness events. Existing repository code already contains corresponding PiP/viewport and YouTube script paths, so no duplicate implementation was added.
+
+
+## Latest APK evidence pass 9
+
+- Rechecked the current branch against APK-observed lifecycle structure. `ensureYoutubePictureInPictureScript` and the three aggressive document-start handlers are already registered/removed at the appropriate WebView lifecycle points, so no duplicate handlers were introduced.
+- The APK-era safe redirect helper remains intentionally isolated. It has exact recovered size/MIME guards but is not connected to interception until the remaining call-site semantics are decoded.
+- The current Fulguris-native dark-mode implementation remains preferred over reintroducing the older APK document-start darkening layer.
