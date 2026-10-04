@@ -31,7 +31,7 @@ object AdBlockInjector {
         ytm-rich-item-renderer > ad-slot-renderer,
         lazy-list > ad-slot-renderer,
         ytm-companion-slot[data-content-type] > ytm-companion-ad-renderer,
-        #masthead-ad.ytd-rich-grid-renderer {
+        #masthead-ad.ytd-rich-grid-renderer,\n        .ytp-suggested-action > .ytp-suggested-action-badge,\n        yt-overlay-product-sticker {
             display:none !important;
         }
     """
