@@ -88,14 +88,33 @@ class BrowserDownloadDispatcher(private val context: Context) {
     fun switchToNormal(id: String) {
         val tracked = trackedDownloads[id] ?: return
         if (tracked.mode == BrowserDownloadMode.NORMAL) return
-        WorkManager.getInstance(context).cancelWorkById(tracked.workId ?: return)
-        trackedDownloads[id] = tracked.copy(mode = BrowserDownloadMode.NORMAL, fallbackToNormal = true, phase = "NORMAL")
+        tracked.workId?.let { WorkManager.getInstance(context).cancelWorkById(it) }
+        val request = DownloadManager.Request(Uri.parse(tracked.request.url)).apply {
+            setTitle(tracked.request.title)
+            setDescription("ねこぶらうざからのダウンロード")
+            setMimeType(tracked.request.mimeType)
+            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, tracked.request.fileName)
+            addRequestHeader("User-Agent", tracked.request.userAgent)
+            tracked.request.referer.takeIf { it.isNotBlank() }?.let { addRequestHeader("Referer", it) }
+            CookieManager.getInstance().getCookie(tracked.request.url)?.let { addRequestHeader("Cookie", it) }
+        }
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val dmId = manager.enqueue(request)
+        trackedDownloads[id] = tracked.copy(
+            mode = BrowserDownloadMode.NORMAL,
+            downloadManagerId = dmId,
+            workId = null,
+            fallbackToNormal = true,
+            phase = "ENQUEUED"
+        )
     }
 
     suspend fun currentStatuses(): List<BrowserDownloadStatus> {
         pruneTrackedDownloads()
         val workManager = WorkManager.getInstance(context)
         return trackedDownloads.values.sortedByDescending { it.createdAt }.map { tracked ->
+            val dmSnapshot = if (tracked.downloadManagerId != null) readDownloadManagerStatus(tracked) else null
             val phase = when {
                 tracked.cancelled -> "CANCELLED"
                 tracked.deleted -> "DELETED"
@@ -111,11 +130,31 @@ class BrowserDownloadDispatcher(private val context: Context) {
                 } ?: tracked.phase
                 else -> tracked.phase
             }
-            tracked.snapshot(phase = phase)
+            dmSnapshot?.copy(phase = phase) ?: tracked.snapshot(phase = phase)
         }
     }
 
-    private fun pruneTrackedDownloads() {
+    private fun readDownloadManagerStatus(tracked: TrackedDownload): BrowserDownloadStatus? {
+        val dmId = tracked.downloadManagerId ?: return null
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager ?: return null
+        manager.query(DownloadManager.Query().setFilterById(dmId))?.use { cursor ->
+            if (!cursor.moveToFirst()) return null
+            val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+            val downloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+            val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)).takeIf { it >= 0L }
+            val phase = when (status) {
+                DownloadManager.STATUS_PENDING -> "ENQUEUED"
+                DownloadManager.STATUS_RUNNING -> "RUNNING"
+                DownloadManager.STATUS_SUCCESSFUL -> "COMPLETED"
+                DownloadManager.STATUS_FAILED -> "FAILED"
+                else -> tracked.phase
+            }
+            return tracked.snapshot(downloaded, total, phase, status == DownloadManager.STATUS_SUCCESSFUL)
+        }
+        return null
+    }
+
+
         if (trackedDownloads.size <= MAX_TRACKED_DOWNLOADS) return
         trackedDownloads.values.sortedBy { it.createdAt }
             .drop(MAX_TRACKED_DOWNLOADS)
