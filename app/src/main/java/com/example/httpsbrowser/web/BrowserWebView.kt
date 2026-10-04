@@ -862,6 +862,13 @@ class BrowserWebViewRegistry(
             host == "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com")
     }
 
+    /** APKにも存在するShorts文書判定。通常のYouTube文書判定とは別に保持する。 */
+    private fun isYoutubeShortsDocumentUrl(url: String): Boolean {
+        val uri = runCatching { URI(url) }.getOrNull() ?: return false
+        if (!isYoutubeDocumentUrl(url)) return false
+        return uri.path?.startsWith("/shorts/") == true
+    }
+
     /** Google検索は動画タブとプレビュー展開を同じ検索文書上で行うため、広いcosmetic適用を避ける。 */
     private fun isGoogleSearchDocumentUrl(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
