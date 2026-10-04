@@ -1,6 +1,8 @@
 package com.example.httpsbrowser.data
 
+import android.app.DownloadManager
 import android.content.Context
+import android.os.Environment
 import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.URLUtil
@@ -37,8 +39,19 @@ class BrowserDownloadDispatcher(private val context: Context) {
 
     fun enqueueNormal(request: BrowserDownloadRequest): String {
         val id = UUID.randomUUID().toString()
-        val now = System.currentTimeMillis()
-        trackedDownloads[id] = TrackedDownload(id, request, BrowserDownloadMode.NORMAL, now, null, null, false, "ENQUEUED")
+        val dmRequest = DownloadManager.Request(android.net.Uri.parse(request.url)).apply {
+            setTitle(request.title)
+            setDescription("ねこぶらうざからのダウンロード")
+            setMimeType(request.mimeType)
+            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, request.fileName)
+            addRequestHeader("User-Agent", request.userAgent)
+            request.referer.takeIf { it.isNotBlank() }?.let { addRequestHeader("Referer", it) }
+            CookieManager.getInstance().getCookie(request.url)?.let { addRequestHeader("Cookie", it) }
+        }
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val dmId = manager.enqueue(dmRequest)
+        trackedDownloads[id] = TrackedDownload(id, request, BrowserDownloadMode.NORMAL, System.currentTimeMillis(), dmId, null, false, "ENQUEUED")
         return id
     }
 
@@ -126,7 +139,7 @@ class FastDownloadWorker(
         val url = inputData.getString(KEY_URL).orEmpty()
         if (!url.startsWith("https://", true)) return Result.failure()
         return try {
-            val connection = java.net.URL(url).openConnection().apply {
+            val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS
                 setRequestProperty("User-Agent", inputData.getString(KEY_USER_AGENT).orEmpty())
@@ -134,6 +147,7 @@ class FastDownloadWorker(
                 CookieManager.getInstance().getCookie(url)?.let { setRequestProperty("Cookie", it) }
             }
             connection.connect()
+            if (connection.responseCode !in 200..299) return Result.retry()
             val fileName = inputData.getString(KEY_FILE_NAME)?.ifBlank { URLUtil.guessFileName(url, null, inputData.getString(KEY_MIME_TYPE)) }
                 ?: URLUtil.guessFileName(url, null, inputData.getString(KEY_MIME_TYPE))
             val target = java.io.File(applicationContext.cacheDir, fileName)
@@ -166,5 +180,9 @@ class FastDownloadWorker(
         const val PROGRESS_TOTAL = "progress_total"
         const val CONNECT_TIMEOUT_MS = 15_000
         const val READ_TIMEOUT_MS = 30_000
+        const val MIN_PARALLEL_BYTES = 2L * 1024L * 1024L
+        const val PARALLEL_CONNECTIONS = 4
+        const val MAX_RETRIES = 3
+        const val MAX_TRACKED_DOWNLOADS = 50
     }
 }
