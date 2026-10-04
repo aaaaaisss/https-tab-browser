@@ -910,6 +910,8 @@ class BrowserWebViewRegistry(
     }
 
     private companion object {
+        const val MAX_QUEUED_BACK_REQUESTS = 2000
+        const val MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 500
         const val MAX_SAFE_REDIRECT_BYTES = 131072
         const val MAX_SAFE_REDIRECT_DATA_URL_CHARS = 262144
         val SAFE_REDIRECT_IMAGE_MIME_TYPES = setOf(
