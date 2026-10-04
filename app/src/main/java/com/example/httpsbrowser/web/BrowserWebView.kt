@@ -270,6 +270,58 @@ class BrowserWebViewRegistry(
         }
     }
 
+    // Recovered from the APK's createSafeBraveRedirectResponse/isSafeRedirectMimeType path.
+    // Only data: resources with explicitly safe resource/mime combinations are reconstructed.
+    private companion object {
+        const val MAX_SAFE_REDIRECT_BYTES = 131072
+        const val MAX_SAFE_REDIRECT_DATA_URL_CHARS = 262144
+        val SAFE_REDIRECT_IMAGE_MIME_TYPES = setOf(
+            "image/gif", "image/jpeg", "image/png", "image/webp"
+        )
+        val SAFE_REDIRECT_SCRIPT_MIME_TYPES = setOf(
+            "application/javascript", "application/json", "application/octet-stream",
+            "application/wasm", "text/javascript", "text/plain"
+        )
+    }
+
+    private fun isSafeRedirectMimeType(resourceType: String, mimeType: String): Boolean {
+        return when (resourceType.lowercase()) {
+            "stylesheet" -> mimeType == "text/css"
+            "image" -> mimeType in SAFE_REDIRECT_IMAGE_MIME_TYPES
+            "script" -> mimeType in SAFE_REDIRECT_SCRIPT_MIME_TYPES
+            else -> false
+        }
+    }
+
+    private fun createSafeBraveRedirectResponse(
+        url: String,
+        resourceType: String,
+        mimeType: String
+    ): WebResourceResponse? {
+        if (!url.startsWith("data:", ignoreCase = true)) return null
+        if (url.length > MAX_SAFE_REDIRECT_DATA_URL_CHARS) return null
+        if (!isSafeRedirectMimeType(resourceType, mimeType.lowercase())) return null
+
+        val match = Regex("^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$", RegexOption.IGNORE_CASE)
+            .matchEntire(url) ?: return null
+        val encoded = match.groupValues[2]
+        val bytes = runCatching { android.util.Base64.decode(encoded, android.util.Base64.DEFAULT) }
+            .getOrNull() ?: return null
+        if (bytes.isEmpty() || bytes.size > MAX_SAFE_REDIRECT_BYTES) return null
+
+        val textLike = mimeType.startsWith("text/") &&
+            (mimeType.contains("javascript") || mimeType.endsWith("+xml"))
+        val charset = if (textLike) "utf-8" else "utf-8"
+        return WebResourceResponse(
+            mimeType,
+            charset,
+            200,
+            "OK",
+            mapOf("Cache-Control" to "no-store", "X-Content-Type-Options" to "nosniff"),
+            ByteArrayInputStream(bytes)
+        )
+    }
+
     private fun createWebView(tabId: String): WebView = object : WebView(context) {
         override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
             super.onScrollChanged(l, t, oldl, oldt)
@@ -557,6 +609,9 @@ class BrowserWebViewRegistry(
             // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
             val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
             val resourceType = resourceTypeFor(request)
+            // Brave's safe data-resource fallback is intentionally narrow. The APK limits it by
+            // resource type, MIME type, URL length, base64 syntax, and decoded byte size.
+            val safeDataResponse = createSafeBraveRedirectResponse(url, resourceType, request.requestHeaders["Accept"].orEmpty())
             // YouTube/Googlevideo/ytimgのiframe bootstrap、player JS、映像chunk、内部APIは
             // 再生必須として保護する。Google検索動画タブで起動したiframeと映像も同様に保護する。
             // 明示的なYouTube広告・計測専用ホスト/パスだけは規則評価を継続する。
