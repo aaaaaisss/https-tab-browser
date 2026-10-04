@@ -99,7 +99,7 @@ class BrowserDownloadDispatcher(private val context: Context) {
             val phase = when {
                 tracked.cancelled -> "CANCELLED"
                 tracked.deleted -> "DELETED"
-                tracked.workId != null -> workManager.getWorkInfoById(tracked.workId)?.let { info ->
+                tracked.workId != null -> workManager.getWorkInfoById(tracked.workId).get()?.let { info ->
                     when (info.state) {
                         WorkInfo.State.RUNNING -> "RUNNING"
                         WorkInfo.State.SUCCEEDED -> "COMPLETED"
