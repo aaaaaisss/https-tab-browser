@@ -77,3 +77,8 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - The safe redirect helper has been reconstructed as an isolated method only. It is **not wired into request interception yet**, because the APK's exact MIME/resource-type call-site contract is not fully decoded. This avoids introducing an unsafe or incorrect fallback.
 
 - Corrected the safe redirect helper placement so its constants live in the existing `BrowserWebView.kt` companion object; no duplicate companion object remains.
+
+
+## Latest APK evidence pass 4
+
+- Direct DEX decoding confirmed `isSafeYoutubeAdSelector` returns true only when the normalized selector is nonblank, at most 500 characters, contains at least one ad token (`ad`, `promoted`, `sponsor`, `masthead`, `merchandise`, `paid`, `brand`) **and** at least one layout token (`#player`, `video`, `iframe`, `ytd-app`, `ytm-app`, `ytd-page-manager`, `html`, `body`).\n- Recovered two aggressive YouTube selectors that were missing from the reconstructed CSS: `.ytp-suggested-action > .ytp-suggested-action-badge` and `yt-overlay-product-sticker`. These are now restored.\n- Safe redirect limits and MIME handling remain isolated and unwired until the APK request-interception call site is decoded.\n
