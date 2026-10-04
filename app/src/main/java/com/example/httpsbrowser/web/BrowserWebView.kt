@@ -507,6 +507,7 @@ class BrowserWebViewRegistry(
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
         entry.youtubeCosmeticAppliedUrl = null
+        entry.youtubeCosmeticAggressiveApplied = false
         view.evaluateJavascript(
             "(function(){document.getElementById('__https_browser_adblock_static')?.remove();document.getElementById('__https_browser_adblock_generic')?.remove();document.getElementById('__https_browser_youtube_ad_css')?.remove();})();",
             null
