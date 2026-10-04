@@ -25,17 +25,17 @@ data class BrowserDownloadRequest(
     val title: String = fileName
 )
 
-data class BrowserDownloadStatusSnapshot(
+data class BrowserDownloadStatus(
     val id: String,
     val url: String,
     val mode: BrowserDownloadMode,
     val fileName: String,
-    val phase: String,
     val downloadedBytes: Long,
     val totalBytes: Long?,
-    val cancelled: Boolean,
-    val contentUri: String? = null,
-    val startedAt: Long = 0L
+    val isSuccessful: Boolean,
+    val isTerminal: Boolean,
+    val phase: String,
+    val startedAt: Long
 )
 
 class BrowserDownloadDispatcher(private val context: Context) {
@@ -78,7 +78,7 @@ class BrowserDownloadDispatcher(private val context: Context) {
         trackedDownloads[id] = tracked.copy(mode = BrowserDownloadMode.NORMAL, fallbackToNormal = true, phase = "NORMAL")
     }
 
-    suspend fun currentStatuses(): List<BrowserDownloadStatusSnapshot> = trackedDownloads.values
+    suspend fun currentStatuses(): List<BrowserDownloadStatus> = trackedDownloads.values
         .sortedByDescending { it.createdAt }
         .map { it.snapshot() }
 
@@ -93,7 +93,7 @@ class BrowserDownloadDispatcher(private val context: Context) {
         trackedDownloads.remove(id)?.workId?.let { WorkManager.getInstance(context).cancelWorkById(it) }
     }
 
-    fun trackedDownloads(): List<BrowserDownloadStatusSnapshot> =
+    fun trackedDownloads(): List<BrowserDownloadStatus> =
         trackedDownloads.values.sortedByDescending { it.createdAt }.map { it.snapshot() }
 
     fun close() = Unit
@@ -109,15 +109,16 @@ class BrowserDownloadDispatcher(private val context: Context) {
         val phase: String,
         val cancelled: Boolean = false
     ) {
-        fun snapshot() = BrowserDownloadStatusSnapshot(
+        fun snapshot() = BrowserDownloadStatus(
             id = id,
             url = request.url,
             mode = mode,
             fileName = request.fileName,
-            phase = phase,
             downloadedBytes = 0L,
             totalBytes = null,
-            cancelled = cancelled,
+            isSuccessful = false,
+            isTerminal = cancelled,
+            phase = phase,
             startedAt = createdAt
         )
     }
