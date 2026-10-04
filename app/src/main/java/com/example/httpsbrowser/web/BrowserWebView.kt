@@ -458,15 +458,6 @@ class BrowserWebViewRegistry(
                 entries[tabId]?.callbacks?.onVideoDimensions(tabId, width, height)
             }
 
-            @JavascriptInterface
-            fun reportPlaybackState(hasVideo: Boolean, isPlaying: Boolean, width: Int, height: Int, playbackRate: Float) {
-                val entry = entries[tabId] ?: return
-                if (hasVideo && width > 0 && height > 0) {
-                    entry.callbacks.onVideoDimensions(tabId, width, height)
-                }
-                val safeRate = playbackRate.takeIf { it in 0.25f..3f } ?: 1f
-                entry.callbacks.onVideoPlaybackState(tabId, hasVideo, isPlaying, safeRate)
-            }
         }, VIDEO_DIMENSIONS_BRIDGE_NAME)
         setDownloadListener(SecureDownloadListener(tabId))
         setOnTouchListener { _, event ->
@@ -1483,11 +1474,8 @@ class BrowserWebViewRegistry(
                   var r = video && video.getBoundingClientRect();
                   var w = video && (video.videoWidth || Math.round(r.width));
                   var h = video && (video.videoHeight || Math.round(r.height));
-                  var has = !!video && w>0 && h>0;
-                  var playing = has && !video.paused && !video.ended && video.readyState>2;
-                  var rate = has ? Number(video.playbackRate || 1) : 1;
-                  if (window.NekoBrowserVideo) {
-                    window.NekoBrowserVideo.reportPlaybackState(!!has, !!playing, has?w:0, has?h:0, rate);
+                  if (window.NekoBrowserVideo && w>0 && h>0) {
+                    window.NekoBrowserVideo.report(w, h);
                   }
                 } catch(e) {}
               }
@@ -1594,7 +1582,6 @@ interface BrowserWebCallbacks {
     fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideFullscreen()
     fun onVideoDimensions(tabId: String, width: Int, height: Int) = Unit
-    fun onVideoPlaybackState(tabId: String, hasVideo: Boolean, isPlaying: Boolean, playbackRate: Float) = Unit
     fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit)
     fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit)
     fun onPopupRequested(): String?
