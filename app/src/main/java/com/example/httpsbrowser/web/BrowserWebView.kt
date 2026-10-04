@@ -175,6 +175,13 @@ class BrowserWebViewRegistry(
         )
     }
 
+    fun toggleVideoPlayback(tabId: String) {
+        entries[tabId]?.webView?.evaluateJavascript(
+            "(function(){var v=document.querySelector('video');if(v){if(v.paused)v.play();else v.pause();}})();",
+            null
+        )
+    }
+
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
     fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
         pageTranslator.translatePage(entry.webView) { message -> entry.callbacks.onNotice(message) }
