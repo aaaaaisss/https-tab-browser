@@ -143,3 +143,16 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 
 
 - Also restored the APK-visible `isYoutubeShortsDocumentUrl` helper using the recovered `/shorts/` path marker. It is kept separate from the broader YouTube document predicate so later APK call-site reconstruction can use the same distinction without changing current playback behavior prematurely.
+
+
+## Latest APK behavior pass 14
+
+- Restored APK-era `BrowserSettings` fields: `forceDarkVideoPages`, `skipDarkeningAlreadyDarkPages`, `darkModeExcludedHosts`, `videoControlHosts`, and `videoPlaybackRate`.
+- Persisted those settings through DataStore, including normalized host lists and a 0.25x-3x playback-rate range.
+- Added the APK-visible dark-mode exception page, video-control host management, playback-rate control, downloads page entry, and open-source-license entry.
+- Restored the APK dark-document lifecycle state in `BrowserWebViewRegistry.Entry`: applied dark-mode state, document-start dark script handler, dark reveal guard, already-dark detection, lifecycle URL, page-finished guard, page scale, and site document-start handler state.
+- Restored the APK dark document detector logic and the visible APK `DEEP_DARK_CSS` / `YOUTUBE_PAGE_DARK_CSS` resources.
+- Restored document-start dark CSS registration, site-specific Brave document-start script registration, video playback-rate injection, video seek/play-pause controls, and YouTube selector safety validation.
+- Restored APK-style asynchronous back navigation around WebView history, including target-history URL capture, dark reveal guarding, queued back requests, and page-finished queue draining.
+- Restored WebView scale tracking and lifecycle duplicate-finish protection.
+- No GitHub Actions workflow was manually dispatched.
