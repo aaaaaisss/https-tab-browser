@@ -345,36 +345,6 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
         // fullscreen custom viewはActivity直下のnative hostで管理する。
         // Compose側で再配置するとChromiumの映像面が切り替わるため、ここでは描画しない。
 
-        if (selectedTab?.isHome == false && selectedTab != null && videoPlayback != null) {
-            val playback = videoPlayback!!
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = { registry.seekVideo(selectedTab.id, -10) }) { Text("-10") }
-                TextButton(onClick = { registry.toggleVideoPlayback(selectedTab.id) }) { Text(if (playback.isPlaying) "一時停止" else "再生") }
-                TextButton(onClick = { registry.seekVideo(selectedTab.id, 10) }) { Text("+10") }
-                TextButton(onClick = {
-                    val next = (playback.playbackRate - 0.25f).coerceAtLeast(0.25f)
-                    viewModel.updateSettings { it.copy(videoPlaybackRate = next) }
-                    registry.setVideoPlaybackRate(selectedTab.id, next)
-                }) { Text("速度−") }
-                Text(
-                    if (playback.playbackRate % 1f == 0f) playback.playbackRate.toInt().toString() + "x"
-                    else String.format(Locale.US, "%.2f", playback.playbackRate) + "x"
-                )
-                TextButton(onClick = {
-                    val next = (playback.playbackRate + 0.25f).coerceAtMost(3f)
-                    viewModel.updateSettings { it.copy(videoPlaybackRate = next) }
-                    registry.setVideoPlaybackRate(selectedTab.id, next)
-                }) { Text("速度+") }
-            }
-        }
 
         if (!state.isFullscreen && selectedTab?.isHome == true && homeBookmarkEditMode) {
             BookmarkEditActionBar(
@@ -522,7 +492,6 @@ private fun callbacksFor(
     onFullscreen: (View, WebChromeClient.CustomViewCallback) -> Unit,
     onHideFullscreen: () -> Unit,
     onVideoDimensions: (String, Int, Int) -> Unit,
-    onVideoPlaybackState: (String, Boolean, Boolean, Float) -> Unit,
     onPermission: (String, Set<String>, (Boolean) -> Unit) -> Unit,
     onLongPress: (String) -> Unit,
     showNotice: (String) -> Unit,
@@ -543,7 +512,6 @@ private fun callbacksFor(
     override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = onFullscreen(view, callback)
     override fun onHideFullscreen() = onHideFullscreen()
     override fun onVideoDimensions(tabId: String, width: Int, height: Int) = onVideoDimensions(tabId, width, height)
-    override fun onVideoPlaybackState(tabId: String, hasVideo: Boolean, isPlaying: Boolean, playbackRate: Float) = onVideoPlaybackState(tabId, hasVideo, isPlaying, playbackRate)
     override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = onPermission(origin, resources, reply)
     override fun onGeolocationPermission(origin: String, reply: (Boolean) -> Unit) = onPermission(origin, setOf("位置情報"), reply)
     override fun onPopupRequested(): String? = viewModel.addTab(isPrivate = viewModel.isPrivateTab(tabId)).id
