@@ -469,6 +469,12 @@ class BrowserWebViewRegistry(
         entry.appliedSkipDarkeningAlreadyDarkPages = settings.skipDarkeningAlreadyDarkPages
         entry.appliedDarkModeExcludedHosts = settings.darkModeExcludedHosts
         CrashDiagnostics.record("dark_mode_configured", "engine=apk_compatible\nforceRequested=" + settings.forceDarkPages + "\nforceApplied=" + applyForceDark + "\nvideoPage=" + isVideoPage + "\nvideoForce=" + settings.forceDarkVideoPages + "\nalreadyDarkSkip=" + settings.skipDarkeningAlreadyDarkPages + "\nexcluded=" + excluded + "\nalgorithmic=" + applied.algorithmicDarkening + "\nforceDark=" + applied.forceDark + "\nforceDarkStrategy=" + applied.forceDarkStrategy)
+        if (settings.forceDarkPages && !excluded && (!isVideoPage || settings.forceDarkVideoPages) && !entry.documentIsAlreadyDark && !entry.fullscreenVideoDarkeningSuppressed) {
+            val css = if (isYoutubeDocumentUrl(url)) YOUTUBE_PAGE_DARK_CSS else DEEP_DARK_CSS
+            view.evaluateJavascript("(function(){var id='__https_browser_deep_dark';var style=document.getElementById(id);if(!style){style=document.createElement('style');style.id=id;(document.documentElement||document.head).appendChild(style);}style.textContent=" + JSONObject.quote(css) + ";})();", null)
+        } else {
+            view.evaluateJavascript("(function(){var e=document.getElementById('__https_browser_deep_dark');if(e)e.remove();})();", null)
+        }
     }
 
     private fun isDarkModeExcluded(settings: BrowserSettings, url: String): Boolean {
