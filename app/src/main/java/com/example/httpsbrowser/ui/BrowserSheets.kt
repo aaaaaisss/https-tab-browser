@@ -55,6 +55,7 @@ import com.example.httpsbrowser.data.BrowserTab
 import com.example.httpsbrowser.data.BrowserUiState
 import com.example.httpsbrowser.data.SettingsPage
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 object BrowserSheets {
     @OptIn(ExperimentalMaterial3Api::class)
@@ -219,7 +220,7 @@ object BrowserSheets {
         }
     }
 
-    @Composable private fun DownloadsPage(onBack: () -> Unit, onDownloads: () -> Unit) { PageHeader("ダウンロード", onBack, actionLabel = "開く", action = onDownloads); EmptyRow("端末のダウンロード管理画面から確認できます。") }
+    @Composable private fun DownloadsPage(onBack: () -> Unit, onDownloads: () -> Unit) { PageHeader("ダウンロード", onBack, actionLabel = "開く", onAction = onDownloads); EmptyRow("端末のダウンロード管理画面から確認できます。") }
     @Composable private fun OpenSourceLicensesPage(onBack: () -> Unit) { PageHeader("オープンソースライセンス", onBack); Text("AndroidX、Jetpack Compose、AndroidX WebKit、Kotlinなどのオープンソースソフトウェアを利用しています。", modifier = Modifier.padding(16.dp)) }
     private fun normalizeDarkExclusionHost(raw: String): String = raw.trim().lowercase().removePrefix("https://").removePrefix("http://").substringBefore('/').substringBefore('?').substringBefore('#').removePrefix("www.")
     @Composable
