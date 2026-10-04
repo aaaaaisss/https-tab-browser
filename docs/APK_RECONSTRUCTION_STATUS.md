@@ -185,3 +185,10 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - これは「同じ挙動を作る」ための追加ではなく、APKに実在するシンボルだけを残すための置換。
 - APKには `BrowserDownloads.kt`（504行）由来の `BrowserDownloadDispatcher` / `FastDownloadWorker` / `BrowserDownloadRequest` / `BrowserDownloadStatus` / `BrowserDownloadMode` が存在することを確認。ここは推測実装を入れず、DEXから元コードを回収して移植する対象として残す。
 - GitHub Actionsは起動していない。
+
+
+## Pass 18: APK download path replacement
+- APK側に存在する `BrowserDownloads.kt` の主要型（`BrowserDownloadMode`, `BrowserDownloadRequest`, `BrowserDownloadStatus`, `BrowserDownloadDispatcher`, `FastDownloadWorker`）を同名で移植。
+- WebView の従来の直接 `DownloadManager.Request` 実装を `BrowserDownloadDispatcher.enqueueNormal()` 経由へ置換。
+- APK DEX で確認できた WorkManager / Range ダウンロード系の入口と状態モデルを優先して配置。
+- GitHub Actions は起動していない。
