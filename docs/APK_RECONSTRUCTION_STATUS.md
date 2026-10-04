@@ -133,3 +133,10 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - `VIDEO_VIEWPORT_METRICS_SCRIPT` in the branch already matches the APK-visible structure: viewport width/offset, overflow state, left-stack hit-test, body/player/video rectangles.
 - The APK-visible aggressive YouTube selector list also matches the branch's explicit CSS selectors, including player ads, companion slots, promoted renderers, Shorts ad slots, and masthead ads.
 - These newly confirmed symbols are intentionally left pending rather than guessed into behavior. The next implementation target is their exact call-site/control-flow reconstruction.
+
+
+## Latest APK behavior pass 13
+
+- Reconstructed the APK-visible asynchronous back-navigation state: `backNavigationInFlight`, `queuedBackRequests`, `beginBackNavigation`, `cancelBackNavigation`, and `onBackHistoryExhausted`.
+- Restored the exact decoded queue ceiling of `MAX_QUEUED_BACK_REQUESTS = 2000`. Repeated back requests are queued while a history navigation is in flight and drained after navigation starts; a depleted history now reaches the callback instead of being silently ignored.
+- This was implemented without manually triggering GitHub Actions. The work remains on `apk-sync-20261004`.
