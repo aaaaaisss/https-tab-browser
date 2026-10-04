@@ -162,6 +162,19 @@ class BrowserWebViewRegistry(
         if (!entry.completeBackNavigation()) return
         view.post { goBack(tabId) }
     }
+    fun setVideoPlaybackRate(tabId: String, rate: Float) {
+        val safeRate = rate.coerceIn(0.25f, 3f)
+        entries[tabId]?.webView?.evaluateJavascript(String.format(java.util.Locale.US, VIDEO_PLAYBACK_RATE_SCRIPT, safeRate), null)
+    }
+
+    fun seekVideo(tabId: String, deltaSeconds: Int) {
+        val delta = deltaSeconds.coerceIn(-300, 300)
+        entries[tabId]?.webView?.evaluateJavascript(
+            "(function(){var v=document.querySelector('video');if(v){v.currentTime=Math.max(0,Math.min(v.duration||Infinity,v.currentTime+" + delta + "));}})();",
+            null
+        )
+    }
+
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
     fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
         pageTranslator.translatePage(entry.webView) { message -> entry.callbacks.onNotice(message) }
