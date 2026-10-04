@@ -120,6 +120,19 @@ class BrowserWebViewRegistry(
         }
     }
 
+    fun refreshContentFiltering() {
+        entries.values.forEach { entry ->
+            val url = entry.activeDocumentUrl ?: entry.loadedUrl ?: return@forEach
+            prepareYoutubeDocumentStartScript(entry, url)
+            prepareSiteDocumentStartScript(entry, url)
+            prepareDarkDocumentStartScript(entry, url)
+            ensureYoutubeAggressiveScripts(entry)
+            configure(entry.webView, entry, url)
+            applyBraveCosmeticFilters(entry.webView, url, entry.adBlockingEnabled, includeGeneric = true)
+            AdBlockInjector.inject(entry.webView, entry.settings.aggressiveAdBlockingEnabled)
+        }
+    }
+
     fun reload(tabId: String) = entries[tabId]?.webView?.reload()
     /** APK-era asynchronous back-navigation queue. */
     fun goBack(tabId: String): Boolean {
