@@ -88,3 +88,9 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - Decoded the APK `SecureClient.shouldInterceptRequest` method shape: when the entry's ad blocking flag is enabled, it calls an APK-era URL-only `shouldBlockMinimalAd(String)` helper and returns an empty ad response when that helper says true; main-frame lifecycle rearming happens separately.
 - Decoded the APK `MinimalAdBlockClient.shouldBlockMinimalAd` signature as URL-only (`String -> Boolean`), unlike the current reconstruction's three-argument helper. The exact internal collection/control flow is still being decoded before replacing the current call site.
 - This is a structural difference worth preserving in the status log, but it does not yet require a strategy change: the current branch can still be reconciled incrementally without discarding the existing Brave path.
+
+
+## Latest APK evidence pass 6
+
+- APK string evidence narrowed `MinimalAdBlockClient`: confirmed hosts are `doubleclick.net`, `googlesyndication.com`, `googleadservices.com`, `googletagservices.com`, and `ads.youtube.com`. Confirmed path strings are `/pagead`, `/api/stats/ads`, `/_get_ads`, and `/youtubei/v1/player/ad_break`. Strings previously added speculatively (`adservice.google.com`, `/ads/`, `/adserver`, `/advertising`, `/prebid/`, `/gampad/`) were removed from the reconstructed minimal blocker.
+- The reconstructed helper and call site now use the APK-observed URL-only signature `shouldBlockMinimalAd(String)`. The broader Brave filtering path remains unchanged.
