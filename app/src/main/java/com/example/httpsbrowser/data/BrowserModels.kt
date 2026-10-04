@@ -4,7 +4,7 @@ import java.util.UUID
 
 enum class AddressDisplayMode { URL, SEARCH }
 
-enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, AD_BLOCK, DATA, DIAGNOSTICS }
+enum class SettingsPage { ROOT, BOOKMARKS, HISTORY, AD_BLOCK, DARK_EXCLUSIONS, DATA, DIAGNOSTICS, DOWNLOADS, OPEN_SOURCE_LICENSES }
 
 data class BrowserTab(
     val id: String = UUID.randomUUID().toString(),
@@ -41,9 +41,14 @@ data class Bookmark(
 
 data class BrowserSettings(
     val forceDarkPages: Boolean = true,
+    val forceDarkVideoPages: Boolean = true,
+    val skipDarkeningAlreadyDarkPages: Boolean = true,
+    val darkModeExcludedHosts: List<String> = emptyList(),
     val adBlockingEnabled: Boolean = true,
     val aggressiveAdBlockingEnabled: Boolean = false,
-    val javascriptEnabled: Boolean = true
+    val javascriptEnabled: Boolean = true,
+    val videoControlHosts: List<String> = emptyList(),
+    val videoPlaybackRate: Float = 1f
 )
 
 data class BrowserUiState(
