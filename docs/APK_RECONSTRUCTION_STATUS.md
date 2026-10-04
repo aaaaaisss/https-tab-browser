@@ -156,3 +156,12 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - Restored APK-style asynchronous back navigation around WebView history, including target-history URL capture, dark reveal guarding, queued back requests, and page-finished queue draining.
 - Restored WebView scale tracking and lifecycle duplicate-finish protection.
 - No GitHub Actions workflow was manually dispatched.
+
+
+## Latest APK behavior pass 15
+
+- Confirmed against APK DEX that the DataStore key names are exactly `force_dark_video_pages`, `skip_darkening_already_dark_pages`, `dark_mode_excluded_hosts`, `video_control_hosts`, and `video_playback_rate`; the branch now uses those names.
+- Confirmed the APK repository has dedicated `decodeStringList` / `encodeStringList` helpers returning a JSON array of strings; branch persistence now matches that representation instead of storing wrapper objects.
+- Added the APK-style `refreshContentFiltering()` path and invoke it when browser settings change, without reloading the page.
+- Added forward-history target capture alongside the restored back-history queue.
+- The APK also contains a separate advanced download subsystem (`BrowserDownloadDispatcher`, `FastDownloadWorker`, `BrowserDownloadRequest/Status/Mode`). The existing branch already has functional downloads through Android's download path, but that advanced dispatcher/worker implementation remains a distinct parity target and has not been guessed into the code.
