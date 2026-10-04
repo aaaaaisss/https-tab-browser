@@ -144,35 +144,154 @@ class FastDownloadWorker(
     appContext: Context,
     params: WorkerParameters
 ) : CoroutineWorker(appContext, params) {
+
+    private data class RangeProbe(val totalBytes: Long, val rangeSupported: Boolean)
+
     override suspend fun doWork(): Result {
         val url = inputData.getString(KEY_URL).orEmpty()
         if (!url.startsWith("https://", true)) return Result.failure()
+        val fileName = inputData.getString(KEY_FILE_NAME)?.ifBlank {
+            URLUtil.guessFileName(url, null, inputData.getString(KEY_MIME_TYPE))
+        } ?: URLUtil.guessFileName(url, null, inputData.getString(KEY_MIME_TYPE))
+
         return try {
-            val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                setRequestProperty("User-Agent", inputData.getString(KEY_USER_AGENT).orEmpty())
-                inputData.getString(KEY_REFERER)?.takeIf { it.isNotBlank() }?.let { setRequestProperty("Referer", it) }
-                CookieManager.getInstance().getCookie(url)?.let { setRequestProperty("Cookie", it) }
+            val probe = probe(url)
+            if (probe.totalBytes >= MIN_PARALLEL_BYTES && probe.rangeSupported) {
+                downloadParallel(url, fileName, probe.totalBytes)
+            } else {
+                downloadNormal(url, fileName)
             }
-            connection.connect()
-            if (connection.responseCode !in 200..299) return Result.retry()
-            val fileName = inputData.getString(KEY_FILE_NAME)?.ifBlank { URLUtil.guessFileName(url, null, inputData.getString(KEY_MIME_TYPE)) }
-                ?: URLUtil.guessFileName(url, null, inputData.getString(KEY_MIME_TYPE))
-            val target = java.io.File(applicationContext.cacheDir, fileName)
-            connection.getInputStream().use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
-            }
-            Result.success(
-                workDataOf(
-                    OUTPUT_CONTENT_URI to Uri.fromFile(target).toString(),
-                    PROGRESS_PHASE to "RUNNING",
-                    PROGRESS_TOTAL to target.length(),
-                    PROGRESS_DOWNLOADED to target.length()
-                )
-            )
         } catch (_: Throwable) {
-            Result.retry()
+            if (runAttemptCount + 1 >= MAX_RETRIES) Result.failure() else Result.retry()
+        }
+    }
+
+    private fun headers(connection: java.net.HttpURLConnection) {
+        connection.connectTimeout = CONNECT_TIMEOUT_MS
+        connection.readTimeout = READ_TIMEOUT_MS
+        connection.setRequestProperty("User-Agent", inputData.getString(KEY_USER_AGENT).orEmpty())
+        inputData.getString(KEY_REFERER)?.takeIf { it.isNotBlank() }?.let { connection.setRequestProperty("Referer", it) }
+        CookieManager.getInstance().getCookie(inputData.getString(KEY_URL).orEmpty())?.let { connection.setRequestProperty("Cookie", it) }
+    }
+
+    private fun probe(url: String): RangeProbe {
+        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection)
+        headers(connection)
+        connection.requestMethod = "GET"
+        connection.setRequestProperty("Range", "bytes=0-0")
+        connection.connect()
+        val length = connection.getHeaderField("Content-Range")?.substringAfterLast("/")?.toLongOrNull()
+            ?: connection.getHeaderFieldLong("Content-Length", -1L)
+        val supported = connection.responseCode == java.net.HttpURLConnection.HTTP_PARTIAL &&
+            connection.getHeaderField("Content-Range")?.startsWith("bytes ") == true
+        connection.disconnect()
+        return RangeProbe(length.coerceAtLeast(0L), supported)
+    }
+
+    private suspend fun downloadNormal(url: String, fileName: String): Result {
+        val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection)
+        headers(connection)
+        connection.connect()
+        if (connection.responseCode !in 200..299) return Result.retry()
+        val target = java.io.File(applicationContext.cacheDir, fileName).also { it.parentFile?.mkdirs() }
+        var downloaded = 0L
+        connection.inputStream.use { input ->
+            target.outputStream().use { output ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    downloaded += count
+                    setProgress(workDataOf(PROGRESS_PHASE to "RUNNING", PROGRESS_DOWNLOADED to downloaded,
+                        PROGRESS_TOTAL to connection.contentLengthLong))
+                }
+            }
+        }
+        connection.disconnect()
+        return publishToDownloads(target, fileName)
+    }
+
+    private suspend fun downloadParallel(url: String, fileName: String, total: Long): Result {
+        val directory = java.io.File(applicationContext.cacheDir, "fast_downloads").apply { mkdirs() }
+        val parts = splitRanges(total)
+        val files = parts.mapIndexed { index, range -> java.io.File(directory, "${inputData.getString(KEY_TRACKING_ID)}_${index}.part") }
+        try {
+            kotlinx.coroutines.coroutineScope {
+                parts.mapIndexed { index, range ->
+                    kotlinx.coroutines.async(kotlinx.coroutines.Dispatchers.IO) {
+                        downloadRange(url, range, files[index])
+                    }
+                }.forEach { it.await() }
+            }
+            val target = java.io.File(directory, fileName)
+            target.outputStream().use { output ->
+                files.forEach { part -> part.inputStream().use { it.copyTo(output) } }
+            }
+            return publishToDownloads(target, fileName)
+        } finally {
+            files.forEach { it.delete() }
+        }
+    }
+
+    private fun splitRanges(total: Long): List<LongRange> {
+        val count = PARALLEL_CONNECTIONS.coerceAtMost((total / MIN_PARALLEL_BYTES).toInt().coerceAtLeast(1))
+        val chunk = total / count
+        return (0 until count).map { index ->
+            val start = index * chunk
+            val end = if (index == count - 1) total - 1 else (start + chunk - 1)
+            start..end
+        }
+    }
+
+    private fun downloadRange(url: String, range: LongRange, target: java.io.File) {
+        var lastError: Throwable? = null
+        repeat(MAX_RETRIES) {
+            try {
+                val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection)
+                headers(connection)
+                connection.setRequestProperty("Range", "bytes=${range.first}-${range.last}")
+                connection.connect()
+                if (connection.responseCode != java.net.HttpURLConnection.HTTP_PARTIAL) {
+                    connection.disconnect()
+                    throw java.io.IOException("Range request rejected: ${connection.responseCode}")
+                }
+                connection.inputStream.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                connection.disconnect()
+                return
+            } catch (e: Throwable) {
+                lastError = e
+            }
+        }
+        throw lastError ?: java.io.IOException("range download failed")
+    }
+
+    private fun publishToDownloads(file: java.io.File, fileName: String): Result {
+        val resolver = applicationContext.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, inputData.getString(KEY_MIME_TYPE).orEmpty().ifBlank { "application/octet-stream" })
+            if (android.os.Build.VERSION.SDK_INT >= 29) put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val collection = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        val uri = resolver.insert(collection, values) ?: return Result.failure()
+        return try {
+            resolver.openOutputStream(uri)?.use { output -> file.inputStream().use { it.copyTo(output) } }
+                ?: return Result.failure()
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                values.clear()
+                values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            }
+            Result.success(workDataOf(
+                OUTPUT_CONTENT_URI to uri.toString(),
+                PROGRESS_PHASE to "COMPLETED",
+                PROGRESS_DOWNLOADED to file.length(),
+                PROGRESS_TOTAL to file.length()
+            ))
+        } catch (_: Throwable) {
+            resolver.delete(uri, null, null)
+            Result.failure()
         }
     }
 
