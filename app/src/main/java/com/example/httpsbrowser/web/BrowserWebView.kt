@@ -60,6 +60,7 @@ class BrowserWebViewRegistry(
             entry.activeDocumentUrl = tab.lastRequestedUrl
             CrashDiagnostics.recordWebViewNavigation(tab.lastRequestedUrl)
             prepareYoutubeDocumentStartScript(entry, tab.lastRequestedUrl)
+            prepareSiteDocumentStartScript(entry, tab.lastRequestedUrl)
             prepareDarkDocumentStartScript(entry, tab.lastRequestedUrl)
             entry.webView.loadUrl(tab.lastRequestedUrl)
         }
@@ -109,6 +110,7 @@ class BrowserWebViewRegistry(
                 entry.activeDocumentUrl = url
                 CrashDiagnostics.recordWebViewNavigation(url)
                 prepareYoutubeDocumentStartScript(entry, url)
+                prepareSiteDocumentStartScript(entry, url)
                 prepareDarkDocumentStartScript(entry, url)
                 ensureYoutubeAggressiveScripts(entry)
                 configure(entry.webView, entry, url)
@@ -522,6 +524,28 @@ class BrowserWebViewRegistry(
      * 指定標準リストからBraveが解決したYouTube scriptletだけを、ページのJSより先に注入する。
      * 任意追加リストのscriptletにはRust側で権限を与えていないため、ここで返らない。
      */
+    private fun prepareSiteDocumentStartScript(entry: Entry, url: String) {
+        runCatching { entry.siteDocumentStartScriptHandler?.remove() }
+        entry.siteDocumentStartScriptHandler = null
+        entry.siteDocumentStartScriptUrl = null
+        if (!entry.adBlockingEnabled || !blocker.isReady()) return
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        val script = runCatching {
+            JSONObject(blocker.cosmeticResources(url)).optString("injected_script").trim()
+        }.getOrDefault("")
+        if (script.isBlank()) return
+        val originRules = originRulesFor(url)
+        if (originRules.isEmpty()) return
+        runCatching { WebViewCompat.addDocumentStartJavaScript(entry.webView, script, originRules) }
+            .onSuccess {
+                entry.siteDocumentStartScriptHandler = it
+                entry.siteDocumentStartScriptUrl = url
+            }
+            .onFailure { throwable ->
+                CrashDiagnostics.record("adblock_site_scriptlet_unsupported", throwable.javaClass.simpleName + ": " + throwable.message.orEmpty())
+            }
+    }
+
     private fun prepareYoutubeDocumentStartScript(entry: Entry, url: String) {
         runCatching { entry.documentStartScriptHandler?.remove() }
         entry.documentStartScriptHandler = null
