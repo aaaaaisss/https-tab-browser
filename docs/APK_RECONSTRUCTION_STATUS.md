@@ -125,3 +125,11 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 
 - APK string/debug evidence directly confirms the aggressive ad-blocking setting is real: `aggressiveAdBlockingEnabled`, `aggressive_ad_block`, and the corresponding getter/setter symbols are present in the APK.
 - The APK also contains a dedicated `youtubeCosmeticAggressiveApplied` state alongside `youtubeCosmeticAppliedUrl`. The branch now uses that dedicated state so the recovered YouTube cosmetic CSS is applied only when aggressive ad blocking is enabled, and the aggressive state is reset on navigation/clear.
+
+
+## Latest APK evidence pass 12
+
+- Direct APK string inspection confirms additional `BrowserWebViewRegistry` symbols that are not yet safely behaviorally reconstructed on the branch: `queuedBackRequests`, `darkDocumentStartScript` / `prepareDarkDocumentStartScript`, `isYoutubeShortsDocumentUrl`, and `isSafeYoutubeAdSelector`.
+- `VIDEO_VIEWPORT_METRICS_SCRIPT` in the branch already matches the APK-visible structure: viewport width/offset, overflow state, left-stack hit-test, body/player/video rectangles.
+- The APK-visible aggressive YouTube selector list also matches the branch's explicit CSS selectors, including player ads, companion slots, promoted renderers, Shorts ad slots, and masthead ads.
+- These newly confirmed symbols are intentionally left pending rather than guessed into behavior. The next implementation target is their exact call-site/control-flow reconstruction.
