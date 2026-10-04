@@ -200,7 +200,18 @@ class BrowserWebViewRegistry(
             else entry.callbacks.onNotice("ページを保存できませんでした。読み込み完了後にもう一度お試しください。")
         }
     }
-    fun goForward(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoForward() }?.goForward()
+    fun goForward(tabId: String): Boolean {
+        val entry = entries[tabId] ?: return false
+        val view = entry.webView
+        if (!canNavigateHistory(view, 1)) return false
+        val history = view.copyBackForwardList()
+        val targetUrl = history.getItemAtIndex(history.currentIndex + 1)?.url
+        if (targetUrl.isNullOrBlank()) return false
+        entry.activeDocumentUrl = targetUrl
+        entry.rearmPageLifecycle(targetUrl)
+        view.goForward()
+        return true
+    }
     fun scrollBy(tabId: String, deltaY: Int) = entries[tabId]?.webView?.scrollBy(0, deltaY)
     fun scrollToTop(tabId: String) = entries[tabId]?.webView?.scrollTo(0, 0)
     fun scrollToBottom(tabId: String) = entries[tabId]?.webView?.let { it.scrollTo(0, (it.contentHeight * it.scale).toInt()) }
