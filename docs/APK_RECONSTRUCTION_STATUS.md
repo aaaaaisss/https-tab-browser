@@ -94,3 +94,9 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 
 - APK string evidence narrowed `MinimalAdBlockClient`: confirmed hosts are `doubleclick.net`, `googlesyndication.com`, `googleadservices.com`, `googletagservices.com`, and `ads.youtube.com`. Confirmed path strings are `/pagead`, `/api/stats/ads`, `/_get_ads`, and `/youtubei/v1/player/ad_break`. Strings previously added speculatively (`adservice.google.com`, `/ads/`, `/adserver`, `/advertising`, `/prebid/`, `/gampad/`) were removed from the reconstructed minimal blocker.
 - The reconstructed helper and call site now use the APK-observed URL-only signature `shouldBlockMinimalAd(String)`. The broader Brave filtering path remains unchanged.
+
+
+## Latest APK evidence pass 7
+
+- Direct DEX static-value decoding recovered exact APK constants: `MAX_QUEUED_BACK_REQUESTS = 2000` and `MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 500`.
+- Both constants are now restored to `BrowserWebView.kt`. The queued-back-request constant is currently recorded but not behaviorally wired because its request-queue call site has not yet been decoded; the aggressive-selector cap matches the already recovered 500-character selector safety limit.
