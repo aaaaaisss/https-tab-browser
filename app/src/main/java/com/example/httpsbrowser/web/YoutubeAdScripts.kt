@@ -142,48 +142,85 @@ object YoutubeAdScripts {
 
     val adSanitizer = """
         (function(){
-          if(window.__nekoBrowserYoutubeAdSanitizer) return;
-          window.__nekoBrowserYoutubeAdSanitizer=true;
-          const AD_KEYS = new Set([
-              'adPlacements', 'playerAds', 'adBreakHeartbeatParams',
-              'adSlots', 'adReasons', 'promoted', 'ypc_spin_up'
-          ]);
-          function pruneAds(obj, depth){
-            if(!obj || typeof obj!=='object' || depth>10) return;
-            for(const key in obj){
-              if(AD_KEYS.has(key)) delete obj[key];
-              else pruneAds(obj[key], depth+1);
-            }
+          if(window.__nekoBrowserYouTubeAdSanitizer) return;
+          window.__nekoBrowserYouTubeAdSanitizer=true;
+          var adKeys=['adPlacements','playerAds','adSlots','adBreakHeartbeatParams'];
+          function disablePlayerFields(value){
+            if(!value || typeof value!=='object') return value;
+            var roots=[value,value.playerResponse,value.response];
+            roots.forEach(function(root){
+              if(!root || typeof root!=='object') return;
+              adKeys.forEach(function(key){try{delete root[key];}catch(_e){root[key]=undefined;}});
+            });
+            return value;
           }
-          ['ytInitialPlayerResponse','ytInitialData'].forEach(function(name){
-            let val;
-            try{
-              Object.defineProperty(window,name,{
-                get:function(){return val;},
-                set:function(v){pruneAds(v,0);val=v;},
-                configurable:true
+          function disablePlayerText(text){
+            if(typeof text!=='string' || text.length===0) return text;
+            adKeys.forEach(function(key){
+              var expression=new RegExp('"'+key+'"','g');
+              text=text.replace(expression,'"no_ads"');
+            });
+            return text;
+          }
+          function isShortsAd(entry){
+            if(!entry || typeof entry!=='object') return false;
+            var reel=entry.command&&entry.command.reelWatchEndpoint;
+            var params=reel&&reel.adClientParams;
+            return entry.isAd===true || !!entry.adVideoId || !!entry.adBadge ||
+              !!(params&&(params.isAd===true || params.adVideoId || params.adBadge));
+          }
+          function pruneShorts(value,seen){
+            if(!value || typeof value!=='object') return value;
+            seen=seen||[]; if(seen.indexOf(value)>=0) return value; seen.push(value);
+            if(Array.isArray(value)){
+              for(var i=value.length-1;i>=0;i--){if(isShortsAd(value[i])) value.splice(i,1); else pruneShorts(value[i],seen);}
+            }else{
+              Object.keys(value).forEach(function(key){
+                if(adKeys.indexOf(key)>=0) {try{delete value[key];}catch(_e){value[key]=undefined;}}
+                else pruneShorts(value[key],seen);
               });
-            }catch(_e){}
-          });
-          var origFetch=window.fetch;
-          if(typeof origFetch==='function'){
-            window.fetch=async function(){
-              const args=arguments;
-              const res=await origFetch.apply(this,args);
-              const url=typeof args[0]==='string'?args[0]:(args[0]&&args[0].url)||'';
-              if(/youtubei\/v1\/(player|next)/.test(url)){
-                try{
-                  const clone=res.clone();
-                  const json=await clone.json();
-                  pruneAds(json,0);
-                  return new Response(JSON.stringify(json),{
-                    status:res.status,statusText:res.statusText,headers:res.headers
-                  });
-                }catch(_e){}
-              }
-              return res;
-            };
+            }
+            return value;
           }
+          function responseKind(url){
+            url=String(url||'');
+            if(/reel_watch_sequence/.test(url)) return 'shorts';
+            return /(?:youtubei\/v1\/player|get_watch|playlist\?list=)/.test(url)?'player':'';
+          }
+          function sanitizeText(text,kind){
+            if(kind==='player') return disablePlayerText(text);
+            if(kind!=='shorts' || typeof text!=='string' || text.length===0) return text;
+            try{return JSON.stringify(pruneShorts(JSON.parse(text)));}catch(_e){return text;}
+          }
+          function hookInitial(name){
+            try{
+              var value=window[name];
+              Object.defineProperty(window,name,{configurable:true,get:function(){return value;},set:function(next){value=disablePlayerFields(next);}});
+              if(value) window[name]=value;
+            }catch(_e){}
+          }
+          hookInitial('ytInitialPlayerResponse'); hookInitial('playerResponse');
+          try{
+            var originalFetch=window.fetch;
+            window.fetch=function(){
+              var args=arguments,request=args[0],url=typeof request==='string'?request:(request&&request.url),kind=responseKind(url);
+              return originalFetch.apply(this,args).then(function(response){
+                if(!kind) return response;
+                return response.clone().text().then(function(text){
+                  var clean=sanitizeText(text,kind); if(clean===text) return response;
+                  return new Response(clean,{status:response.status,statusText:response.statusText,headers:response.headers});
+                }).catch(function(){return response;});
+              });
+            };
+          }catch(_e){}
+          try{
+            var proto=XMLHttpRequest.prototype,open=proto.open;
+            proto.open=function(method,url){this.__nekoYouTubeAdResponseKind=responseKind(url);return open.apply(this,arguments);};
+            var descriptor=Object.getOwnPropertyDescriptor(proto,'responseText');
+            if(descriptor&&descriptor.get) Object.defineProperty(proto,'responseText',{configurable:true,get:function(){
+              var value=descriptor.get.call(this); return sanitizeText(value,this.__nekoYouTubeAdResponseKind);
+            }});
+          }catch(_e){}
         })();
-    """.trimIndent()
+    """.trimIndent().trimIndent()
 }
