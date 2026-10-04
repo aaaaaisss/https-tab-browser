@@ -131,7 +131,16 @@ class BrowserRepository(private val context: Context) {
         )
     }
 
-    private fun decodeStringList(raw: String?): List<String> = runCatching {\n        val array = JSONArray(raw ?: "[]")\n        List(array.length()) { array.optJSONObject(it)?.optString("value").orEmpty() }\n    }.getOrDefault(emptyList()).map(String::trim).filter(String::isNotBlank).distinct()\n\n    private fun encodeStringList(values: List<String>): String = JSONArray().apply {\n        values.map(String::trim).filter(String::isNotBlank).distinct().forEach { put(JSONObject().put("value", it)) }\n    }.toString()\n\n    private fun <T> decodeArray(raw: String?, map: (JSONObject) -> T): List<T> = runCatching {
+    private fun decodeStringList(raw: String?): List<String> = runCatching {
+        val array = JSONArray(raw ?: "[]")
+        List(array.length()) { array.optString(it).trim() }.filter(String::isNotBlank).distinct()
+    }.getOrDefault(emptyList())
+
+    private fun encodeStringList(values: List<String>): String = JSONArray().apply {
+        values.map(String::trim).filter(String::isNotBlank).distinct().forEach(::put)
+    }.toString()
+
+    private fun <T> decodeArray(raw: String?, map: (JSONObject) -> T): List<T> = runCatching {
         val array = JSONArray(raw ?: "[]")
         List(array.length()) { index -> map(array.getJSONObject(index)) }
     }.getOrDefault(emptyList())
