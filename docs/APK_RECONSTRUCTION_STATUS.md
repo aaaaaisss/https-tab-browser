@@ -119,3 +119,9 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 
 - Parsed the APK's `BrowserWebViewRegistry` class table directly from `classes6.dex`. Confirmed the APK class itself declares the recovered browser-limit fields `MAX_AGGRESSIVE_YOUTUBE_SELECTORS`, `MAX_SAFE_REDIRECT_BYTES`, `MAX_SAFE_REDIRECT_DATA_URL_CHARS`, and `MAX_STATIC_COSMETIC_SELECTORS`, plus the dark-mode, YouTube, safe-redirect, playback-protection, and viewport script resources already tracked above.
 - The APK class table also confirms `VIDEO_VIEWPORT_METRICS_SCRIPT` and `YOUTUBE_PAGE_DARK_CSS` are first-class static resources, reinforcing that viewport reporting and a YouTube-specific dark layer were intentional APK features. The current branch already has viewport reporting and deliberately keeps Fulguris-native dark mode as the active path.
+
+
+## Latest APK evidence pass 11
+
+- APK string/debug evidence directly confirms the aggressive ad-blocking setting is real: `aggressiveAdBlockingEnabled`, `aggressive_ad_block`, and the corresponding getter/setter symbols are present in the APK.
+- The APK also contains a dedicated `youtubeCosmeticAggressiveApplied` state alongside `youtubeCosmeticAppliedUrl`. The branch now uses that dedicated state so the recovered YouTube cosmetic CSS is applied only when aggressive ad blocking is enabled, and the aggressive state is reset on navigation/clear.
