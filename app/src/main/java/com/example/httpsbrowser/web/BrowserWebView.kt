@@ -54,12 +54,13 @@ class BrowserWebViewRegistry(
         ensureYoutubeAggressiveScripts(entry)
         // Fulguris由来のWebView設定だけを適用する。ページ内CSS/JS注入を使わないため、
         // タブ選択やダークモード切替で動画・履歴を再読み込みしない。
-        configure(entry.webView, settings)
+        configure(entry.webView, entry, tab.lastRequestedUrl)
         if (entry.loadedUrl == null) {
             entry.loadedUrl = tab.lastRequestedUrl
             entry.activeDocumentUrl = tab.lastRequestedUrl
             CrashDiagnostics.recordWebViewNavigation(tab.lastRequestedUrl)
             prepareYoutubeDocumentStartScript(entry, tab.lastRequestedUrl)
+            prepareDarkDocumentStartScript(entry, tab.lastRequestedUrl)
             entry.webView.loadUrl(tab.lastRequestedUrl)
         }
         return entry.webView
