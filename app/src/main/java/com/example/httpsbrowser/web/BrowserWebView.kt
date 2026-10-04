@@ -830,14 +830,15 @@ class BrowserWebViewRegistry(
             val current = entries[tabId] ?: return false
             val newTabId = current.callbacks.onPopupRequested() ?: return false
             val popupView = createWebView(newTabId)
-            configure(popupView, current.settings)
             // 新規ウィンドウの WebView を、そのまま新しいタブへ接続する。
             // 空文字を loadedUrl に入れると Compose 再構成時に読み込み状態が不整合になるため null を維持する。
-            entries[newTabId] = Entry(
+            val popupEntry = Entry(
                 webView = popupView,
                 callbacks = current.callbacks,
                 settings = current.settings
             )
+            entries[newTabId] = popupEntry
+            configure(popupView, popupEntry)
             (resultMsg.obj as? WebView.WebViewTransport)?.webView = popupView
             resultMsg.sendToTarget()
             return true
