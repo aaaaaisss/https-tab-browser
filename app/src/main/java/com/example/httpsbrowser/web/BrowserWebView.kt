@@ -215,6 +215,10 @@ class BrowserWebViewRegistry(
             entry.isActive = false
             runCatching { entry.documentStartScriptHandler?.remove() }
             entry.documentStartScriptHandler = null
+            runCatching { entry.darkDocumentStartScriptHandler?.remove() }
+            entry.darkDocumentStartScriptHandler = null
+            runCatching { entry.siteDocumentStartScriptHandler?.remove() }
+            entry.siteDocumentStartScriptHandler = null
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             entry.youtubePictureInPictureScriptHandler = null
             runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
