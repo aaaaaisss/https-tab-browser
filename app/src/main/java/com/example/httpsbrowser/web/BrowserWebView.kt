@@ -100,7 +100,7 @@ class BrowserWebViewRegistry(
 
     fun load(tabId: String, url: String) {
         entries[tabId]?.let { entry ->
-            cancelBackNavigation(entry)
+            entry.cancelBackNavigation()
             if (isHttps(url)) {
                 entry.loadedUrl = url
                 // shouldInterceptRequest はUIスレッド外から呼ばれ得るため、
@@ -108,7 +108,10 @@ class BrowserWebViewRegistry(
                 entry.activeDocumentUrl = url
                 CrashDiagnostics.recordWebViewNavigation(url)
                 prepareYoutubeDocumentStartScript(entry, url)
+                prepareDarkDocumentStartScript(entry, url)
                 ensureYoutubeAggressiveScripts(entry)
+                configure(entry.webView, entry, url)
+                beginDarkRevealGuard(entry.webView, entry, url)
                 entry.webView.loadUrl(url)
             } else entry.callbacks.onBlockedNavigation(url)
         }
@@ -116,38 +119,47 @@ class BrowserWebViewRegistry(
 
     fun reload(tabId: String) = entries[tabId]?.webView?.reload()
     /** APK-era asynchronous back-navigation queue. */
-    fun goBack(tabId: String) {
-        val entry = entries[tabId] ?: return
-        if (entry.backNavigationInFlight) {
-            entry.queuedBackRequests = (entry.queuedBackRequests + 1).coerceAtMost(MAX_QUEUED_BACK_REQUESTS)
-            return
+    fun goBack(tabId: String): Boolean {
+        val entry = entries[tabId] ?: return false
+        if (!entry.beginBackNavigation()) return true
+        val view = entry.webView
+        if (!canNavigateHistory(view, -1)) {
+            entry.cancelBackNavigation()
+            return false
         }
-        if (!entry.webView.canGoBack()) {
-            entry.callbacks.onBackHistoryExhausted()
-            return
+        val history = view.copyBackForwardList()
+        val targetIndex = history.currentIndex - 1
+        val targetUrl = history.getItemAtIndex(targetIndex)?.url
+        if (targetUrl.isNullOrBlank()) {
+            entry.cancelBackNavigation()
+            return false
         }
-        beginBackNavigation(entry)
-        entry.webView.goBack()
+        entry.activeDocumentUrl = targetUrl
+        beginDarkRevealGuard(view, entry, targetUrl)
+        entry.rearmPageLifecycle(targetUrl)
+        view.goBack()
+        return true
     }
 
-    private fun beginBackNavigation(entry: Entry) { entry.backNavigationInFlight = true }
-
-    private fun cancelBackNavigation(entry: Entry) {
-        entry.backNavigationInFlight = false
-        entry.queuedBackRequests = 0
+    private fun canNavigateHistory(view: WebView, delta: Int): Boolean {
+        val history = view.copyBackForwardList()
+        val target = history.currentIndex + delta
+        return target >= 0 && target < history.size
     }
 
-    private fun finishBackNavigation(entry: Entry) {
-        entry.backNavigationInFlight = false
-        if (entry.queuedBackRequests <= 0) return
-        entry.queuedBackRequests = (entry.queuedBackRequests - 1).coerceAtLeast(0)
-        if (entry.webView.canGoBack()) {
-            beginBackNavigation(entry)
-            entry.webView.post { entry.webView.goBack() }
-        } else {
-            entry.queuedBackRequests = 0
-            entry.callbacks.onBackHistoryExhausted()
-        }
+    private fun beginDarkRevealGuard(view: WebView, entry: Entry, url: String) {
+        entry.darkRevealPending = true
+        view.alpha = 0f
+    }
+
+    private fun releaseDarkRevealGuard(view: WebView, entry: Entry, url: String) {
+        entry.darkRevealPending = false
+        view.alpha = 1f
+    }
+
+    private fun completeBackNavigation(tabId: String, entry: Entry, view: WebView) {
+        if (!entry.completeBackNavigation()) return
+        view.post { goBack(tabId) }
     }
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
     fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
@@ -660,7 +672,8 @@ class BrowserWebViewRegistry(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
-            entry?.takeIf { it.backNavigationInFlight }?.let(::finishBackNavigation)
+            entry?.rearmPageLifecycle(url)
+            entry?.backNavigationInFlight = false
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
             entry?.youtubeCosmeticAppliedUrl = null
@@ -668,7 +681,7 @@ class BrowserWebViewRegistry(
             view.setBackgroundColor(android.graphics.Color.BLACK)
             // ページ内CSSは注入しない。Fulguris由来のネイティブ設定を再適用して、
             // SPA遷移後もWebViewの色テーマ契約だけを維持する。
-            entry?.let { configure(view, it.settings) }
+            entry?.let { configure(view, it, url); detectAlreadyDarkDocument(view, it, url) }
             entry?.callbacks?.onPageStarted(tabId, url)
         }
 
@@ -682,6 +695,7 @@ class BrowserWebViewRegistry(
             val entry = entries[tabId]
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
             AdBlockInjector.inject(view, entry?.settings?.aggressiveAdBlockingEnabled == true)
+            entry?.let { applyVideoPlaybackRate(view, it.settings.videoPlaybackRate); releaseDarkRevealGuard(view, it, url); completeBackNavigation(tabId, it, view) }
             view.evaluateJavascript(VIDEO_DIMENSIONS_REPORTER_SCRIPT, null)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             entry?.let { scheduleCookieFlush(view, it) }
@@ -825,6 +839,18 @@ class BrowserWebViewRegistry(
         var youtubeNoAdWarmPlayerScriptHandler: ScriptHandler? = null,
         var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
         var youtubeCosmeticAggressiveApplied: Boolean = false,
+        var appliedDarkModeExcludedHosts: List<String> = emptyList(),
+        var appliedForceDark: Boolean? = null,
+        var appliedForceDarkVideoPages: Boolean? = null,
+        var appliedSkipDarkeningAlreadyDarkPages: Boolean? = null,
+        var darkDocumentStartScriptHandler: ScriptHandler? = null,
+        var darkRevealPending: Boolean = false,
+        var documentIsAlreadyDark: Boolean = false,
+        var lifecycleUrl: String? = null,
+        var pageFinishedDone: Boolean = false,
+        var pageScale: Float = 1f,
+        var siteDocumentStartScriptHandler: ScriptHandler? = null,
+        var siteDocumentStartScriptUrl: String? = null,
         var backNavigationInFlight: Boolean = false,
         var queuedBackRequests: Int = 0,
         var cookieFlushRunnable: Runnable? = null,
@@ -834,6 +860,30 @@ class BrowserWebViewRegistry(
         @Volatile var activeDocumentUrl: String? = null,
         @Volatile var adBlockingEnabled: Boolean = true,
         @Volatile var isActive: Boolean = true
+    ) {
+        @Synchronized fun beginBackNavigation(): Boolean {
+            if (backNavigationInFlight) {
+                queuedBackRequests = (queuedBackRequests + 1).coerceAtMost(MAX_QUEUED_BACK_REQUESTS)
+                return false
+            }
+            backNavigationInFlight = true
+            return true
+        }
+        @Synchronized fun cancelBackNavigation() {
+            backNavigationInFlight = false
+            queuedBackRequests = 0
+        }
+        @Synchronized fun completeBackNavigation(): Boolean {
+            if (!backNavigationInFlight) return false
+            backNavigationInFlight = false
+            if (queuedBackRequests <= 0) return false
+            queuedBackRequests -= 1
+            return true
+        }
+        @Synchronized fun rearmPageLifecycle(url: String) {
+            lifecycleUrl = url
+            pageFinishedDone = false
+        }
     )
 
     /** Cookie書込みをページ完了ごとに同期実行せず、連続遷移をまとめてから一度だけ行う。 */
