@@ -769,7 +769,7 @@ class BrowserWebViewRegistry(
             entries[tabId]?.callbacks?.onHistoryState(tabId, view.canGoBack(), view.canGoForward())
         }
 
-        override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
+        override fun onScaleChanged(view: WebView, oldScale: Float, newScale: Float) {\n            entries[tabId]?.pageScale = newScale\n            super.onScaleChanged(view, oldScale, newScale)\n        }\n\n        override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) {
             handler.cancel() // 証明書エラーを無視して接続することは絶対にしない。
             entries[tabId]?.callbacks?.onSslError(error.url)
         }
