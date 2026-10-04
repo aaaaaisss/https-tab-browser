@@ -192,3 +192,11 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - WebView の従来の直接 `DownloadManager.Request` 実装を `BrowserDownloadDispatcher.enqueueNormal()` 経由へ置換。
 - APK DEX で確認できた WorkManager / Range ダウンロード系の入口と状態モデルを優先して配置。
 - GitHub Actions は起動していない。
+
+
+## Pass 19: APK download runtime/state parity
+- APK DEXで確認できた `FastDownloadNotifications` と `FastDownloadWorker.getForegroundInfo` の経路を反映。
+- `BrowserDownloadDispatcher` に高速WorkManager状態、DownloadManager状態、追跡件数のprune、SHA-256 prefix、通常経路への切替を追加。
+- APKで確認できた `PROGRESS_STEP_BYTES` / `NOTIFICATION_ID` / `createFailure` の基盤を追加。
+- YouTube広告サニタイズ対象キーにAPKで確認した `adReasons` / `promoted` / `ypc_spin_up` を追加。
+- GitHub Actionsは起動していない。
