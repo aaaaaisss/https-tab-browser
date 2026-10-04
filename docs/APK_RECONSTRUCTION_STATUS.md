@@ -56,3 +56,15 @@ These remain pending because their exact compiled implementation should be recon
 - Added the APK-visible `youtubeCosmeticAggressiveApplied` Entry state field.
 
 These scripts are wired only when the repository's new `aggressiveAdBlockingEnabled` setting is enabled. The APK contains the same handler names and diagnostic event names, but the exact Kotlin registration order is not fully recoverable from strings alone.
+
+## Latest APK evidence pass 2
+
+- Replaced the reconstructed YouTube sanitizer with the more complete APK-observed implementation:
+  - player/playerResponse field cleanup
+  - player response text cleanup
+  - Shorts ad-entry pruning
+  - `reel_watch_sequence` handling
+  - Fetch response rewriting
+  - XMLHttpRequest `responseText` rewriting
+- Restored the APK-observed aggressive YouTube cosmetic selector set in `AdBlockInjector`.
+- APK evidence also confirms `isSafeYoutubeAdSelector` and safe-redirect constants/helpers exist. Their exact numeric thresholds and Kotlin control flow remain uncommitted because the current environment lacks a DEX decompiler and the string table alone does not establish those values.
