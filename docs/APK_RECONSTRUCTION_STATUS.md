@@ -75,3 +75,5 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - `isSafeRedirectMimeType` branches by `stylesheet`, `image`, and `script`; stylesheet is `text/css`. Image MIME strings recovered: `image/gif`, `image/jpeg`, `image/png`, `image/webp`. Script-safe strings recovered from the APK: `application/javascript`, `application/json`, `application/octet-stream`, `application/wasm`, `text/javascript`, `text/plain`.
 - `isSafeYoutubeAdSelector` was directly decoded far enough to recover the 500-character cap and exact ad/layout token lists. Exact final boolean composition is still being treated conservatively until the remaining Dalvik branch/register semantics are decoded.
 - The safe redirect helper has been reconstructed as an isolated method only. It is **not wired into request interception yet**, because the APK's exact MIME/resource-type call-site contract is not fully decoded. This avoids introducing an unsafe or incorrect fallback.
+
+- Corrected the safe redirect helper placement so its constants live in the existing `BrowserWebView.kt` companion object; no duplicate companion object remains.
