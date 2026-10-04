@@ -515,14 +515,17 @@ class BrowserWebViewRegistry(
 
     /** YouTubeのプレーヤー本体・サイズ計算へ触れず、明示的な広告枠だけを非表示にする。 */
     private fun applyYoutubeCosmeticFilters(view: WebView, entry: Entry, url: String, enabled: Boolean) {
-        if (entry.youtubeCosmeticAppliedUrl == url && enabled) return
+        val aggressive = enabled && entry.settings.aggressiveAdBlockingEnabled
+        if (entry.youtubeCosmeticAppliedUrl == url &&
+            entry.youtubeCosmeticAggressiveApplied == aggressive
+        ) return
         entry.youtubeCosmeticAppliedUrl = if (enabled) url else null
-        // 同一ドキュメントで通常サイトからYouTubeへSPA遷移した場合にも、汎用CSSを残さない。
+        entry.youtubeCosmeticAggressiveApplied = aggressive
         entry.cosmeticAppliedUrl = null
         entry.genericCosmeticAppliedUrl = null
-        // YouTubeの動的selectorはWeb Componentsのレイアウトへ波及し得るため使わない。
-        // 明示的な広告slotだけを対象にし、プレーヤー・幅計算・gridには一切触れない。
-        val css = if (enabled) YOUTUBE_AD_CSS else ""
+        // APKには通常のYouTube cosmetic状態と、積極的ブロック用の状態が別々に存在する。
+        // プレーヤー本体やサイズ計算へ触れず、積極モード時だけ明示的な広告枠CSSを適用する。
+        val css = if (aggressive) YOUTUBE_AD_CSS else ""
         view.evaluateJavascript(
             """
             (function(){
