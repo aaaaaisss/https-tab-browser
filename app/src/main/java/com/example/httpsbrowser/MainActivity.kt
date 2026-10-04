@@ -57,6 +57,8 @@ class MainActivity : ComponentActivity() {
     private var pictureInPictureActive by mutableStateOf(false)
     @Volatile private var pictureInPictureTransitionRequested = false
     private val videoDimensionsByTab = ConcurrentHashMap<String, VideoDimensions>()
+    private var videoControlsRegistry: BrowserWebViewRegistry? = null
+    private var videoControlsTabId: String? = null
 
     // custom viewはレイアウト・回転・PiP遷移で座標が変わるため、sourceRectHintを更新する。
     private val pipHintLayoutListener = View.OnLayoutChangeListener { view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -69,6 +71,7 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         incomingUrl = httpsViewUrl(intent)
+        pipActivity = this
 
         appRoot = FrameLayout(this)
         normalWebContentHost = FrameLayout(this).apply {
@@ -259,6 +262,16 @@ class MainActivity : ComponentActivity() {
         updatePictureInPictureParams(view)
     }
 
+    internal fun handlePipSeekFromReceiver(deltaSeconds: Int) { videoControlsRegistry?.seekVideo(videoControlsTabId ?: return, deltaSeconds) }
+
+    fun setVideoControlsTarget(registry: BrowserWebViewRegistry?, tabId: String?) { videoControlsRegistry = registry; videoControlsTabId = tabId }
+
+    private fun createPipSeekAction(deltaSeconds: Int, title: String, iconRes: Int, requestCode: Int): RemoteAction {
+        val intent = Intent(this, PipControlReceiver::class.java).apply { action = if (deltaSeconds < 0) ACTION_PIP_SEEK_BACK else ACTION_PIP_SEEK_FORWARD; putExtra(EXTRA_PIP_SEEK_SECONDS, deltaSeconds) }
+        val pendingIntent = PendingIntent.getBroadcast(this, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return RemoteAction(Icon.createWithResource(this, iconRes), title, title, pendingIntent)
+    }
+
     fun shouldRetainFullscreenCustomView(): Boolean =
         pictureInPictureActive || pictureInPictureTransitionRequested
 
@@ -323,6 +336,9 @@ class MainActivity : ComponentActivity() {
         fullscreenVideoView?.removeOnLayoutChangeListener(pipHintLayoutListener)
         fullscreenVideoView = null
         fullscreenContainer = null
+        videoControlsRegistry = null
+        videoControlsTabId = null
+        if (pipActivity === this) pipActivity = null
         super.onDestroy()
     }
 
@@ -381,7 +397,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 builder.setAspectRatio(Rational(16, 9))
             }
-            builder.setActions(listOf(createOpenBrowserRemoteAction()))
+            builder.setActions(listOf(createPipSeekAction(-10, "10秒戻す", android.R.drawable.ic_media_rew, REQUEST_PIP_SEEK_BACK), createPipSeekAction(10, "10秒進む", android.R.drawable.ic_media_ff, REQUEST_PIP_SEEK_FORWARD), createOpenBrowserRemoteAction()))
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setAutoEnterEnabled(videoView != null)
@@ -433,7 +449,13 @@ class MainActivity : ComponentActivity() {
     private data class VideoDimensions(val width: Int, val height: Int)
 
     private companion object {
+        @Volatile var pipActivity: MainActivity? = null
         const val REQUEST_OPEN_BROWSER_FROM_PIP = 4021
+        const val REQUEST_PIP_SEEK_BACK = 4022
+        const val REQUEST_PIP_SEEK_FORWARD = 4023
+        const val ACTION_PIP_SEEK_BACK = "com.example.httpsbrowser.PIP_SEEK_BACK"
+        const val ACTION_PIP_SEEK_FORWARD = "com.example.httpsbrowser.PIP_SEEK_FORWARD"
+        const val EXTRA_PIP_SEEK_SECONDS = "extra_pip_seek_seconds"
         const val MIN_PIP_ASPECT_RATIO = 1f / 2.39f
         const val MAX_PIP_ASPECT_RATIO = 2.39f
     }
