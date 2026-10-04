@@ -503,11 +503,17 @@ class BrowserWebViewRegistry(
             val protectedPlaybackResource = isYoutubePlaybackResource(url) ||
                 isGoogleVideoPreviewResource(documentUrl, resourceType)
             val shouldCheck = !protectedPlaybackResource || isYoutubeAdOrTrackingNetwork(url)
-            if (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
+            val minimalBlocked = entry.settings.aggressiveAdBlockingEnabled &&
+                MinimalAdBlockClient.shouldBlockMinimalAd(
                     url = url,
                     documentUrl = documentUrl,
                     resourceType = resourceType
                 )
+            if (minimalBlocked || (entry.adBlockingEnabled && shouldCheck && blocker.shouldBlock(
+                    url = url,
+                    documentUrl = documentUrl,
+                    resourceType = resourceType
+                ))
             ) {
                 return WebResourceResponse(
                     "text/plain", "utf-8", 204, "No Content",
@@ -540,6 +546,7 @@ class BrowserWebViewRegistry(
         override fun onPageFinished(view: WebView, url: String) {
             val entry = entries[tabId]
             applyBraveCosmeticFilters(view, url, entry?.adBlockingEnabled == true, includeGeneric = true)
+            AdBlockInjector.inject(view, entry?.settings?.aggressiveAdBlockingEnabled == true)
             view.evaluateJavascript(VIDEO_DIMENSIONS_REPORTER_SCRIPT, null)
             if (isVideoPlaybackDocumentUrl(url)) recordVideoViewportMetrics(view, url)
             entry?.let { scheduleCookieFlush(view, it) }
