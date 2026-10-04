@@ -113,3 +113,9 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - Rechecked the current branch against APK-observed lifecycle structure. `ensureYoutubePictureInPictureScript` and the three aggressive document-start handlers are already registered/removed at the appropriate WebView lifecycle points, so no duplicate handlers were introduced.
 - The APK-era safe redirect helper remains intentionally isolated. It has exact recovered size/MIME guards but is not connected to interception until the remaining call-site semantics are decoded.
 - The current Fulguris-native dark-mode implementation remains preferred over reintroducing the older APK document-start darkening layer.
+
+
+## Latest APK evidence pass 10
+
+- Parsed the APK's `BrowserWebViewRegistry` class table directly from `classes6.dex`. Confirmed the APK class itself declares the recovered browser-limit fields `MAX_AGGRESSIVE_YOUTUBE_SELECTORS`, `MAX_SAFE_REDIRECT_BYTES`, `MAX_SAFE_REDIRECT_DATA_URL_CHARS`, and `MAX_STATIC_COSMETIC_SELECTORS`, plus the dark-mode, YouTube, safe-redirect, playback-protection, and viewport script resources already tracked above.
+- The APK class table also confirms `VIDEO_VIEWPORT_METRICS_SCRIPT` and `YOUTUBE_PAGE_DARK_CSS` are first-class static resources, reinforcing that viewport reporting and a YouTube-specific dark layer were intentional APK features. The current branch already has viewport reporting and deliberately keeps Fulguris-native dark mode as the active path.
