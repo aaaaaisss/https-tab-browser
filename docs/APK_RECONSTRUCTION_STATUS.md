@@ -82,3 +82,9 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 ## Latest APK evidence pass 4
 
 - Direct DEX decoding confirmed `isSafeYoutubeAdSelector` returns true only when the normalized selector is nonblank, at most 500 characters, contains at least one ad token (`ad`, `promoted`, `sponsor`, `masthead`, `merchandise`, `paid`, `brand`) **and** at least one layout token (`#player`, `video`, `iframe`, `ytd-app`, `ytm-app`, `ytd-page-manager`, `html`, `body`).\n- Recovered two aggressive YouTube selectors that were missing from the reconstructed CSS: `.ytp-suggested-action > .ytp-suggested-action-badge` and `yt-overlay-product-sticker`. These are now restored.\n- Safe redirect limits and MIME handling remain isolated and unwired until the APK request-interception call site is decoded.\n
+
+## Latest APK evidence pass 5
+
+- Decoded the APK `SecureClient.shouldInterceptRequest` method shape: when the entry's ad blocking flag is enabled, it calls an APK-era URL-only `shouldBlockMinimalAd(String)` helper and returns an empty ad response when that helper says true; main-frame lifecycle rearming happens separately.
+- Decoded the APK `MinimalAdBlockClient.shouldBlockMinimalAd` signature as URL-only (`String -> Boolean`), unlike the current reconstruction's three-argument helper. The exact internal collection/control flow is still being decoded before replacing the current call site.
+- This is a structural difference worth preserving in the status log, but it does not yet require a strategy change: the current branch can still be reconciled incrementally without discarding the existing Brave path.
