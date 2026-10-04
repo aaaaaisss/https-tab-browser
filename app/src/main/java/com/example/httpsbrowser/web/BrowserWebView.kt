@@ -1285,7 +1285,7 @@ interface BrowserWebCallbacks {
     fun onBlockedNavigation(url: String)
     fun onSslError(url: String)
     fun onRendererGone(tabId: String)
-    fun onBackHistoryExhausted() = Unit
+    fun onBackHistoryExhausted(tabId: String) = Unit
     fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideFullscreen()
     fun onVideoDimensions(tabId: String, width: Int, height: Int) = Unit
@@ -1311,7 +1311,7 @@ interface BrowserWebCallbacks {
         override fun onBlockedNavigation(url: String) = Unit
         override fun onSslError(url: String) = Unit
         override fun onRendererGone(tabId: String) = Unit
-        override fun onBackHistoryExhausted() = Unit
+        override fun onBackHistoryExhausted(tabId: String) = Unit
         override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = Unit
         override fun onHideFullscreen() = Unit
         override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = reply(false)
