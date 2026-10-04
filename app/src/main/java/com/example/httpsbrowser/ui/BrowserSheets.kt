@@ -156,6 +156,7 @@ object BrowserSheets {
             item { SheetTitle("設定") }
             item { SettingSwitch("ページを強制的に暗色化", state.settings.forceDarkPages) { onSettings { setting -> setting.copy(forceDarkPages = it) } } }
             item { SettingSwitch("広告 URL ルールをブロック", state.settings.adBlockingEnabled) { onSettings { setting -> setting.copy(adBlockingEnabled = it) } } }
+            item { SettingSwitch("積極的な広告ブロック", state.settings.aggressiveAdBlockingEnabled) { onSettings { setting -> setting.copy(aggressiveAdBlockingEnabled = it) } } }
             item { SettingSwitch("JavaScript を有効化", state.settings.javascriptEnabled) { onSettings { setting -> setting.copy(javascriptEnabled = it) } } }
             item { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             item { SheetTitle("管理") }
