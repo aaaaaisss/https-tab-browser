@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -138,6 +139,9 @@ object BrowserSheets {
                 SettingsPage.BOOKMARKS -> BookmarkPage(state.bookmarks, onOpenUrl, onSaveBookmark, onUpdateBookmark, onDeleteBookmark, onBack, onNotice)
                 SettingsPage.HISTORY -> HistoryPage(state.history, onOpenUrl, onDeleteHistory, onBack)
                 SettingsPage.AD_BLOCK -> AdBlockPage(listRepository, onBack, onNotice)
+                SettingsPage.DARK_EXCLUSIONS -> DarkExclusionsPage(state.settings, onSettings, onBack)
+                SettingsPage.DOWNLOADS -> DownloadsPage(onBack, onDownloads)
+                SettingsPage.OPEN_SOURCE_LICENSES -> OpenSourceLicensesPage(onBack)
                 SettingsPage.DATA -> DataPage(onClear, onBack)
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPage(onBack, onShareDiagnostics)
             }
@@ -155,6 +159,11 @@ object BrowserSheets {
         LazyColumn(Modifier.padding(bottom = 24.dp)) {
             item { SheetTitle("設定") }
             item { SettingSwitch("ページを強制的に暗色化", state.settings.forceDarkPages) { onSettings { setting -> setting.copy(forceDarkPages = it) } } }
+            item { SettingSwitch("動画ページも暗色化", state.settings.forceDarkVideoPages) { onSettings { setting -> setting.copy(forceDarkVideoPages = it) } } }
+            item { SettingSwitch("元から暗いページでは追加暗色化しない", state.settings.skipDarkeningAlreadyDarkPages) { onSettings { setting -> setting.copy(skipDarkeningAlreadyDarkPages = it) } } }
+            item { NavigationItem("暗色化の例外", Icons.Default.Security) { onOpenPage(SettingsPage.DARK_EXCLUSIONS) } }
+            item { VideoPlaybackRateSetting(state.settings.videoPlaybackRate) { rate -> onSettings { setting -> setting.copy(videoPlaybackRate = rate) } } }
+            item { VideoControlHostSetting(state.settings.videoControlHosts, onSettings) }
             item { SettingSwitch("広告 URL ルールをブロック", state.settings.adBlockingEnabled) { onSettings { setting -> setting.copy(adBlockingEnabled = it) } } }
             item { SettingSwitch("積極的な広告ブロック", state.settings.aggressiveAdBlockingEnabled) { onSettings { setting -> setting.copy(aggressiveAdBlockingEnabled = it) } } }
             item { SettingSwitch("JavaScript を有効化", state.settings.javascriptEnabled) { onSettings { setting -> setting.copy(javascriptEnabled = it) } } }
@@ -163,6 +172,7 @@ object BrowserSheets {
             item { NavigationItem("ブックマーク", Icons.Default.Bookmark) { onOpenPage(SettingsPage.BOOKMARKS) } }
             item { NavigationItem("閲覧履歴", Icons.Default.History) { onOpenPage(SettingsPage.HISTORY) } }
             item { NavigationItem("ダウンロード", Icons.Default.Download, onDownloads) }
+            item { NavigationItem("オープンソースライセンス", Icons.Default.Security) { onOpenPage(SettingsPage.OPEN_SOURCE_LICENSES) } }
             item { NavigationItem("広告ブロック", Icons.Default.Security) { onOpenPage(SettingsPage.AD_BLOCK) } }
             item { NavigationItem("クラッシュ診断", Icons.Default.Security) { onOpenPage(SettingsPage.DIAGNOSTICS) } }
             item { NavigationItem("閲覧データの消去", Icons.Default.Delete) { onOpenPage(SettingsPage.DATA) } }
@@ -170,6 +180,48 @@ object BrowserSheets {
         }
     }
 
+    @Composable
+    private fun DarkExclusionsPage(settings: BrowserSettings, onSettings: ((BrowserSettings) -> BrowserSettings) -> Unit, onBack: () -> Unit) {
+        var input by remember { mutableStateOf("") }
+        PageHeader("暗色化の例外", onBack, actionLabel = "追加") {
+            val host = normalizeDarkExclusionHost(input)
+            if (host.isNotBlank()) { onSettings { it.copy(darkModeExcludedHosts = (it.darkModeExcludedHosts + host).distinct()) }; input = "" }
+        }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("ドメインまたはホスト名") }, supportingText = { Text("このサイトとサブドメインでは追加暗色化を行いません。") })
+            Spacer(Modifier.size(8.dp))
+            if (settings.darkModeExcludedHosts.isEmpty()) EmptyRow("暗色化の例外はまだありません。") else settings.darkModeExcludedHosts.forEach { host ->
+                ListItem(headlineContent = { Text(host) }, trailingContent = { IconButton(onClick = { onSettings { it.copy(darkModeExcludedHosts = it.darkModeExcludedHosts.filterNot { item -> item == host }) } }) { Icon(Icons.Default.Delete, "例外から削除") } })
+            }
+        }
+    }
+
+    @Composable
+    private fun VideoControlHostSetting(hosts: List<String>, onSettings: ((BrowserSettings) -> BrowserSettings) -> Unit) {
+        var input by remember { mutableStateOf("") }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("通常画面の動画操作サイト", style = MaterialTheme.typography.titleMedium)
+            Text("全画面動画では常に表示され、通常画面ではここに登録したサイトだけ表示します。", style = MaterialTheme.typography.bodySmall)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f), singleLine = true, label = { Text("ホスト名") })
+                TextButton(onClick = { val host = input.trim().lowercase().removePrefix("https://").removePrefix("http://").substringBefore('/'); if (host.isNotBlank()) { onSettings { it.copy(videoControlHosts = (it.videoControlHosts + host).distinct()) }; input = "" } }) { Text("追加") }
+            }
+            hosts.forEach { host -> ListItem(headlineContent = { Text(host) }, trailingContent = { IconButton(onClick = { onSettings { it.copy(videoControlHosts = it.videoControlHosts.filterNot { item -> item == host }) } }) { Icon(Icons.Default.Delete, "削除") } }) }
+        }
+    }
+
+    @Composable
+    private fun VideoPlaybackRateSetting(rate: Float, onRateChanged: (Float) -> Unit) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text("動画の再生速度", style = MaterialTheme.typography.titleMedium)
+            Text(rate.toString().let { it + "x  •  動画を切り替えても選択した速度を維持します。" }, style = MaterialTheme.typography.bodySmall)
+            Slider(value = rate, onValueChange = { onRateChanged((it * 4f).roundToInt() / 4f) }, valueRange = 0.25f..3f)
+        }
+    }
+
+    @Composable private fun DownloadsPage(onBack: () -> Unit, onDownloads: () -> Unit) { PageHeader("ダウンロード", onBack, actionLabel = "開く", action = onDownloads); EmptyRow("端末のダウンロード管理画面から確認できます。") }
+    @Composable private fun OpenSourceLicensesPage(onBack: () -> Unit) { PageHeader("オープンソースライセンス", onBack); Text("AndroidX、Jetpack Compose、AndroidX WebKit、Kotlinなどのオープンソースソフトウェアを利用しています。", modifier = Modifier.padding(16.dp)) }
+    private fun normalizeDarkExclusionHost(raw: String): String = raw.trim().lowercase().removePrefix("https://").removePrefix("http://").substringBefore('/').substringBefore('?').substringBefore('#').removePrefix("www.")
     @Composable
     private fun BookmarkPage(
         bookmarks: List<Bookmark>,
