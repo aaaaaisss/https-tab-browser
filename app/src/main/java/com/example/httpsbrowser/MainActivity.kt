@@ -448,7 +448,7 @@ class MainActivity : ComponentActivity() {
 
     private data class VideoDimensions(val width: Int, val height: Int)
 
-    private companion object {
+    internal companion object {
         @Volatile var pipActivity: MainActivity? = null
         const val REQUEST_OPEN_BROWSER_FROM_PIP = 4021
         const val REQUEST_PIP_SEEK_BACK = 4022
