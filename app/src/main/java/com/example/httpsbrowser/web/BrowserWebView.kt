@@ -609,9 +609,6 @@ class BrowserWebViewRegistry(
             // View の状態には触れず、UIスレッドで保持した親ページURLだけを利用する。
             val documentUrl = entry.activeDocumentUrl.orEmpty().ifBlank { url }
             val resourceType = resourceTypeFor(request)
-            // Brave's safe data-resource fallback is intentionally narrow. The APK limits it by
-            // resource type, MIME type, URL length, base64 syntax, and decoded byte size.
-            val safeDataResponse = createSafeBraveRedirectResponse(url, resourceType, request.requestHeaders["Accept"].orEmpty())
             // YouTube/Googlevideo/ytimgのiframe bootstrap、player JS、映像chunk、内部APIは
             // 再生必須として保護する。Google検索動画タブで起動したiframeと映像も同様に保護する。
             // 明示的なYouTube広告・計測専用ホスト/パスだけは規則評価を継続する。
