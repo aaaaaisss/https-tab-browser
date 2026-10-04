@@ -10,12 +10,6 @@ import java.util.concurrent.ConcurrentHashMap
 
 enum class BrowserDownloadMode { NORMAL, FAST }
 
-enum class BrowserDownloadStatus {
-    ENQUEUED, CONNECTED, RUNNING, FAILED, CANCELLED;
-
-    val isTerminal: Boolean get() = this == FAILED || this == CANCELLED
-}
-
 data class BrowserDownloadRequest(
     val url: String,
     val userAgent: String,
