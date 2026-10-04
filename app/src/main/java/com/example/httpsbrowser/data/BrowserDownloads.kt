@@ -1,13 +1,17 @@
 package com.example.httpsbrowser.data
 
 import android.app.DownloadManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.os.Environment
 import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.URLUtil
+import androidx.core.app.NotificationCompat
 import androidx.work.*
 import java.util.UUID
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 enum class BrowserDownloadMode { NORMAL, FAST }
@@ -88,9 +92,40 @@ class BrowserDownloadDispatcher(private val context: Context) {
         trackedDownloads[id] = tracked.copy(mode = BrowserDownloadMode.NORMAL, fallbackToNormal = true, phase = "NORMAL")
     }
 
-    suspend fun currentStatuses(): List<BrowserDownloadStatus> = trackedDownloads.values
-        .sortedByDescending { it.createdAt }
-        .map { it.snapshot() }
+    suspend fun currentStatuses(): List<BrowserDownloadStatus> {
+        pruneTrackedDownloads()
+        val workManager = WorkManager.getInstance(context)
+        return trackedDownloads.values.sortedByDescending { it.createdAt }.map { tracked ->
+            val phase = when {
+                tracked.cancelled -> "CANCELLED"
+                tracked.deleted -> "DELETED"
+                tracked.workId != null -> workManager.getWorkInfoById(tracked.workId)?.let { info ->
+                    when (info.state) {
+                        WorkInfo.State.RUNNING -> "RUNNING"
+                        WorkInfo.State.SUCCEEDED -> "COMPLETED"
+                        WorkInfo.State.FAILED -> "FAILED"
+                        WorkInfo.State.CANCELLED -> "CANCELLED"
+                        WorkInfo.State.BLOCKED -> "BLOCKED"
+                        WorkInfo.State.ENQUEUED -> "ENQUEUED"
+                    }
+                } ?: tracked.phase
+                else -> tracked.phase
+            }
+            tracked.snapshot(phase = phase)
+        }
+    }
+
+    private fun pruneTrackedDownloads() {
+        if (trackedDownloads.size <= MAX_TRACKED_DOWNLOADS) return
+        trackedDownloads.values.sortedBy { it.createdAt }
+            .drop(MAX_TRACKED_DOWNLOADS)
+            .forEach { trackedDownloads.remove(it.id, it) }
+    }
+
+    fun sha256Prefix(value: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
+        return digest.take(8).joinToString("") { byte -> "%02x".format(byte) }
+    }
 
     fun cancel(id: String) {
         trackedDownloads[id]?.let {
@@ -126,15 +161,20 @@ class BrowserDownloadDispatcher(private val context: Context) {
         val cancelled: Boolean = false,
         val deleted: Boolean = false
     ) {
-        fun snapshot() = BrowserDownloadStatus(
+        fun snapshot(
+            downloadedBytes: Long = 0L,
+            totalBytes: Long? = null,
+            phase: String = this.phase,
+            successful: Boolean = false
+        ) = BrowserDownloadStatus(
             id = id,
             url = request.url,
             mode = mode,
             fileName = request.fileName,
-            downloadedBytes = 0L,
-            totalBytes = null,
-            isSuccessful = false,
-            isTerminal = cancelled || deleted,
+            downloadedBytes = downloadedBytes,
+            totalBytes = totalBytes,
+            isSuccessful = successful,
+            isTerminal = cancelled || deleted || successful || phase == "FAILED",
             phase = phase,
             startedAt = createdAt
         )
@@ -148,7 +188,14 @@ class FastDownloadWorker(
 
     private data class RangeProbe(val totalBytes: Long, val rangeSupported: Boolean)
 
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        FastDownloadNotifications.ensureChannel(applicationContext)
+        val title = inputData.getString(KEY_FILE_NAME).orEmpty().ifBlank { "ダウンロード" }
+        return ForegroundInfo(NOTIFICATION_ID, FastDownloadNotifications.buildProgress(applicationContext, title, 0, 0))
+    }
+
     override suspend fun doWork(): Result {
+        setForeground(getForegroundInfo())
         val url = inputData.getString(KEY_URL).orEmpty()
         if (!url.startsWith("https://", true)) return Result.failure()
         val fileName = inputData.getString(KEY_FILE_NAME)?.ifBlank {
@@ -313,5 +360,29 @@ class FastDownloadWorker(
         const val PARALLEL_CONNECTIONS = 4
         const val MAX_RETRIES = 3
         const val MAX_TRACKED_DOWNLOADS = 50
+        const val NOTIFICATION_ID = 19041
     }
+}
+
+object FastDownloadNotifications {
+    private const val CHANNEL_ID = "fast_downloads"
+    private const val CHANNEL_NAME = "Downloads"
+
+    fun ensureChannel(context: Context) {
+        if (android.os.Build.VERSION.SDK_INT < 26) return
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_LOW))
+        }
+    }
+
+    fun buildProgress(context: Context, title: String, progress: Int, max: Int): android.app.Notification =
+        NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(title)
+            .setContentText("ダウンロード中")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setProgress(max, progress.coerceIn(0, max.coerceAtLeast(1)), max > 0)
+            .build()
 }
