@@ -31,6 +31,7 @@ data class BrowserDownloadStatus(
     val isSuccessful: Boolean,
     val isTerminal: Boolean,
     val phase: String,
+    val progressFraction: Float = totalBytes?.takeIf { it > 0L }?.let { downloadedBytes.toFloat() / it.toFloat() } ?: 0f,
     val startedAt: Long
 )
 
@@ -97,7 +98,13 @@ class BrowserDownloadDispatcher(private val context: Context) {
     }
 
     fun delete(id: String) {
-        trackedDownloads.remove(id)?.workId?.let { WorkManager.getInstance(context).cancelWorkById(it) }
+        trackedDownloads[id]?.let { tracked ->
+            tracked.workId?.let { WorkManager.getInstance(context).cancelWorkById(it) }
+            tracked.downloadManagerId?.let { idValue ->
+                (context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager)?.remove(idValue)
+            }
+            trackedDownloads[id] = tracked.copy(deleted = true, phase = "DELETED")
+        }
     }
 
     fun trackedDownloads(): List<BrowserDownloadStatus> =
@@ -114,7 +121,8 @@ class BrowserDownloadDispatcher(private val context: Context) {
         val workId: UUID?,
         val fallbackToNormal: Boolean,
         val phase: String,
-        val cancelled: Boolean = false
+        val cancelled: Boolean = false,
+        val deleted: Boolean = false
     ) {
         fun snapshot() = BrowserDownloadStatus(
             id = id,
@@ -124,8 +132,9 @@ class BrowserDownloadDispatcher(private val context: Context) {
             downloadedBytes = 0L,
             totalBytes = null,
             isSuccessful = false,
-            isTerminal = cancelled,
+            isTerminal = cancelled || deleted,
             phase = phase,
+            progressFraction = 0f,
             startedAt = createdAt
         )
     }
