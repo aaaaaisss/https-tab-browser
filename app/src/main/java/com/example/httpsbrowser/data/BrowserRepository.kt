@@ -21,6 +21,7 @@ class BrowserRepository(private val context: Context) {
         val forceDark = booleanPreferencesKey("force_dark")
         val forceDarkInitialized = booleanPreferencesKey("force_dark_initialized")
         val adBlock = booleanPreferencesKey("ad_block")
+        val aggressiveAdBlock = booleanPreferencesKey("aggressive_ad_block")
         val javascript = booleanPreferencesKey("javascript")
     }
 
@@ -44,6 +45,7 @@ class BrowserRepository(private val context: Context) {
             settings = BrowserSettings(
                 forceDarkPages = forceDarkPages,
                 adBlockingEnabled = preferences[Keys.adBlock] ?: true,
+                aggressiveAdBlockingEnabled = preferences[Keys.aggressiveAdBlock] ?: false,
                 javascriptEnabled = preferences[Keys.javascript] ?: true
             )
         )
@@ -63,6 +65,7 @@ class BrowserRepository(private val context: Context) {
             preferences[Keys.forceDark] = state.settings.forceDarkPages
             preferences[Keys.forceDarkInitialized] = true
             preferences[Keys.adBlock] = state.settings.adBlockingEnabled
+            preferences[Keys.aggressiveAdBlock] = state.settings.aggressiveAdBlockingEnabled
             preferences[Keys.javascript] = state.settings.javascriptEnabled
         }
     }
