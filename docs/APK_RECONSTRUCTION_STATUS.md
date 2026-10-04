@@ -46,3 +46,13 @@ The APK nevertheless contains additional symbols not found in the repository his
 - `MAX_SAFE_REDIRECT_BYTES`
 
 These remain pending because their exact compiled implementation should be reconstructed from APK evidence rather than guessed.
+
+## Latest restoration pass
+
+- Recovered the APK's YouTube document-start **no-ad warm player** script.
+- Recovered the APK's YouTube **SABR patch-only** script, including both Fetch and XMLHttpRequest response paths and the Premium exclusion.
+- Recovered a document-start YouTube ad-response sanitizer corresponding to the APK's `youtubeAdSanitizerScriptHandler`.
+- Added lifecycle registration/removal for the three script handlers.
+- Added the APK-visible `youtubeCosmeticAggressiveApplied` Entry state field.
+
+These scripts are wired only when the repository's new `aggressiveAdBlockingEnabled` setting is enabled. The APK contains the same handler names and diagnostic event names, but the exact Kotlin registration order is not fully recoverable from strings alone.
