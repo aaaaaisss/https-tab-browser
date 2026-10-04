@@ -20,8 +20,13 @@ class BrowserRepository(private val context: Context) {
         val bookmarks = stringPreferencesKey("bookmarks")
         val forceDark = booleanPreferencesKey("force_dark")
         val forceDarkInitialized = booleanPreferencesKey("force_dark_initialized")
+        val forceDarkVideo = booleanPreferencesKey("force_dark_video")
+        val skipAlreadyDark = booleanPreferencesKey("skip_already_dark")
+        val darkExcludedHosts = stringPreferencesKey("dark_excluded_hosts")
         val adBlock = booleanPreferencesKey("ad_block")
         val aggressiveAdBlock = booleanPreferencesKey("aggressive_ad_block")
+        val videoControlHosts = stringPreferencesKey("video_control_hosts")
+        val videoPlaybackRate = stringPreferencesKey("video_playback_rate")
         val javascript = booleanPreferencesKey("javascript")
     }
 
@@ -44,9 +49,14 @@ class BrowserRepository(private val context: Context) {
             bookmarks = decodeBookmarks(preferences[Keys.bookmarks]),
             settings = BrowserSettings(
                 forceDarkPages = forceDarkPages,
+                forceDarkVideoPages = preferences[Keys.forceDarkVideo] ?: true,
+                skipDarkeningAlreadyDarkPages = preferences[Keys.skipAlreadyDark] ?: true,
+                darkModeExcludedHosts = decodeStringList(preferences[Keys.darkExcludedHosts]),
                 adBlockingEnabled = preferences[Keys.adBlock] ?: true,
                 aggressiveAdBlockingEnabled = preferences[Keys.aggressiveAdBlock] ?: false,
-                javascriptEnabled = preferences[Keys.javascript] ?: true
+                javascriptEnabled = preferences[Keys.javascript] ?: true,
+                videoControlHosts = decodeStringList(preferences[Keys.videoControlHosts]),
+                videoPlaybackRate = preferences[Keys.videoPlaybackRate]?.toFloatOrNull()?.coerceIn(0.25f, 3f) ?: 1f
             )
         )
     }
@@ -64,8 +74,13 @@ class BrowserRepository(private val context: Context) {
             preferences[Keys.bookmarks] = encodeBookmarks(state.bookmarks).toString()
             preferences[Keys.forceDark] = state.settings.forceDarkPages
             preferences[Keys.forceDarkInitialized] = true
+            preferences[Keys.forceDarkVideo] = state.settings.forceDarkVideoPages
+            preferences[Keys.skipAlreadyDark] = state.settings.skipDarkeningAlreadyDarkPages
+            preferences[Keys.darkExcludedHosts] = encodeStringList(state.settings.darkModeExcludedHosts)
             preferences[Keys.adBlock] = state.settings.adBlockingEnabled
             preferences[Keys.aggressiveAdBlock] = state.settings.aggressiveAdBlockingEnabled
+            preferences[Keys.videoControlHosts] = encodeStringList(state.settings.videoControlHosts)
+            preferences[Keys.videoPlaybackRate] = state.settings.videoPlaybackRate.coerceIn(0.25f, 3f).toString()
             preferences[Keys.javascript] = state.settings.javascriptEnabled
         }
     }
@@ -116,7 +131,7 @@ class BrowserRepository(private val context: Context) {
         )
     }
 
-    private fun <T> decodeArray(raw: String?, map: (JSONObject) -> T): List<T> = runCatching {
+    private fun decodeStringList(raw: String?): List<String> = runCatching {\n        val array = JSONArray(raw ?: "[]")\n        List(array.length()) { array.optJSONObject(it)?.optString("value").orEmpty() }\n    }.getOrDefault(emptyList()).map(String::trim).filter(String::isNotBlank).distinct()\n\n    private fun encodeStringList(values: List<String>): String = JSONArray().apply {\n        values.map(String::trim).filter(String::isNotBlank).distinct().forEach { put(JSONObject().put("value", it)) }\n    }.toString()\n\n    private fun <T> decodeArray(raw: String?, map: (JSONObject) -> T): List<T> = runCatching {
         val array = JSONArray(raw ?: "[]")
         List(array.length()) { index -> map(array.getJSONObject(index)) }
     }.getOrDefault(emptyList())
