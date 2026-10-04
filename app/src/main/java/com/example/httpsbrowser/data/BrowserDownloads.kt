@@ -115,6 +115,7 @@ class BrowserDownloadDispatcher(private val context: Context) {
         val workManager = WorkManager.getInstance(context)
         return trackedDownloads.values.sortedByDescending { it.createdAt }.map { tracked ->
             val dmSnapshot = if (tracked.downloadManagerId != null) readDownloadManagerStatus(tracked) else null
+            val workSnapshot = if (tracked.workId != null) readFastWorkStatus(tracked) else null
             val phase = when {
                 tracked.cancelled -> "CANCELLED"
                 tracked.deleted -> "DELETED"
@@ -130,7 +131,7 @@ class BrowserDownloadDispatcher(private val context: Context) {
                 } ?: tracked.phase
                 else -> tracked.phase
             }
-            dmSnapshot?.copy(phase = phase) ?: tracked.snapshot(phase = phase)
+            dmSnapshot?.copy(phase = phase) ?: workSnapshot?.copy(phase = phase) ?: tracked.snapshot(phase = phase)
         }
     }
 
@@ -249,7 +250,7 @@ class FastDownloadWorker(
                 downloadNormal(url, fileName)
             }
         } catch (_: Throwable) {
-            if (runAttemptCount + 1 >= MAX_RETRIES) Result.failure() else Result.retry()
+            if (runAttemptCount + 1 >= MAX_RETRIES) createFailure(e.message.orEmpty()) else Result.retry()
         }
     }
 
@@ -274,6 +275,9 @@ class FastDownloadWorker(
         connection.disconnect()
         return RangeProbe(length.coerceAtLeast(0L), supported)
     }
+
+    private fun createFailure(message: String): Result =
+        Result.failure(workDataOf(PROGRESS_PHASE to "FAILED", "error" to message.take(512)))
 
     private suspend fun downloadNormal(url: String, fileName: String): Result {
         val connection = (java.net.URL(url).openConnection() as java.net.HttpURLConnection)
@@ -393,6 +397,7 @@ class FastDownloadWorker(
         const val PROGRESS_PHASE = "progress_phase"
         const val PROGRESS_DOWNLOADED = "progress_downloaded"
         const val PROGRESS_TOTAL = "progress_total"
+        const val PROGRESS_STEP_BYTES = 256L * 1024L
         const val CONNECT_TIMEOUT_MS = 15_000
         const val READ_TIMEOUT_MS = 30_000
         const val MIN_PARALLEL_BYTES = 2L * 1024L * 1024L
