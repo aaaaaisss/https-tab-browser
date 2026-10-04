@@ -191,8 +191,10 @@ fun BrowserScreen(viewModel: BrowserViewModel, externalUrl: String? = null) {
     SideEffect {
         val host = activity as? MainActivity
         if (pageTab == null) {
+            host?.setVideoControlsTarget(null, null)
             host?.hideNormalWebContent()
         } else {
+            host?.setVideoControlsTarget(registry, pageTab.id)
             // WebView本体はActivity直下のhostに一度だけ接続し、Compose再構成では状態だけ更新する。
             registry.obtain(pageTab, state.settings, callbacksFor(
                 viewModel = viewModel,
