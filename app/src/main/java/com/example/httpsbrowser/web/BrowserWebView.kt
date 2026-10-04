@@ -91,7 +91,7 @@ class BrowserWebViewRegistry(
         entry.fullscreenVideoDarkeningSuppressed = suppressed
         if (!suppressed) {
             val url = entry.activeDocumentUrl ?: entry.loadedUrl ?: return
-            configure(entry.webView, entry.settings)
+            configure(entry.webView, entry, url)
             CrashDiagnostics.record("video_dark_css_suppressed", "tab=$tabId\nsuppressed=false\nurl=$url")
         } else {
             CrashDiagnostics.record("video_dark_css_suppressed", "tab=$tabId\nsuppressed=true")
