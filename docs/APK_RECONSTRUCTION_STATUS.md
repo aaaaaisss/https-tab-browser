@@ -200,3 +200,13 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 - APKで確認できた `PROGRESS_STEP_BYTES` / `NOTIFICATION_ID` / `createFailure` の基盤を追加。
 - YouTube広告サニタイズ対象キーにAPKで確認した `adReasons` / `promoted` / `ypc_spin_up` を追加。
 - GitHub Actionsは起動していない。
+
+
+## Pass 20: APK top-level class差分
+- APKのDEXに存在するアプリ側トップレベルクラスを再確認。
+- `PipControlReceiver` がGitHub側に未実装だったため追加。
+- APKで確認できたPiPシーク操作の action / extra / RemoteAction 経路をMainActivityへ反映。
+- PiP操作対象のWebView Registryとtab IDをActivityへ接続。
+- ManifestへPiP操作Receiverを追加。
+- 既存の`FullscreenContent` / `HomeCell` / `PendingWebPermission`は現在のKotlinソース内に存在することを確認。
+- GitHub Actionsは起動していない。
