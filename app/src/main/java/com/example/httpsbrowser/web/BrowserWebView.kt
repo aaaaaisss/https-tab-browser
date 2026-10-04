@@ -100,6 +100,7 @@ class BrowserWebViewRegistry(
 
     fun load(tabId: String, url: String) {
         entries[tabId]?.let { entry ->
+            cancelBackNavigation(entry)
             if (isHttps(url)) {
                 entry.loadedUrl = url
                 // shouldInterceptRequest はUIスレッド外から呼ばれ得るため、
@@ -114,7 +115,40 @@ class BrowserWebViewRegistry(
     }
 
     fun reload(tabId: String) = entries[tabId]?.webView?.reload()
-    fun goBack(tabId: String) = entries[tabId]?.webView?.takeIf { it.canGoBack() }?.goBack()
+    /** APK-era asynchronous back-navigation queue. */
+    fun goBack(tabId: String) {
+        val entry = entries[tabId] ?: return
+        if (entry.backNavigationInFlight) {
+            entry.queuedBackRequests = (entry.queuedBackRequests + 1).coerceAtMost(MAX_QUEUED_BACK_REQUESTS)
+            return
+        }
+        if (!entry.webView.canGoBack()) {
+            entry.callbacks.onBackHistoryExhausted()
+            return
+        }
+        beginBackNavigation(entry)
+        entry.webView.goBack()
+    }
+
+    private fun beginBackNavigation(entry: Entry) { entry.backNavigationInFlight = true }
+
+    private fun cancelBackNavigation(entry: Entry) {
+        entry.backNavigationInFlight = false
+        entry.queuedBackRequests = 0
+    }
+
+    private fun finishBackNavigation(entry: Entry) {
+        entry.backNavigationInFlight = false
+        if (entry.queuedBackRequests <= 0) return
+        entry.queuedBackRequests = (entry.queuedBackRequests - 1).coerceAtLeast(0)
+        if (entry.webView.canGoBack()) {
+            beginBackNavigation(entry)
+            entry.webView.post { entry.webView.goBack() }
+        } else {
+            entry.queuedBackRequests = 0
+            entry.callbacks.onBackHistoryExhausted()
+        }
+    }
     fun canGoBack(tabId: String): Boolean = entries[tabId]?.webView?.canGoBack() == true
     fun translateToJapanese(tabId: String) = entries[tabId]?.let { entry ->
         pageTranslator.translatePage(entry.webView) { message -> entry.callbacks.onNotice(message) }
@@ -626,6 +660,7 @@ class BrowserWebViewRegistry(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             CrashDiagnostics.recordWebViewNavigation(url)
             val entry = entries[tabId]
+            entry?.takeIf { it.backNavigationInFlight }?.let(::finishBackNavigation)
             entry?.cosmeticAppliedUrl = null
             entry?.genericCosmeticAppliedUrl = null
             entry?.youtubeCosmeticAppliedUrl = null
@@ -790,6 +825,8 @@ class BrowserWebViewRegistry(
         var youtubeNoAdWarmPlayerScriptHandler: ScriptHandler? = null,
         var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
         var youtubeCosmeticAggressiveApplied: Boolean = false,
+        var backNavigationInFlight: Boolean = false,
+        var queuedBackRequests: Int = 0,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
@@ -1100,6 +1137,7 @@ interface BrowserWebCallbacks {
     fun onBlockedNavigation(url: String)
     fun onSslError(url: String)
     fun onRendererGone(tabId: String)
+    fun onBackHistoryExhausted() = Unit
     fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideFullscreen()
     fun onVideoDimensions(tabId: String, width: Int, height: Int) = Unit
@@ -1125,6 +1163,7 @@ interface BrowserWebCallbacks {
         override fun onBlockedNavigation(url: String) = Unit
         override fun onSslError(url: String) = Unit
         override fun onRendererGone(tabId: String) = Unit
+        override fun onBackHistoryExhausted() = Unit
         override fun onShowFullscreen(view: View, callback: WebChromeClient.CustomViewCallback) = Unit
         override fun onHideFullscreen() = Unit
         override fun onWebPermissionRequest(origin: String, resources: Set<String>, reply: (Boolean) -> Unit) = reply(false)
