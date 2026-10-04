@@ -100,3 +100,9 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
 
 - Direct DEX static-value decoding recovered exact APK constants: `MAX_QUEUED_BACK_REQUESTS = 2000` and `MAX_AGGRESSIVE_YOUTUBE_SELECTORS = 500`.
 - Both constants are now restored to `BrowserWebView.kt`. The queued-back-request constant is currently recorded but not behaviorally wired because its request-queue call site has not yet been decoded; the aggressive-selector cap matches the already recovered 500-character selector safety limit.
+
+
+## Latest APK evidence pass 8
+
+- APK `BrowserWebViewRegistry` still contains dedicated dark-document-start infrastructure (`prepareDarkDocumentStartScript`, deep-dark CSS, already-dark detection, dark reveal guard). The current repository intentionally uses its newer Fulguris-native dark-mode path instead, so this APK-era implementation was not blindly reintroduced.
+- APK evidence also confirms the diagnostic/lifecycle names `youtube_pip_unlock_ready/unsupported`, `youtube_viewport_metrics`, and the three aggressive YouTube script readiness events. Existing repository code already contains corresponding PiP/viewport and YouTube script paths, so no duplicate implementation was added.
