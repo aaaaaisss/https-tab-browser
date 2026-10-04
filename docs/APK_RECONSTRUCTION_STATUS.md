@@ -68,3 +68,10 @@ These scripts are wired only when the repository's new `aggressiveAdBlockingEnab
   - XMLHttpRequest `responseText` rewriting
 - Restored the APK-observed aggressive YouTube cosmetic selector set in `AdBlockInjector`.
 - APK evidence also confirms `isSafeYoutubeAdSelector` and safe-redirect constants/helpers exist. Their exact numeric thresholds and Kotlin control flow remain uncommitted because the current environment lacks a DEX decompiler and the string table alone does not establish those values.
+
+## Latest APK evidence pass 3
+
+- Direct DEX inspection recovered exact safe-data limits: `MAX_SAFE_REDIRECT_DATA_URL_CHARS = 262144`, `MAX_SAFE_REDIRECT_BYTES = 131072`.
+- `isSafeRedirectMimeType` branches by `stylesheet`, `image`, and `script`; stylesheet is `text/css`. Image MIME strings recovered: `image/gif`, `image/jpeg`, `image/png`, `image/webp`. Script-safe strings recovered from the APK: `application/javascript`, `application/json`, `application/octet-stream`, `application/wasm`, `text/javascript`, `text/plain`.
+- `isSafeYoutubeAdSelector` was directly decoded far enough to recover the 500-character cap and exact ad/layout token lists. Exact final boolean composition is still being treated conservatively until the remaining Dalvik branch/register semantics are decoded.
+- The safe redirect helper has been reconstructed as an isolated method only. It is **not wired into request interception yet**, because the APK's exact MIME/resource-type call-site contract is not fully decoded. This avoids introducing an unsafe or incorrect fallback.
