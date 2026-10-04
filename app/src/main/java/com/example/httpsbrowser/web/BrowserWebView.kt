@@ -16,6 +16,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.URLUtil
 import androidx.webkit.SafeBrowsingResponseCompat
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewClientCompat
