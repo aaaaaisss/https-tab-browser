@@ -44,6 +44,7 @@ class BrowserWebViewRegistry(
 ) {
     private val entries = ConcurrentHashMap<String, Entry>()
     private val pageTranslator = PageTranslator()
+    private val downloadDispatcher = com.example.httpsbrowser.data.BrowserDownloadDispatcher(context.applicationContext)
 
     fun obtain(tab: BrowserTab, settings: BrowserSettings, callbacks: BrowserWebCallbacks): WebView {
         val entry = entries[tab.id] ?: Entry(createWebView(tab.id)).also { entries[tab.id] = it }
@@ -268,6 +269,7 @@ class BrowserWebViewRegistry(
         runCatching { CookieManager.getInstance().flush() }
         pageTranslator.close()
         blocker.close()
+        downloadDispatcher.close()
     }
 
     fun clearAllBrowsingData() {
@@ -921,16 +923,15 @@ class BrowserWebViewRegistry(
                 return
             }
             val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-            val request = DownloadManager.Request(Uri.parse(url)).apply {
-                setMimeType(mimeType)
-                setTitle(fileName)
-                setDescription("ねこぶらうざからのダウンロード")
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-                addRequestHeader("User-Agent", userAgent)
-                CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
-            }
-            (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            val request = com.example.httpsbrowser.data.BrowserDownloadRequest(
+                url = url,
+                userAgent = userAgent,
+                fileName = fileName,
+                mimeType = mimeType,
+                referer = entries[tabId]?.webView?.url.orEmpty(),
+                title = fileName
+            )
+            downloadDispatcher.enqueueNormal(request)
             entries[tabId]?.callbacks?.onDownloadStarted(fileName, "Downloads/$fileName")
         }
     }
