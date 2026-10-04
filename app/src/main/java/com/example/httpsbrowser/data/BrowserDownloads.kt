@@ -31,9 +31,11 @@ data class BrowserDownloadStatus(
     val isSuccessful: Boolean,
     val isTerminal: Boolean,
     val phase: String,
-    val progressFraction: Float = totalBytes?.takeIf { it > 0L }?.let { downloadedBytes.toFloat() / it.toFloat() } ?: 0f,
     val startedAt: Long
-)
+) {
+    val progressFraction: Float
+        get() = totalBytes?.takeIf { it > 0L }?.let { downloadedBytes.toFloat() / it.toFloat() } ?: 0f
+}
 
 class BrowserDownloadDispatcher(private val context: Context) {
     private val trackedDownloads = ConcurrentHashMap<String, TrackedDownload>()
@@ -134,7 +136,6 @@ class BrowserDownloadDispatcher(private val context: Context) {
             isSuccessful = false,
             isTerminal = cancelled || deleted,
             phase = phase,
-            progressFraction = 0f,
             startedAt = createdAt
         )
     }
