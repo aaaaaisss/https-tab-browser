@@ -51,6 +51,7 @@ class BrowserWebViewRegistry(
         entry.settings = settings
         entry.adBlockingEnabled = settings.adBlockingEnabled
         ensureYoutubePictureInPictureScript(entry)
+        ensureYoutubeAggressiveScripts(entry)
         // Fulguris由来のWebView設定だけを適用する。ページ内CSS/JS注入を使わないため、
         // タブ選択やダークモード切替で動画・履歴を再読み込みしない。
         configure(entry.webView, settings)
@@ -106,6 +107,7 @@ class BrowserWebViewRegistry(
                 entry.activeDocumentUrl = url
                 CrashDiagnostics.recordWebViewNavigation(url)
                 prepareYoutubeDocumentStartScript(entry, url)
+                ensureYoutubeAggressiveScripts(entry)
                 entry.webView.loadUrl(url)
             } else entry.callbacks.onBlockedNavigation(url)
         }
@@ -148,6 +150,12 @@ class BrowserWebViewRegistry(
             entry.documentStartScriptHandler = null
             runCatching { entry.youtubePictureInPictureScriptHandler?.remove() }
             entry.youtubePictureInPictureScriptHandler = null
+            runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            entry.youtubeAdSanitizerScriptHandler = null
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
+            runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
+            entry.youtubeSabrPatchOnlyScriptHandler = null
             entry.cookieFlushRunnable?.let(entry.webView::removeCallbacks)
             entry.cookieFlushRunnable = null
             entry.webView.apply {
@@ -207,6 +215,58 @@ class BrowserWebViewRegistry(
                 "youtube_pip_unlock_unsupported",
                 "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}"
             )
+        }
+    }
+
+    /**
+     * APKに存在したYouTube向けの追加document-start処理。
+     * aggressive modeのときだけ登録し、設定変更時には既存ハンドラを入れ替える。
+     */
+    private fun ensureYoutubeAggressiveScripts(entry: Entry) {
+        if (!entry.settings.aggressiveAdBlockingEnabled ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        ) {
+            runCatching { entry.youtubeAdSanitizerScriptHandler?.remove() }
+            runCatching { entry.youtubeNoAdWarmPlayerScriptHandler?.remove() }
+            runCatching { entry.youtubeSabrPatchOnlyScriptHandler?.remove() }
+            entry.youtubeAdSanitizerScriptHandler = null
+            entry.youtubeNoAdWarmPlayerScriptHandler = null
+            entry.youtubeSabrPatchOnlyScriptHandler = null
+            return
+        }
+        val originRules = setOf(
+            "https://youtube.com", "https://*.youtube.com",
+            "https://youtube-nocookie.com", "https://*.youtube-nocookie.com"
+        )
+        if (entry.youtubeAdSanitizerScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YoutubeAdScripts.adSanitizer, originRules)
+            }.onSuccess {
+                entry.youtubeAdSanitizerScriptHandler = it
+                CrashDiagnostics.record("youtube_ad_sanitizer_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_ad_sanitizer_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
+        }
+        if (entry.youtubeNoAdWarmPlayerScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YoutubeAdScripts.noAdWarmPlayer, originRules)
+            }.onSuccess {
+                entry.youtubeNoAdWarmPlayerScriptHandler = it
+                CrashDiagnostics.record("youtube_no_ad_warm_player_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_no_ad_warm_player_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
+        }
+        if (entry.youtubeSabrPatchOnlyScriptHandler == null) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(entry.webView, YoutubeAdScripts.sabrPatchOnly, originRules)
+            }.onSuccess {
+                entry.youtubeSabrPatchOnlyScriptHandler = it
+                CrashDiagnostics.record("youtube_sabr_patch_only_ready", "documentStart=true")
+            }.onFailure { throwable ->
+                CrashDiagnostics.record("youtube_sabr_patch_only_unsupported", "${throwable.javaClass.simpleName}: ${throwable.message.orEmpty()}")
+            }
         }
     }
 
@@ -686,6 +746,10 @@ class BrowserWebViewRegistry(
         var documentStartScriptHandler: ScriptHandler? = null,
         var documentStartScriptUrl: String? = null,
         var youtubePictureInPictureScriptHandler: ScriptHandler? = null,
+        var youtubeAdSanitizerScriptHandler: ScriptHandler? = null,
+        var youtubeNoAdWarmPlayerScriptHandler: ScriptHandler? = null,
+        var youtubeSabrPatchOnlyScriptHandler: ScriptHandler? = null,
+        var youtubeCosmeticAggressiveApplied: Boolean = false,
         var cookieFlushRunnable: Runnable? = null,
         var callbacks: BrowserWebCallbacks = BrowserWebCallbacks.Empty,
         var settings: BrowserSettings = BrowserSettings(),
